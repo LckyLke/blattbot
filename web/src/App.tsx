@@ -8,12 +8,14 @@ import {
   type CompileInfo,
   type Project,
   type ProjectDetail,
+  type ProjectSettings as ProjectSettingsData,
   type Settings,
 } from "./api";
 import { DialogProvider } from "./components/Dialog";
 import Sidebar from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
 import SettingsModal from "./components/SettingsModal";
+import ProjectSettings from "./components/ProjectSettings";
 import Chat, { type ChatItem } from "./components/Chat";
 import ProofPanel from "./components/ProofPanel";
 import PdfPanel from "./components/PdfPanel";
@@ -144,6 +146,9 @@ export default function App() {
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [engine, setEngine] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Per-project settings of the open project (style, model override, default mode).
+  const [projSettings, setProjSettings] = useState<ProjectSettingsData | null>(null);
+  const [projSettingsOpen, setProjSettingsOpen] = useState(false);
 
   const [chat, setChat] = useState<ChatItem[]>([]);
   const [chats, setChats] = useState<ChatMeta[]>([]);
@@ -425,8 +430,11 @@ export default function App() {
     setBusy(false);
     setActivity("idle");
     setScope(loadScope(selectedId));
+    setProjSettings(null);
+    setProjSettingsOpen(false);
     void refreshDetail(selectedId);
     api.diff(selectedId).then((d) => setDiff(d.diff)).catch(() => {});
+    api.projectSettings(selectedId).then(setProjSettings).catch(() => setProjSettings(null));
 
     // Restore the active chat's persisted transcript (survives refresh/switch).
     void (async () => {
@@ -566,11 +574,26 @@ export default function App() {
     async (model: string) => {
       try {
         setAppSettings(await api.saveSettings({ model }));
+        // A global change shifts the project's effective model too (unless overridden).
+        if (selectedId) api.projectSettings(selectedId).then(setProjSettings).catch(() => {});
       } catch (err: any) {
         pushChat({ kind: "notice", tone: "error", text: err.message });
       }
     },
-    [pushChat],
+    [selectedId, pushChat],
+  );
+
+  /** Write (or clear, with "") the project's model override. */
+  const changeProjectModel = useCallback(
+    async (model: string) => {
+      if (!selectedId) return;
+      try {
+        setProjSettings(await api.saveProjectSettings(selectedId, { model }));
+      } catch (err: any) {
+        pushChat({ kind: "notice", tone: "error", text: err.message });
+      }
+    },
+    [selectedId, pushChat],
   );
 
   const approve = useCallback(
@@ -584,6 +607,31 @@ export default function App() {
     },
     [selectedId, pushChat],
   );
+
+  // Manual pull of incoming Overleaf/git changes.
+  const [syncing, setSyncing] = useState(false);
+  const syncNow = useCallback(async () => {
+    if (!selectedId || syncing) return;
+    setSyncing(true);
+    try {
+      const r = await api.sync(selectedId);
+      const changed = Boolean(r.output);
+      pushChat({ kind: "notice", tone: "info", text: r.output || "Already up to date." });
+      if (changed) {
+        setSourceStamp((s) => s + 1);
+        dirtySinceCompile.current = true;
+        void refreshDetail(selectedId);
+        const p = panesRef.current;
+        if ((p.left === "pdf" || p.right === "pdf") && !compilingRef.current) {
+          void startCompileRef.current();
+        }
+      }
+    } catch (err: any) {
+      pushChat({ kind: "notice", tone: "error", text: err.message });
+    } finally {
+      setSyncing(false);
+    }
+  }, [selectedId, syncing, pushChat, refreshDetail]);
 
   const reject = useCallback(async () => {
     if (!selectedId) return;
@@ -763,7 +811,9 @@ export default function App() {
             activity={activity}
             onSend={send}
             onInterrupt={interrupt}
+            projectId={selectedId!}
             projectName={selected!.name}
+            defaultMode={projSettings?.defaultMode ?? ""}
             scope={scope}
             onClearScope={() => changeScope([])}
             chats={chats}
@@ -771,8 +821,14 @@ export default function App() {
             onSelectChat={selectChat}
             onNewChat={newChat}
             onDeleteChat={removeChat}
-            model={appSettings?.resolvedModel ?? ""}
+            model={
+              // The server-resolved per-project model (override → global) is
+              // authoritative; the global setting fills in until it loads.
+              projSettings?.resolvedModel ?? appSettings?.resolvedModel ?? ""
+            }
+            projectModel={projSettings?.model ?? ""}
             onChangeModel={changeModel}
+            onSetProjectModel={changeProjectModel}
             quote={chatQuote}
           />
         );
@@ -936,6 +992,9 @@ export default function App() {
               onSelect={openProject}
               onDashboard={goDashboard}
               onOpenSettings={() => setSettingsOpen(true)}
+              onOpenProjectSettings={() => setProjSettingsOpen(true)}
+              onSync={selected!.kind === "local" ? undefined : syncNow}
+              syncing={syncing}
             />
 
             <main
@@ -974,6 +1033,14 @@ export default function App() {
             refreshSettings();
           }}
           onAccountsChanged={refreshProjects}
+        />
+      )}
+
+      {projSettingsOpen && selected && (
+        <ProjectSettings
+          project={selected}
+          onClose={() => setProjSettingsOpen(false)}
+          onSaved={setProjSettings}
         />
       )}
     </div>

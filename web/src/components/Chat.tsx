@@ -23,7 +23,10 @@ interface Props {
   busy: boolean;
   /** What the agent is doing right now — drives the thinking indicator. */
   activity: "idle" | "thinking" | "streaming" | "tool";
+  projectId: string;
   projectName: string;
+  /** The project's preferred mode for new chats ("" or undefined = none set). */
+  defaultMode?: string;
   /** Files the next message is scoped to (empty = whole project). */
   scope: string[];
   onClearScope: () => void;
@@ -37,7 +40,11 @@ interface Props {
   onDeleteChat: (chatId: string) => void;
   /** Resolved model id the next turn will run (e.g. "claude-sonnet-5"). */
   model: string;
+  /** The project's raw model override ("" = none — the global setting applies). */
+  projectModel: string;
   onChangeModel: (model: string) => void;
+  /** Write the project's model override ("" clears it). */
+  onSetProjectModel: (model: string) => void;
   /** A PDF selection to quote into the draft; each new nonce injects once. */
   quote?: { text: string; nonce: number } | null;
 }
@@ -83,6 +90,24 @@ const MODES = [
   { id: "polish", label: "Polish", hint: "Grammar, style, and LaTeX consistency only." },
   { id: "review", label: "Review", hint: "Read-only feedback — file edits are blocked." },
 ];
+
+const isModeId = (v: string | null | undefined): v is string => MODES.some((m) => m.id === v);
+
+/**
+ * The composer's preselected mode, in strict precedence order:
+ * 1. the user's manual pick for THIS project in this browser
+ *    (localStorage "blattbot.chatMode.<projectId>"),
+ * 2. the project's defaultMode setting,
+ * 3. the legacy global pick ("blattbot.chatMode", pre-per-project versions),
+ * 4. "edit".
+ */
+function preselectedMode(projectId: string, defaultMode?: string): string {
+  const own = localStorage.getItem(`blattbot.chatMode.${projectId}`);
+  if (isModeId(own)) return own;
+  if (isModeId(defaultMode)) return defaultMode;
+  const legacy = localStorage.getItem("blattbot.chatMode");
+  return isModeId(legacy) ? legacy : "edit";
+}
 
 const TOOL_LABELS: Record<string, string> = {
   Read: "Reading",
@@ -147,7 +172,9 @@ export default function Chat({
   items,
   busy,
   activity,
+  projectId,
   projectName,
+  defaultMode,
   scope,
   onClearScope,
   onSend,
@@ -158,14 +185,18 @@ export default function Chat({
   onNewChat,
   onDeleteChat,
   model,
+  projectModel,
   onChangeModel,
+  onSetProjectModel,
   quote,
 }: Props) {
   const [draft, setDraft] = useState("");
-  const [mode, setMode] = useState(() => {
-    const saved = localStorage.getItem("blattbot.chatMode");
-    return MODES.some((m) => m.id === saved) ? saved! : "edit";
-  });
+  const [mode, setMode] = useState(() => preselectedMode(projectId, defaultMode));
+  // Re-derive on project switch and when the project's defaultMode arrives or
+  // changes (it loads async) — a manual per-project pick always wins.
+  useEffect(() => {
+    setMode(preselectedMode(projectId, defaultMode));
+  }, [projectId, defaultMode]);
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
   /** Chat id whose delete button is in its "really?" confirm stage. */
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -193,7 +224,9 @@ export default function Chat({
 
   function pickMode(id: string) {
     setMode(id);
-    localStorage.setItem("blattbot.chatMode", id);
+    // Manual picks are remembered per project (the legacy global key stays
+    // untouched — it only serves as a fallback for projects without a pick).
+    localStorage.setItem(`blattbot.chatMode.${projectId}`, id);
   }
 
   useEffect(() => {
@@ -370,7 +403,12 @@ export default function Chat({
           <span className="ml-2 hidden min-w-0 truncate text-[10.5px] text-graphite/70 sm:inline">
             {MODES.find((m) => m.id === mode)?.hint}
           </span>
-          <ModelChip model={model} onChange={onChangeModel} />
+          <ModelChip
+            model={model}
+            projectModel={projectModel}
+            onChange={onChangeModel}
+            onSetProject={onSetProjectModel}
+          />
         </div>
         <div className="mx-auto flex max-w-2xl items-end gap-2">
           <textarea
@@ -412,11 +450,23 @@ export default function Chat({
 }
 
 /**
- * The current model as a mono chip; clicking opens a popover with the curated
- * suggestions plus a free-text field. Selecting saves globally (PUT /api/settings)
- * and applies from the next turn.
+ * The current effective model as a mono chip; clicking opens a popover with
+ * the curated suggestions plus a free-text field. Selecting saves GLOBALLY
+ * (PUT /api/settings) as before; a smaller secondary action writes the typed
+ * id as a project-only override instead, and an active override shows a
+ * "project" hint with a clear action. Everything applies from the next turn.
  */
-function ModelChip({ model, onChange }: { model: string; onChange: (model: string) => void }) {
+function ModelChip({
+  model,
+  projectModel,
+  onChange,
+  onSetProject,
+}: {
+  model: string;
+  projectModel: string;
+  onChange: (model: string) => void;
+  onSetProject: (model: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState("");
 
@@ -427,12 +477,20 @@ function ModelChip({ model, onChange }: { model: string; onChange: (model: strin
     if (next && next !== model) onChange(next);
   }
 
+  function pickForProject(id: string) {
+    const next = id.trim();
+    if (!next) return;
+    setOpen(false);
+    setCustom("");
+    onSetProject(next);
+  }
+
   return (
     <div className="relative ml-auto shrink-0">
       <button
         type="button"
         aria-label="Agent model"
-        title={`Agent model: ${model || "default"} — click to change`}
+        title={`Agent model: ${model || "default"}${projectModel ? " (project override)" : ""} — click to change`}
         onClick={() => setOpen((o) => !o)}
         className="rounded-full border border-rule px-2.5 py-0.5 font-mono text-[11px] text-graphite transition-colors hover:border-leaf/40 hover:text-paper-dim"
       >
@@ -450,6 +508,7 @@ function ModelChip({ model, onChange }: { model: string; onChange: (model: strin
                 key={id}
                 type="button"
                 onClick={() => pick(id)}
+                title="Set as the global default model"
                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[11.5px] transition-colors hover:bg-ink-3 ${
                   id === model ? "text-paper" : "text-paper-dim"
                 }`}
@@ -481,9 +540,42 @@ function ModelChip({ model, onChange }: { model: string; onChange: (model: strin
                 type="button"
                 disabled={!custom.trim()}
                 onClick={() => pick(custom)}
+                title="Set as the global default model"
                 className="rounded border border-rule px-2 py-1 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-40"
               >
                 Set
+              </button>
+            </div>
+            {/* Project override: the typed id can apply to this project only. */}
+            <div className="mx-3 mb-1.5 mt-0.5 border-t border-rule/60 pt-1.5">
+              {projectModel && (
+                <div className="mb-1 flex items-center gap-2">
+                  <span
+                    className="min-w-0 truncate font-mono text-[10.5px] text-gold"
+                    title={`This project overrides the global model with "${projectModel}"`}
+                  >
+                    project · {projectModel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOpen(false);
+                      onSetProject("");
+                    }}
+                    className="ml-auto shrink-0 rounded border border-rule px-1.5 py-0.5 text-[10.5px] text-graphite transition-colors hover:border-pencil hover:text-pencil"
+                  >
+                    clear project override
+                  </button>
+                </div>
+              )}
+              <button
+                type="button"
+                disabled={!custom.trim()}
+                onClick={() => pickForProject(custom)}
+                title="Use the model id typed above for this project only"
+                className="w-full rounded px-1 py-0.5 text-left text-[10.5px] text-graphite transition-colors hover:text-paper-dim disabled:opacity-40"
+              >
+                set for this project only
               </button>
             </div>
           </div>

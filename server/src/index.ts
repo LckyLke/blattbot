@@ -15,6 +15,8 @@ import {
   publicProject,
   removeProject,
   updateProject,
+  type Project,
+  type ProjectSettings,
 } from "./config.js";
 import * as git from "./git.js";
 import { compileProject, detectEngine, type CompileResult } from "./compile.js";
@@ -49,7 +51,9 @@ import {
   interruptTurn,
   isTurnActive,
   resolveModel,
+  resolveProjectModel,
   runTurn,
+  validateProjectSettingsPatch,
   validateScope,
   type AgentMode,
 } from "./agent.js";
@@ -576,6 +580,44 @@ app.get<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
   };
 });
 
+// ---- Per-project settings ---------------------------------------------------
+
+/** The stored settings object plus the model a turn on this project actually runs. */
+function projectSettingsView(project: Project) {
+  return {
+    ...(project.settings ?? {}),
+    resolvedModel: resolveProjectModel(project, loadSettings().model),
+  };
+}
+
+app.get<{ Params: { id: string } }>("/api/projects/:id/settings", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "unknown project" });
+  return projectSettingsView(project);
+});
+
+app.put<{
+  Params: { id: string };
+  Body: { styleAppend?: string; model?: string; defaultMode?: string };
+}>("/api/projects/:id/settings", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "unknown project" });
+  let patch: Partial<ProjectSettings>;
+  try {
+    patch = validateProjectSettingsPatch(req.body);
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+  // updateProject merges top-level keys only — always write the WHOLE settings
+  // object. An empty string clears its field (kept out of projects.json).
+  const merged: ProjectSettings = { ...(project.settings ?? {}), ...patch };
+  for (const key of Object.keys(merged) as (keyof ProjectSettings)[]) {
+    if (!merged[key]?.trim()) delete merged[key];
+  }
+  const updated = updateProject(project.id, { settings: merged })!;
+  return projectSettingsView(updated);
+});
+
 // ---- External read-only context (code, data, literature) -------------------
 
 app.get<{ Params: { id: string } }>("/api/projects/:id/context", async (req, reply) => {
@@ -682,6 +724,7 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/diff", async (req, reply)
 app.post<{ Params: { id: string } }>("/api/projects/:id/sync", async (req, reply) => {
   const project = getProject(req.params.id);
   if (!project) return reply.code(404).send({ error: "unknown project" });
+  if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
   try {
     const result = await sync.syncIn(project);
     broadcast(project.id, { type: "synced", detail: result.detail });

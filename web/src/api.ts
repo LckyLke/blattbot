@@ -145,6 +145,18 @@ export interface ImportBibResult {
   bibFile: string;
 }
 
+/** Per-project settings. Absent fields = not set (global defaults apply). */
+export interface ProjectSettings {
+  /** Writing style / instructions appended to this project's system prompt. */
+  styleAppend?: string;
+  /** Model override for this project (raw value — may be an alias). */
+  model?: string;
+  /** Mode preselected for new chats in this project ("" = Edit). */
+  defaultMode?: string;
+  /** The model a turn on THIS project runs: override → global, aliases resolved. */
+  resolvedModel: string;
+}
+
 let authReady: Promise<void> | null = null;
 
 /**
@@ -346,4 +358,13 @@ export const api = {
     request<{ labels: { name: string; file: string; line: number }[] }>(
       `/api/projects/${id}/labels`,
     ),
+  projectSettings: (id: string) => request<ProjectSettings>(`/api/projects/${id}/settings`),
+  saveProjectSettings: (
+    id: string,
+    patch: { styleAppend?: string; model?: string; defaultMode?: string },
+  ) =>
+    request<ProjectSettings>(`/api/projects/${id}/settings`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
 };

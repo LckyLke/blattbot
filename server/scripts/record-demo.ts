@@ -50,15 +50,27 @@ const REFS_BIB = `@inproceedings{vaswani2017attention,
 `;
 
 const PROMPT =
-  "Resolve the TODO in the introduction: find the original transformer paper " +
-  "and the BERT paper, add both to the bibliography, and cite them at the " +
-  "marked spot. Keep the prose unchanged otherwise and make sure it compiles.";
+  "Resolve the TODO in the introduction: find the BERT, GPT-3, and T5 papers, " +
+  "add all three to the bibliography, and cite them at the marked spot. Keep " +
+  "the prose unchanged otherwise and make sure it compiles.";
+
+const EXTRA_PROJECTS = [
+  { id: "a11babb1e5c0ffeec0deba5e", name: "Neural Ranking for Retrieval" },
+  { id: "b22babb1e5c0ffeec0deba5e", name: "Survey on Diffusion Models" },
+  { id: "c33babb1e5c0ffeec0deba5e", name: "Graph Learning Lecture Notes" },
+  { id: "d44babb1e5c0ffeec0deba5e", name: "ICML 2026 Rebuttal" },
+];
 
 async function main() {
   rmSync(OUT_DIR, { recursive: true, force: true });
   mkdirSync(OUT_DIR, { recursive: true });
 
-  const mock = await startMockOverleaf(MOCK_PORT, PROJECT_ID, "Attention Models");
+  const mock = await startMockOverleaf(
+    MOCK_PORT,
+    PROJECT_ID,
+    "Attention-Based Structured Prediction",
+    EXTRA_PROJECTS,
+  );
   mock.files.set("main.tex", Buffer.from(MAIN_TEX));
   mock.files.set("refs.bib", Buffer.from(REFS_BIB));
 
@@ -113,7 +125,16 @@ async function main() {
     ).json()) as { id: string };
     await afetch(`${api}/projects`, {
       method: "POST",
-      body: JSON.stringify({ accountId: acc.id, projectId: PROJECT_ID, name: "Attention Models" }),
+      body: JSON.stringify({
+        accountId: acc.id,
+        projectId: PROJECT_ID,
+        name: "Attention-Based Structured Prediction",
+      }),
+    });
+    // A second imported project so the dashboard reads as a real workspace.
+    await afetch(`${api}/projects`, {
+      method: "POST",
+      body: JSON.stringify({ accountId: acc.id, projectId: EXTRA_PROJECTS[0].id, name: EXTRA_PROJECTS[0].name }),
     });
 
     browser = await chromium.launch({ executablePath: EXECUTABLE, headless: true });
@@ -122,6 +143,14 @@ async function main() {
     const context = await browser.newContext({
       viewport: { width: 2880, height: 1800 },
       recordVideo: { dir: OUT_DIR, size: { width: 2880, height: 1800 } },
+    });
+    // Zoom is layout-level, so pixel-derived UI defaults must be seeded in the
+    // 1440-design space or the pane split computes from the raw 2880 viewport.
+    await context.addInitScript(() => {
+      localStorage.setItem("blattbot.panelWidth", "634");
+      document.addEventListener("DOMContentLoaded", () => {
+        (document.documentElement.style as unknown as { zoom: string }).zoom = "2";
+      });
     });
     const page = await context.newPage();
 
@@ -134,13 +163,10 @@ async function main() {
 
     // --- The recorded session -------------------------------------------------
     await page.goto(`http://127.0.0.1:${SERVER_PORT}`, { waitUntil: "networkidle" });
-    await page.evaluate(() => {
-      (document.documentElement.style as unknown as { zoom: string }).zoom = "2";
-    });
     mark("dashboard");
     await page.waitForTimeout(1800);
 
-    await domClick(page.getByRole("button", { name: "Open Attention Models" }));
+    await domClick(page.getByRole("button", { name: "Open Attention-Based Structured Prediction" }));
     // Chat left, PDF right by default; the PDF compiles on open.
     await page.locator("canvas").first().waitFor({ state: "visible", timeout: 120_000 });
     mark("project-open");
@@ -170,6 +196,7 @@ async function main() {
     );
     await page.waitForTimeout(3200);
     mark("refs");
+    await page.screenshot({ path: join(OUT_DIR, "fig-references.png") });
 
     // Review the proof, then approve.
     await domClick(
@@ -177,10 +204,30 @@ async function main() {
     );
     await page.waitForTimeout(2600);
     mark("proof");
+    await page.screenshot({ path: join(OUT_DIR, "fig-proof.png") });
     await domClick(page.getByRole("button", { name: "Approve & push" }));
     await page.getByText("Changes pushed to Overleaf.").waitFor({ timeout: 60_000 });
     mark("approved");
     await page.waitForTimeout(2500);
+    mark("video-end");
+
+    // --- Figure staging (after the video's cut point) -------------------------
+    // Editor figure: source (wide) beside the PDF.
+    await page.evaluate(() => localStorage.setItem("blattbot.panelWidth", "560"));
+    await domClick(page.locator('main[data-pane="left"]').getByRole("button", { name: "Source", exact: true }));
+    await domClick(page.locator('aside[data-pane="right"]').getByRole("button", { name: "PDF", exact: true }));
+    await page.locator(".cm-content").first().waitFor({ timeout: 30_000 });
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator(".cm-content").first().waitFor({ timeout: 60_000 });
+    await page.locator("canvas").first().waitFor({ state: "visible", timeout: 120_000 });
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: join(OUT_DIR, "fig-editor.png") });
+
+    // Dashboard figure: several projects, two of them imported.
+    await domClick(page.getByRole("button", { name: "Back to dashboard" }));
+    await page.getByText("Survey on Diffusion Models").waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(1500);
+    await page.screenshot({ path: join(OUT_DIR, "fig-dashboard.png") });
 
     await context.close(); // finalizes the video file
     const video = readdirSync(OUT_DIR).find((f) => f.endsWith(".webm"));

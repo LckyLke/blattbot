@@ -14,6 +14,10 @@ interface Props {
   onSelect: (id: string) => void;
   onDashboard: () => void;
   onOpenSettings: () => void;
+  onOpenProjectSettings: () => void;
+  /** Pull incoming remote changes now. Absent for local-only projects. */
+  onSync?: () => void;
+  syncing?: boolean;
 }
 
 interface DirNode {
@@ -56,6 +60,9 @@ export default function Sidebar({
   onSelect,
   onDashboard,
   onOpenSettings,
+  onOpenProjectSettings,
+  onSync,
+  syncing = false,
 }: Props) {
   const tree = useMemo(() => buildTree(files), [files]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -186,6 +193,27 @@ export default function Sidebar({
             ))}
           </select>
         )}
+        <div className="mt-1.5 flex items-center gap-1">
+          <button
+            onClick={onOpenProjectSettings}
+            aria-label="Open project settings"
+            title="Writing style, model override, and default mode for this project"
+            className="rounded px-1 py-0.5 text-[11px] text-graphite transition-colors hover:text-leaf"
+          >
+            ⚙ project settings
+          </button>
+          {onSync && (
+            <button
+              onClick={onSync}
+              disabled={syncing}
+              aria-label="Sync from remote"
+              title="Pull incoming changes from Overleaf (or the git remote) now"
+              className="ml-auto rounded px-1 py-0.5 text-[11px] text-graphite transition-colors hover:text-leaf disabled:opacity-60"
+            >
+              <span className={syncing ? "working-dot" : undefined}>↻</span> {syncing ? "syncing" : "sync"}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex items-baseline gap-2 px-4 pb-1 pt-3">

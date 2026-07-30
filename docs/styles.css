@@ -574,13 +574,6 @@ hr.booktabs::after {
   font-size: 0.92rem;
   color: var(--graphite);
 }
-.foot-note {
-  max-width: var(--measure);
-  margin: 0.6rem auto 0;
-  padding: 0 1.5rem;
-  font-size: 0.85rem;
-  color: var(--graphite);
-}
 
 /* --- Responsive ---------------------------------------------------------- */
 
@@ -606,8 +599,7 @@ hr.booktabs::after {
   .how {
     padding: 3rem 1.25rem 3.4rem;
   }
-  .foot-row,
-  .foot-note {
+  .foot-row {
     padding-left: 1.25rem;
     padding-right: 1.25rem;
   }

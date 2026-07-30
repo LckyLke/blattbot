@@ -197,6 +197,78 @@ async function main() {
     };
     const modelResetOk = settingsReset.model === "" && settingsReset.resolvedModel === "claude-sonnet-5";
 
+    // ---- Per-project settings: style line, model override (alias), default mode ----
+    await page.getByRole("button", { name: "Open project settings" }).click();
+    const projDlg = page.getByRole("dialog", { name: "Project settings" });
+    await projDlg.waitFor({ timeout: 5_000 });
+    const styleBox = projDlg.getByPlaceholder(/British English/);
+    await styleBox.waitFor({ timeout: 5_000 }); // the form renders after the async GET
+    await styleBox.fill("Use British English. Prefer \\autoref.");
+    await projDlg.getByPlaceholder("global default").fill("fable");
+    await projDlg.locator("select").selectOption("research");
+    await shot("23f-project-settings");
+    await projDlg.getByRole("button", { name: "Save project settings" }).click();
+    await projDlg.getByText("Saved.").waitFor({ timeout: 5_000 });
+    const projSettingsUrl = `${apiBase}/projects/${mockProjectId}/settings`;
+    const projGet = async () =>
+      (await (await afetch(projSettingsUrl)).json()) as {
+        styleAppend?: string;
+        model?: string;
+        defaultMode?: string;
+        resolvedModel: string;
+      };
+    const projSettings1 = await projGet();
+    const projSettingsSavedOk =
+      projSettings1.styleAppend === "Use British English. Prefer \\autoref." &&
+      projSettings1.model === "fable" &&
+      projSettings1.defaultMode === "research" &&
+      projSettings1.resolvedModel === "claude-fable-5";
+    await projDlg.getByRole("button", { name: "Close project settings" }).click();
+    await projDlg.waitFor({ state: "detached", timeout: 5_000 });
+
+    // The chip shows the project override (alias resolved), not the global default…
+    const projChipOverrideOk = (await modelChip.innerText()) === "fable-5";
+    // …and the saved default mode preselects the Research pill (no manual pick stored).
+    await page
+      .waitForFunction(
+        () => {
+          const pill = [...document.querySelectorAll("button")].find(
+            (b) => b.textContent === "Research" && b.className.includes("rounded-full"),
+          );
+          return Boolean(pill && pill.className.includes("bg-leaf/10"));
+        },
+        { timeout: 5_000 },
+      )
+      .catch(() => {});
+    const projDefaultModeApplied = await page
+      .getByRole("button", { name: "Research", exact: true })
+      .evaluate((el) => el.className.includes("bg-leaf/10"));
+    await shot("23g-project-override-chip");
+
+    // Clear the override from the chip popover; style + default mode must survive.
+    await modelChip.click();
+    await page.getByText("project · fable").waitFor({ timeout: 5_000 });
+    await shot("23h-model-popover-project");
+    await page.getByRole("button", { name: "clear project override" }).click();
+    await page
+      .waitForFunction(
+        () => {
+          const chip = [...document.querySelectorAll("button")].find(
+            (b) => b.getAttribute("aria-label") === "Agent model",
+          );
+          return chip?.textContent?.trim() === "sonnet-5";
+        },
+        { timeout: 5_000 },
+      )
+      .catch(() => {});
+    const projSettings2 = await projGet();
+    const projClearOk =
+      !projSettings2.model &&
+      projSettings2.styleAppend === "Use British English. Prefer \\autoref." &&
+      projSettings2.defaultMode === "research" &&
+      projSettings2.resolvedModel === "claude-sonnet-5" &&
+      (await modelChip.innerText()) === "sonnet-5";
+
     // ---- Persisted transcripts: write events straight through chats.ts into the
     // temp data dir (no agent turn), reload, and the chat view restores them.
     // config.ts reads the env at import time — set it before the dynamic import.
@@ -820,6 +892,10 @@ async function main() {
         modelSavedOk,
         modelChipUpdated,
         modelResetOk,
+        projSettingsSavedOk,
+        projChipOverrideOk,
+        projDefaultModeApplied,
+        projClearOk,
         restoreUserOk,
         restoreTitleOk,
         restoreDiffOk,
@@ -885,6 +961,18 @@ async function main() {
     if (!modelSavedOk) throw new Error("picking a model in the popover did not save it to settings");
     if (!modelChipUpdated) throw new Error("model chip did not refresh to 'opus-5' after saving");
     if (!modelResetOk) throw new Error("resetting the model to the default failed");
+    if (!projSettingsSavedOk) {
+      throw new Error("project settings (style/model/defaultMode) did not persist via GET");
+    }
+    if (!projChipOverrideOk) {
+      throw new Error("model chip does not show the project override 'fable-5'");
+    }
+    if (!projDefaultModeApplied) {
+      throw new Error("the project's default mode did not preselect the Research pill");
+    }
+    if (!projClearOk) {
+      throw new Error("clearing the project override failed (or dropped the style/defaultMode)");
+    }
     if (!restoreUserOk) throw new Error("persisted user message did not render after reload");
     if (!restoreTitleOk) throw new Error("chat title was not derived from the first user message");
     if (!restoreDiffOk) throw new Error("restored tool chip did not expand to the persisted fileDiff");

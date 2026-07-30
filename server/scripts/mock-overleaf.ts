@@ -64,6 +64,8 @@ export async function startMockOverleaf(
   port: number,
   projectId: string,
   projectName = "Mock Thesis",
+  /** Additional dashboard-listed projects (template files, importable). */
+  extraProjects: { id: string; name: string }[] = [],
 ): Promise<MockOverleaf> {
   let idCounter = 0;
   let projectCounter = 0;
@@ -80,6 +82,12 @@ export async function startMockOverleaf(
 
   const primary = newProject(projectId, projectName, "rootfolder0");
   const projects = new Map<string, MockProject>([[projectId, primary]]);
+  for (const [i, extra] of extraProjects.entries()) {
+    const p = newProject(extra.id, extra.name, `rootfolder-x${i}`);
+    p.files.set("main.tex", Buffer.from(TEMPLATE_MAIN));
+    p.files.set("sample.bib", Buffer.from(TEMPLATE_BIB));
+    projects.set(extra.id, p);
+  }
 
   const state: MockOverleaf = {
     port,

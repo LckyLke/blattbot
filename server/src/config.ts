@@ -11,6 +11,19 @@ export const BIN_DIR = join(DATA_DIR, "bin");
 
 const REGISTRY_PATH = join(DATA_DIR, "projects.json");
 
+/** Per-project settings — edited via the /api/projects/:id/settings endpoints.
+ *  updateProject merges top-level keys only, so writers always persist the
+ *  whole settings object, never a partial one. */
+export interface ProjectSettings {
+  /** Writing style / instructions for this project, appended to the system
+   *  prompt after the mode block (capped at MAX_STYLE_APPEND in agent.ts). */
+  styleAppend?: string;
+  /** Model override for this project — takes precedence over the global setting. */
+  model?: string;
+  /** Mode preselected for new chats in this project (a client-side concern). */
+  defaultMode?: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -36,6 +49,8 @@ export interface Project {
   activeChatId?: string;
   /** Linked external read-only context paths (code, data, literature) — see context.ts. */
   contextPaths?: string[];
+  /** Per-project settings (style append, model override, default mode). */
+  settings?: ProjectSettings;
   createdAt: string;
 }
 

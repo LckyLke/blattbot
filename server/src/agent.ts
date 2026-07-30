@@ -2,10 +2,10 @@ import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { getProject, projectDir, updateProject, type Project } from "./config.js";
+import { getProject, projectDir, updateProject, type Project, type ProjectSettings } from "./config.js";
 import { compileProject } from "./compile.js";
 import { addCitation, readAllBibEntries, searchPapers } from "./citations.js";
-import { loadSettings } from "./settings.js";
+import { loadSettings, type Settings } from "./settings.js";
 import { contextDirectories } from "./context.js";
 
 export interface AgentEvent {
@@ -68,6 +68,11 @@ export function resolveModel(configured: string): string {
   const c = configured.trim();
   if (!c) return DEFAULT_MODEL;
   return MODEL_ALIASES[c.toLowerCase()] ?? c;
+}
+
+/** The model a turn on this project runs: project override → global setting → default. */
+export function resolveProjectModel(project: Pick<Project, "settings">, globalModel: string): string {
+  return resolveModel(project.settings?.model?.trim() || globalModel);
 }
 
 export type AgentMode = "edit" | "research" | "polish" | "review";
@@ -177,6 +182,84 @@ export function validateScope(dir: string, files: unknown): string[] {
     if (!out.includes(rel)) out.push(rel);
   }
   return out;
+}
+
+export const MAX_STYLE_APPEND = 4000;
+const MAX_PROJECT_MODEL = 200;
+
+/**
+ * Validate a PUT /api/projects/:id/settings body. Only the recognized fields
+ * are returned (partial — absent keys stay untouched by the caller's merge);
+ * every provided field must be a string within its cap, and defaultMode must
+ * be an AGENT_MODES id or "". Throws on the first invalid field.
+ */
+export function validateProjectSettingsPatch(body: unknown): Partial<ProjectSettings> {
+  const raw = (body ?? {}) as Record<string, unknown>;
+  const patch: Partial<ProjectSettings> = {};
+  for (const key of ["styleAppend", "model", "defaultMode"] as const) {
+    const v = raw[key];
+    if (v === undefined) continue;
+    if (typeof v !== "string") throw new Error(`${key} must be a string`);
+    patch[key] = v;
+  }
+  if (patch.styleAppend !== undefined && patch.styleAppend.length > MAX_STYLE_APPEND) {
+    throw new Error(`styleAppend is too long — the limit is ${MAX_STYLE_APPEND} characters`);
+  }
+  if (patch.model !== undefined && patch.model.trim().length > MAX_PROJECT_MODEL) {
+    throw new Error(`model is too long — the limit is ${MAX_PROJECT_MODEL} characters`);
+  }
+  if (
+    patch.defaultMode !== undefined &&
+    patch.defaultMode !== "" &&
+    !AGENT_MODES.some((m) => m.id === patch.defaultMode)
+  ) {
+    throw new Error(
+      `defaultMode must be one of ${AGENT_MODES.map((m) => m.id).join(", ")} — or empty for the default`,
+    );
+  }
+  return patch;
+}
+
+/**
+ * Assemble the system-prompt append for one turn, in this order: BlattBot's
+ * base append → the mode block → the project's own style instructions
+ * (labelled, capped) → the scope restriction → the external-context block →
+ * the user's global settings append. Pure, so tests can assert the layout.
+ */
+export function buildSystemAppend(
+  project: Project,
+  modeInfo: AgentModeInfo,
+  scope: string[] | undefined,
+  settings: Settings,
+  contextDirs: string[] = contextDirectories(project),
+): string {
+  let append = SYSTEM_APPEND;
+  if (modeInfo.prompt) append += `\n\n${modeInfo.prompt}`;
+  // Per-project style/instructions — directly after the mode block, clearly
+  // attributed. Re-capped here in case projects.json was edited by hand.
+  const styleAppend = project.settings?.styleAppend?.trim();
+  if (styleAppend) {
+    append += `\n\nProject instructions (from this project's settings):\n${styleAppend.slice(0, MAX_STYLE_APPEND)}`;
+  }
+  if (scope && scope.length > 0) {
+    append +=
+      `\n\nThe user has scoped this request to these files — read anything you need, ` +
+      `but only EDIT these files: ${scope.join(", ")}. If completing the task truly ` +
+      `requires touching other files, say so instead of editing them.`;
+  }
+  // External read-only context: extra directories the agent may read but never edit.
+  if (contextDirs.length > 0) {
+    append +=
+      `\n\nExternal read-only context is attached (reference material — code, data, literature):\n` +
+      contextDirs.map((d) => `- ${d}`).join("\n") +
+      `\nRead and search these freely (Read, Grep, Glob — Read handles PDFs too), but NEVER ` +
+      `create, modify, or delete anything inside them, and never copy their content into the ` +
+      `project verbatim beyond normal quotation.`;
+  }
+  if (settings.systemPromptAppend.trim()) {
+    append += `\n\nAdditional instructions from the user's BlattBot settings:\n${settings.systemPromptAppend.trim()}`;
+  }
+  return append;
 }
 
 function text(s: string) {
@@ -317,27 +400,8 @@ export async function runTurn(
   const dir = projectDir(project.id);
   const settings = loadSettings();
   const modeInfo = AGENT_MODES.find((m) => m.id === mode) ?? AGENT_MODES[0];
-  let append = SYSTEM_APPEND;
-  if (modeInfo.prompt) append += `\n\n${modeInfo.prompt}`;
-  if (scope && scope.length > 0) {
-    append +=
-      `\n\nThe user has scoped this request to these files — read anything you need, ` +
-      `but only EDIT these files: ${scope.join(", ")}. If completing the task truly ` +
-      `requires touching other files, say so instead of editing them.`;
-  }
-  // External read-only context: extra directories the agent may read but never edit.
   const contextDirs = contextDirectories(project);
-  if (contextDirs.length > 0) {
-    append +=
-      `\n\nExternal read-only context is attached (reference material — code, data, literature):\n` +
-      contextDirs.map((d) => `- ${d}`).join("\n") +
-      `\nRead and search these freely (Read, Grep, Glob — Read handles PDFs too), but NEVER ` +
-      `create, modify, or delete anything inside them, and never copy their content into the ` +
-      `project verbatim beyond normal quotation.`;
-  }
-  if (settings.systemPromptAppend.trim()) {
-    append += `\n\nAdditional instructions from the user's BlattBot settings:\n${settings.systemPromptAppend.trim()}`;
-  }
+  const append = buildSystemAppend(project, modeInfo, scope, settings, contextDirs);
   const disallowed = [
     ...(modeInfo.readOnly
       ? [...DISALLOWED_TOOLS, "Edit", "Write", "MultiEdit", "NotebookEdit", "mcp__blattbot__add_citation"]
@@ -360,7 +424,7 @@ export async function runTurn(
         cwd: dir,
         ...(contextDirs.length > 0 ? { additionalDirectories: contextDirs } : {}),
         ...(resumeId ? { resume: resumeId } : {}),
-        model: resolveModel(settings.model),
+        model: resolveProjectModel(project, settings.model),
         env: {
           ...process.env,
           ...(settings.apiKey ? { ANTHROPIC_API_KEY: settings.apiKey } : {}),
