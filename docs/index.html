@@ -52,7 +52,7 @@
              aria-label="Screen recording of a BlattBot session. A project opens with the chat on the left and the compiled PDF on the right. A prompt is typed, the agent edits and compiles, the PDF updates, and the change is reviewed and pushed to Overleaf.">
         <source src="assets/demo.mp4" type="video/mp4">
       </video>
-      <figcaption><span class="fig-n">Figure 1:</span> a real agent session, sped up to 28 seconds.</figcaption>
+      <figcaption><span class="fig-n">Figure 1:</span> a real agent session: literature search, two citations added, cited in the text, approved and pushed. Sped up.</figcaption>
     </figure>
   </section>
 
@@ -65,8 +65,10 @@
       <p>The agent works in a local git checkout and compiles after editing to check its own work. You can watch the diff grow during the turn. When it ends, review the changes per file or per hunk. Keep what you want and discard the rest. On a connected project, approved changes are pushed to Overleaf with a normal history entry.</p>
     </div>
     <figure class="shot">
-      <img src="assets/review-proof.png" width="1500" height="920" loading="lazy"
-           alt="The Proof tab listing two edited files with added and removed line counts, a per-file discard button, a commit message field, and buttons to approve and push or discard.">
+      <button class="figure-zoom" type="button" aria-label="Enlarge figure 2">
+        <img src="assets/review-proof.png" width="1500" height="920" loading="lazy"
+             alt="The Proof tab listing two edited files with added and removed line counts, a per-file discard button, a commit message field, and buttons to approve and push or discard.">
+      </button>
       <figcaption><span class="fig-n">Figure 2:</span> reviewing a proof before the push.</figcaption>
     </figure>
   </section>
@@ -78,8 +80,10 @@
       <p>Projects can live entirely on your machine. The editor is CodeMirror with LaTeX autocomplete, including your own cite keys and labels. Saving triggers a compile and the PDF sits next to the source. Double-click a line in the PDF to jump back to the code, or send a sentence from the PDF into the chat.</p>
     </div>
     <figure class="shot">
-      <img src="assets/editor-source-pdf.png" width="1500" height="920" loading="lazy"
-           alt="Source and PDF side by side. A LaTeX file with syntax highlighting in the editor pane and the freshly compiled document in the PDF pane.">
+      <button class="figure-zoom" type="button" aria-label="Enlarge figure 3">
+        <img src="assets/editor-source-pdf.png" width="1500" height="920" loading="lazy"
+             alt="Source and PDF side by side. A LaTeX file with syntax highlighting in the editor pane and the freshly compiled document in the PDF pane.">
+      </button>
       <figcaption><span class="fig-n">Figure 3:</span> source and PDF, compiled in 0.8&thinsp;s.</figcaption>
     </figure>
   </section>
@@ -91,8 +95,10 @@
       <p>Search OpenAlex, Semantic Scholar, DBLP, and Crossref from inside the app. Each paper comes with a one-line summary so you can judge relevance quickly. The References tab shows where every entry is cited and flags the ones that never get used. BibTeX import and export are there too.</p>
     </div>
     <figure class="shot">
-      <img src="assets/references-usage.png" width="1500" height="920" loading="lazy"
-           alt="The References tab showing a bibliography entry with its cite key, year, usage count, the file and line where it is cited, and PDF, TL;DR and edit actions next to Import and Export buttons.">
+      <button class="figure-zoom" type="button" aria-label="Enlarge figure 4">
+        <img src="assets/references-usage.png" width="1500" height="920" loading="lazy"
+             alt="The References tab showing a bibliography entry with its cite key, year, usage count, the file and line where it is cited, and PDF, TL;DR and edit actions next to Import and Export buttons.">
+      </button>
       <figcaption><span class="fig-n">Figure 4:</span> the References tab, with a usage count per entry.</figcaption>
     </figure>
   </section>
@@ -104,8 +110,10 @@
       <p>overleaf.com works, and so does a self-hosted server. BlattBot was first built against a university's own instance. Connect over the git bridge or through your existing browser session. SSO logins work too. You can keep several accounts side by side, and an expired session re-imports itself from your browser. When a local project is ready to share, publish it to Overleaf.</p>
     </div>
     <figure class="shot">
-      <img src="assets/dashboard-accounts.png" width="1500" height="920" loading="lazy"
-           alt="The projects dashboard with an Overleaf account section, a connected project card, a separate section for local and git projects, and buttons to add an account, create a blank project, or connect a git repository.">
+      <button class="figure-zoom" type="button" aria-label="Enlarge figure 5">
+        <img src="assets/dashboard-accounts.png" width="1500" height="920" loading="lazy"
+             alt="The projects dashboard with an Overleaf account section, a connected project card, a separate section for local and git projects, and buttons to add an account, create a blank project, or connect a git repository.">
+      </button>
       <figcaption><span class="fig-n">Figure 5:</span> the projects dashboard.</figcaption>
     </figure>
   </section>
@@ -117,8 +125,10 @@
       <p>The system prompt sits in a settings tab, and every operating mode shows its full instructions. The server listens on loopback only and requires a token on every request. Secrets live in your data dir with <code>0600</code> permissions. Agent turns run on your own Claude Code login. No account, no telemetry.</p>
     </div>
     <figure class="shot">
-      <img src="assets/settings-transparency.png" width="1500" height="920" loading="lazy"
-           alt="The Agent settings panel showing the backend, model and endpoint in plain text, the full system prompt BlattBot appends, and the instructions for the Research operating mode.">
+      <button class="figure-zoom" type="button" aria-label="Enlarge figure 6">
+        <img src="assets/settings-transparency.png" width="1500" height="920" loading="lazy"
+             alt="The Agent settings panel showing the backend, model and endpoint in plain text, the full system prompt BlattBot appends, and the instructions for the Research operating mode.">
+      </button>
       <figcaption><span class="fig-n">Figure 6:</span> the agent settings, system prompt included.</figcaption>
     </figure>
   </section>
@@ -226,6 +236,155 @@
         io.observe(el);
       });
     }
+
+    // Click-to-enlarge for the screenshot figures: a FLIP "shared element"
+    // zoom. The thumbnail hides, a fixed-position copy flies from its rect
+    // to a centered near-fullscreen view, and flies back on close.
+    var ZOOM_MS = 350;
+    var lightbox = null; // { overlay, clone, thumb, trigger, left, top, w, h, closing }
+
+    function lbKeydown(e) {
+      if (!lightbox) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeLightbox();
+      } else if (e.key === 'Tab') {
+        e.preventDefault(); // nothing else to focus inside the dialog
+      }
+    }
+
+    function lbScrollAttempt() {
+      closeLightbox();
+    }
+
+    function teardownLightbox(lb) {
+      lb.overlay.remove();
+      lb.thumb.style.visibility = '';
+      document.documentElement.style.overflow = '';
+      document.body.style.paddingRight = '';
+      document.removeEventListener('keydown', lbKeydown, true);
+      window.removeEventListener('wheel', lbScrollAttempt);
+      window.removeEventListener('touchmove', lbScrollAttempt);
+      window.removeEventListener('resize', lbScrollAttempt);
+      lightbox = null;
+      if (lb.trigger && lb.trigger.focus) lb.trigger.focus({ preventScroll: true });
+    }
+
+    function closeLightbox() {
+      if (!lightbox || lightbox.closing) return;
+      var lb = lightbox;
+      lb.closing = true;
+      lb.overlay.classList.remove('in'); // backdrop + caption fade out
+      if (reduceMotion) {
+        teardownLightbox(lb);
+        return;
+      }
+      var back = lb.thumb.getBoundingClientRect();
+      lb.clone.style.transform =
+        'translate(' + (back.left - lb.left) + 'px, ' + (back.top - lb.top) + 'px) ' +
+        'scale(' + back.width / lb.w + ', ' + back.height / lb.h + ')';
+      var fired = false;
+      function finish() {
+        if (fired) return;
+        fired = true;
+        teardownLightbox(lb);
+      }
+      lb.clone.addEventListener('transitionend', finish);
+      setTimeout(finish, ZOOM_MS + 100); // safety net
+    }
+
+    function openLightbox(trigger) {
+      if (lightbox) return;
+      var thumb = trigger.querySelector('img');
+      if (!thumb) return;
+      var figure = trigger.closest ? trigger.closest('figure') : null;
+      var figcap = figure && figure.querySelector('figcaption');
+
+      var first = thumb.getBoundingClientRect();
+
+      // Lock body scroll, compensating for the vanished scrollbar.
+      var sw = window.innerWidth - document.documentElement.clientWidth;
+      document.documentElement.style.overflow = 'hidden';
+      if (sw > 0) document.body.style.paddingRight = sw + 'px';
+
+      var overlay = document.createElement('div');
+      overlay.className = 'lightbox';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label',
+        figcap ? figcap.textContent.replace(/\s+/g, ' ').trim() : 'Enlarged figure');
+      overlay.tabIndex = -1;
+
+      var backdrop = document.createElement('div');
+      backdrop.className = 'lightbox-backdrop';
+
+      var clone = document.createElement('img');
+      clone.className = 'lightbox-img';
+      // Guard the setup flushes: measuring the caption resolves style early,
+      // and a transform set after that would start a zero-progress transition
+      // whose reversal completes instantly, eating the fly animation.
+      clone.style.transition = 'none';
+      clone.src = thumb.currentSrc || thumb.src;
+      clone.alt = thumb.alt || '';
+
+      var cap = document.createElement('p');
+      cap.className = 'lightbox-caption';
+      if (figcap) cap.innerHTML = figcap.innerHTML;
+
+      overlay.appendChild(backdrop);
+      overlay.appendChild(clone);
+      overlay.appendChild(cap);
+      document.body.appendChild(overlay);
+
+      // Target rect: centered, ≤92vw wide, image plus caption within ~88vh.
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+      var nw = thumb.naturalWidth || first.width;
+      var nh = thumb.naturalHeight || first.height;
+      var capGap = 14;
+      var capH = (cap.offsetHeight || 0) + capGap;
+      var scale = Math.min((vw * 0.92) / nw, (vh * 0.88 - capH) / nh, 1);
+      var w = Math.round(nw * scale);
+      var h = Math.round(nh * scale);
+      var left = Math.round((vw - w) / 2);
+      var top = Math.round((vh - h - capH) / 2);
+
+      clone.style.left = left + 'px';
+      clone.style.top = top + 'px';
+      clone.style.width = w + 'px';
+      clone.style.height = h + 'px';
+      cap.style.top = (top + h + capGap) + 'px';
+
+      lightbox = {
+        overlay: overlay, clone: clone, thumb: thumb, trigger: trigger,
+        left: left, top: top, w: w, h: h, closing: false
+      };
+      thumb.style.visibility = 'hidden';
+
+      if (!reduceMotion) {
+        // FLIP: start at the thumbnail's rect, then release to identity.
+        clone.style.transform =
+          'translate(' + (first.left - left) + 'px, ' + (first.top - top) + 'px) ' +
+          'scale(' + first.width / w + ', ' + first.height / h + ')';
+        clone.getBoundingClientRect(); // commit the start state, untransitioned
+      }
+      clone.style.transition = '';
+      overlay.classList.add('in');
+      if (!reduceMotion) clone.style.transform = '';
+
+      overlay.addEventListener('click', closeLightbox);
+      document.addEventListener('keydown', lbKeydown, true);
+      window.addEventListener('wheel', lbScrollAttempt, { passive: true });
+      window.addEventListener('touchmove', lbScrollAttempt, { passive: true });
+      window.addEventListener('resize', lbScrollAttempt);
+      overlay.focus({ preventScroll: true });
+    }
+
+    document.querySelectorAll('.figure-zoom').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        openLightbox(btn);
+      });
+    });
 
     // Hero tilt fallback for browsers without CSS scroll-driven animations.
     // The primary implementation is pure CSS (animation-timeline: view()).

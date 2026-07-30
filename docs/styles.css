@@ -356,6 +356,77 @@ hr.booktabs::after {
   }
 }
 
+/* --- Click-to-enlarge figures ------------------------------------------- */
+
+/* The screenshot sits inside a real <button> so Enter/Space work for free. */
+.figure-zoom {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: zoom-in;
+  border-radius: 10px;
+}
+.figure-zoom img {
+  transition: transform 0.16s ease-out, border-color 0.16s ease-out;
+}
+.figure-zoom:hover img,
+.figure-zoom:focus-visible img {
+  transform: scale(1.01);
+  border-color: color-mix(in srgb, var(--leaf) 40%, transparent);
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  outline: none;
+}
+.lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(18 21 29 / 0.85);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  cursor: zoom-out;
+  opacity: 0;
+  transition: opacity 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.lightbox.in .lightbox-backdrop {
+  opacity: 1;
+}
+.lightbox-img {
+  position: absolute;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--ink-2);
+  box-shadow: 0 40px 100px -30px rgb(0 0 0 / 0.75);
+  cursor: zoom-out;
+  transform-origin: top left;
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+.lightbox-caption {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(92vw, 46rem);
+  font-family: var(--serif);
+  font-size: 1.02rem;
+  font-style: italic;
+  color: var(--paper-dim);
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.25s ease-out;
+}
+.lightbox.in .lightbox-caption {
+  opacity: 1;
+  transition: opacity 0.35s ease-out 0.1s;
+}
+
 .will-reveal {
   opacity: 0;
   transform: translateY(14px);
@@ -596,5 +667,18 @@ hr.booktabs::after {
   .hero-shot video {
     animation: none;
     transform: none;
+  }
+  .figure-zoom img {
+    transition: none;
+  }
+  .figure-zoom:hover img,
+  .figure-zoom:focus-visible img {
+    transform: none;
+  }
+  .lightbox-backdrop,
+  .lightbox-img,
+  .lightbox-caption,
+  .lightbox.in .lightbox-caption {
+    transition: none;
   }
 }

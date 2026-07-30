@@ -140,6 +140,7 @@ Citations:
 - To find papers, use mcp__blattbot__search_papers. Present the best candidates to the user with title, authors, year, and venue when the choice is not obvious.
 - To add a reference, use mcp__blattbot__add_citation with the DOI — it fetches BibTeX, dedupes against the existing bibliography, writes the entry, and returns the cite key to use in \\cite{...}.
 - Use mcp__blattbot__list_citations to see what is already in the bibliography; prefer citing existing entries over adding near-duplicates.
+- Match the document's existing citation commands. Use plain \\cite{...} unless the preamble already loads natbib or biblatex — never introduce \\citep, \\citet, or \\autocite into a document whose preamble does not support them.
 
 Style:
 - Preserve the document's existing LaTeX conventions (macros, environments, label naming, bibliography style).

@@ -27,7 +27,9 @@ const MAIN_TEX = `\\documentclass{article}
 \\maketitle
 \\section{Introduction}
 Attention mechanisms let a model weigh context dynamically~\\cite{vaswani2017attention}.
-Our study builds on this idea for structured prediction tasks.
+Transformer architectures built on this idea now dominate language modelling,
+and pretrained models transfer it across tasks.
+% TODO: cite the original transformer paper and BERT here
 \\newpage
 \\section{Methods}
 We study $f(x) = \\sigma(Wx + b)$ under standard assumptions.
@@ -48,8 +50,9 @@ const REFS_BIB = `@inproceedings{vaswani2017attention,
 `;
 
 const PROMPT =
-  "Add a short Related Work section after the Introduction. Three sentences, " +
-  "citing the attention paper already in the bibliography. Make sure it compiles.";
+  "Resolve the TODO in the introduction: find the original transformer paper " +
+  "and the BERT paper, add both to the bibliography, and cite them at the " +
+  "marked spot. Keep the prose unchanged otherwise and make sure it compiles.";
 
 async function main() {
   rmSync(OUT_DIR, { recursive: true, force: true });
@@ -114,45 +117,67 @@ async function main() {
     });
 
     browser = await chromium.launch({ executablePath: EXECUTABLE, headless: true });
+    // Crispness: Playwright records CSS pixels, so render the app at 2x via a
+    // big viewport + CSS zoom (layout behaves like 1440×900, pixels are 2880).
     const context = await browser.newContext({
-      viewport: { width: 1440, height: 900 },
-      recordVideo: { dir: OUT_DIR, size: { width: 1440, height: 900 } },
+      viewport: { width: 2880, height: 1800 },
+      recordVideo: { dir: OUT_DIR, size: { width: 2880, height: 1800 } },
     });
     const page = await context.newPage();
 
+    // CSS zoom breaks coordinate-based actionability in nested layouts, so all
+    // interactions below go through DOM clicks and raw keyboard events.
+    const domClick = async (loc: ReturnType<typeof page.locator>) => {
+      await loc.first().waitFor({ timeout: 60_000 });
+      await loc.first().evaluate((el) => (el as HTMLElement).click());
+    };
+
     // --- The recorded session -------------------------------------------------
     await page.goto(`http://127.0.0.1:${SERVER_PORT}`, { waitUntil: "networkidle" });
+    await page.evaluate(() => {
+      (document.documentElement.style as unknown as { zoom: string }).zoom = "2";
+    });
     mark("dashboard");
     await page.waitForTimeout(1800);
 
-    await page.getByRole("button", { name: "Open Attention Models" }).click();
+    await domClick(page.getByRole("button", { name: "Open Attention Models" }));
     // Chat left, PDF right by default; the PDF compiles on open.
     await page.locator("canvas").first().waitFor({ state: "visible", timeout: 120_000 });
     mark("project-open");
     await page.waitForTimeout(1500);
 
+    // Research mode: the literature pipeline is the star of this demo.
+    await domClick(page.getByRole("button", { name: "Research", exact: true }));
+    await page.waitForTimeout(400);
+
     const composer = page.getByPlaceholder(/Ask BlattBot/);
-    await composer.click();
-    await composer.pressSequentially(PROMPT, { delay: 28 });
+    await composer.first().evaluate((el) => (el as HTMLTextAreaElement).focus());
+    await page.keyboard.type(PROMPT, { delay: 24 });
     await page.waitForTimeout(600);
     mark("send");
-    await composer.press("Enter");
+    await page.keyboard.press("Enter");
 
-    // The agent works: thinking indicator, tool chips, live diff, PDF refresh.
+    // The agent works: literature search chips, citations added, live diff.
     await page.getByText(/turn complete/).first().waitFor({ timeout: 420_000 });
     mark("turn-end");
-    // Let the post-turn compile land so the PDF shows the new section.
+    // Let the post-turn compile land so the PDF shows the new citations.
     await page.waitForTimeout(9_000);
     mark("pdf-settled");
 
+    // The new entries in the References tab, cited and green.
+    await domClick(
+      page.locator('aside[data-pane="right"]').getByRole("button", { name: "References", exact: true }),
+    );
+    await page.waitForTimeout(3200);
+    mark("refs");
+
     // Review the proof, then approve.
-    await page
-      .locator('aside[data-pane="right"]')
-      .getByRole("button", { name: "Proof", exact: false })
-      .click();
+    await domClick(
+      page.locator('aside[data-pane="right"]').getByRole("button", { name: "Proof", exact: false }),
+    );
     await page.waitForTimeout(2600);
     mark("proof");
-    await page.getByRole("button", { name: "Approve & push" }).click();
+    await domClick(page.getByRole("button", { name: "Approve & push" }));
     await page.getByText("Changes pushed to Overleaf.").waitFor({ timeout: 60_000 });
     mark("approved");
     await page.waitForTimeout(2500);

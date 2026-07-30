@@ -4,7 +4,7 @@ An agentic LaTeX editor that syncs with any Overleaf. BlattBot runs on your mach
 
 ![BlattBot demo](docs/assets/demo.gif)
 
-*A real agent session, sped up to 28 seconds.*
+*A real agent session: literature search, citations added to the bibliography and cited in the text, then approved and pushed. Sped up.*
 
 ```
 Overleaf ⇄ local mirror ⇄ Claude agent (edit → compile → verify)
