@@ -450,26 +450,72 @@ export default function App() {
     })();
 
     // The upgrade must carry the auth cookie — make sure bootstrap ran first.
+    // The socket RECONNECTS after drops (dev-server restarts, sleep, crashes):
+    // without this, a turn started after a silent drop streams into the void —
+    // no tool chips, no busy state, no Stop button until a manual refresh.
     let ws: WebSocket | null = null;
     let cancelled = false;
-    void ensureAuth()
-      .catch(() => {})
-      .then(() => {
-        if (cancelled) return;
-        const proto = location.protocol === "https:" ? "wss" : "ws";
-        ws = new WebSocket(`${proto}://${location.host}/api/ws?project=${encodeURIComponent(selectedId)}`);
-        ws.onmessage = (msg) => {
-          try {
-            handleEventRef.current(JSON.parse(msg.data));
-          } catch {
-            /* malformed frame */
-          }
-        };
-        wsRef.current = ws;
-      });
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let everConnected = false;
+
+    const connect = () => {
+      if (cancelled) return;
+      void ensureAuth()
+        .catch(() => {})
+        .then(() => {
+          if (cancelled) return;
+          const proto = location.protocol === "https:" ? "wss" : "ws";
+          ws = new WebSocket(`${proto}://${location.host}/api/ws?project=${encodeURIComponent(selectedId)}`);
+          ws.onopen = () => {
+            if (cancelled) return;
+            if (everConnected) {
+              // Back after a drop: backfill what the socket missed.
+              void refreshDetail(selectedId).then(() => {
+                api
+                  .project(selectedId)
+                  .then((d) => {
+                    setBusy(d.turnActive);
+                    if (!d.turnActive) setActivity("idle");
+                  })
+                  .catch(() => {});
+              });
+              api.diff(selectedId).then((d) => setDiff(d.diff)).catch(() => {});
+              void (async () => {
+                try {
+                  const r = await api.chats(selectedId);
+                  const { events } = await api.chatTranscript(selectedId, r.activeChatId);
+                  setChat(itemsFromEvents(events));
+                } catch {
+                  /* keep the current view */
+                }
+              })();
+            }
+            everConnected = true;
+          };
+          ws.onmessage = (msg) => {
+            try {
+              handleEventRef.current(JSON.parse(msg.data));
+            } catch {
+              /* malformed frame */
+            }
+          };
+          ws.onclose = () => {
+            if (cancelled) return;
+            wsRef.current = null;
+            retryTimer = setTimeout(connect, 1_500);
+          };
+          wsRef.current = ws;
+        });
+    };
+    connect();
+
     return () => {
       cancelled = true;
-      ws?.close();
+      clearTimeout(retryTimer);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
       wsRef.current = null;
     };
   }, [selectedId, refreshDetail]);
@@ -511,6 +557,11 @@ export default function App() {
       pushChat({ kind: "user", text: message, scope: files });
       try {
         await api.chat(selectedId, message, mode, files);
+        // The server accepted the turn — reflect it immediately instead of
+        // waiting for the websocket's turn_start (which a dropped socket
+        // would never deliver, leaving no Stop button and no activity).
+        setBusy(true);
+        setActivity("thinking");
         // The first message titles a fresh chat server-side.
         void refreshChats(selectedId);
       } catch (err: any) {

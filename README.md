@@ -54,4 +54,4 @@ CI runs the suite on Ubuntu, macOS and Windows.
 
 ## License
 
-[MIT](LICENSE), Luke Friedrichs
+[PolyForm Noncommercial 1.0.0](LICENSE), Luke Friedrichs. Free for personal, academic, and other noncommercial use.

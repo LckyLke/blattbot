@@ -463,11 +463,26 @@ async function main() {
     await page.keyboard.press("Control+End");
     await page.keyboard.type("% manual tweak from ui-verify");
     await page.keyboard.press("Enter");
-    // CodeMirror highlights stex: command tokens render in gold (#cfa75b)
+    // The custom LaTeX parser highlights command tokens in gold (#cfa75b)
     // via the HighlightStyle.
     const cmGoldTokens = await aside()
       .locator(".cm-editor .cm-line span")
       .evaluateAll((els) => els.filter((el) => getComputedStyle(el).color === "rgb(207, 167, 91)").length);
+    // …and renders a genuinely multi-color document: beyond prose (paper-dim)
+    // and punctuation/comments (graphite), at least three distinct hues must
+    // appear — the seeded main.tex has sectioning (terracotta), math (sage),
+    // a \cite key (slate blue), and gold commands.
+    const cmHighlightColors = await aside()
+      .locator(".cm-editor .cm-line span")
+      .evaluateAll((els) => {
+        const base = new Set(["rgb(185, 182, 171)", "rgb(125, 130, 148)"]); // paper-dim, graphite
+        const colors = new Set<string>();
+        for (const el of els) {
+          const c = getComputedStyle(el).color;
+          if (!base.has(c)) colors.add(c);
+        }
+        return [...colors].sort();
+      });
     const editorTextOk =
       (await aside().getByText("manual tweak from ui-verify").filter({ visible: true }).count()) > 0;
     // The unsaved draft shows the gold dirty dot in the header.
@@ -939,6 +954,7 @@ async function main() {
         deleteChatOk,
         sourceOk,
         cmGoldTokens,
+        cmHighlightColors,
         editorTextOk,
         dirtyDotOk,
         quickSaveKeepsEditor,
@@ -1018,7 +1034,13 @@ async function main() {
     if (!restoreTurnEndOk) throw new Error("persisted turn_end marker did not render after reload");
     if (!deleteChatOk) throw new Error("deleting the active chat did not fall back to the remaining one");
     if (!sourceOk) throw new Error("Source tab did not show the expected file content");
-    if (cmGoldTokens < 1) throw new Error("CodeMirror showed no highlighted (gold) stex tokens while editing");
+    if (cmGoldTokens < 1) throw new Error("CodeMirror showed no highlighted (gold) LaTeX command tokens while editing");
+    if (cmHighlightColors.length < 3) {
+      throw new Error(
+        `LaTeX highlighting shows only ${cmHighlightColors.length} distinct colors beyond ` +
+          `paper-dim/graphite (${cmHighlightColors.join(", ")}) — expected at least 3`,
+      );
+    }
     if (!editorTextOk) throw new Error("CodeMirror editor lost the typed content");
     if (!dirtyDotOk) throw new Error("unsaved draft did not show the gold dirty dot");
     if (!quickSaveKeepsEditor) {

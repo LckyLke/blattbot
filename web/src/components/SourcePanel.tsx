@@ -14,7 +14,6 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import {
   HighlightStyle,
-  StreamLanguage,
   bracketMatching,
   indentUnit,
   syntaxHighlighting,
@@ -30,8 +29,8 @@ import {
   type Completion,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { tags as t } from "@lezer/highlight";
+import { bibtexLanguage, latexLanguage, latexTags } from "../latex-language";
 import { api, type FileContent } from "../api";
 import { useDialog } from "./Dialog";
 
@@ -87,9 +86,9 @@ function fmtSize(bytes: number): string {
 }
 
 // --- CodeMirror setup -------------------------------------------------------
-
-/** stex already declares languageData.commentTokens {line: "%"} — Mod-/ works. */
-const stexLanguage = StreamLanguage.define(stex);
+// The custom LaTeX/BibTeX parsers (latex-language.ts) carry commentTokens
+// {line: "%"} (Mod-/ toggling) and the $-pairing/quote-drop closeBrackets
+// config in their languageData.
 
 const editorTheme = EditorView.theme(
   {
@@ -152,9 +151,23 @@ const editorTheme = EditorView.theme(
   { dark: true },
 );
 
-/** stex emits: commands/escapes → tagName, math delimiters → keyword, braces → bracket. */
+/** Token colors for the custom LaTeX/BibTeX parsers (latex-language.ts). */
 const texHighlight = HighlightStyle.define([
+  // Generic \commands and BibTeX @types — gold, the editor's signature accent.
   { tag: [t.keyword, t.tagName], color: "var(--color-gold)" },
+  // Sectioning commands are the document's skeleton — softened terracotta
+  // (pencil #e06552 warmed toward paper so it reads structural, not angry).
+  { tag: latexTags.sectioning, color: "#e0846f", fontWeight: "600" },
+  // Environment names (\begin{itemize}) and BibTeX field names.
+  { tag: latexTags.envName, color: "var(--color-leaf)" },
+  // Cite/ref/label keys and BibTeX entry keys — slate blue: graphite's hue
+  // family, lifted. The one cool accent against the warm gold/terracotta.
+  { tag: latexTags.refKey, color: "#7ea6c4" },
+  // Math content in a pale sage between leaf and paper; delimiters recede.
+  { tag: latexTags.math, color: "#a8c090" },
+  { tag: latexTags.mathDelim, color: "var(--color-graphite)" },
+  // ~, &, \\, #1, \% — noticeable but quiet.
+  { tag: latexTags.special, color: "color-mix(in srgb, var(--color-gold) 55%, var(--color-graphite))" },
   { tag: t.comment, color: "var(--color-graphite)", fontStyle: "italic" },
   { tag: [t.bracket, t.paren, t.brace, t.squareBracket], color: "var(--color-graphite)" },
   { tag: t.string, color: "#a8c090" },
@@ -507,16 +520,6 @@ const insertEnvClose: Command = (view) => {
   return true;
 };
 
-/**
- * Refinement: stex-tuned auto-closing. `$` pairs (inline math is the most-typed
- * LaTeX delimiter; it only closes at non-word boundaries, so apostrophes in
- * prose stay untouched) and the default `'`/`"` pairing is dropped — LaTeX
- * quoting is ``…'' and auto-closed quotes fight it.
- */
-const stexBrackets = stexLanguage.data.of({
-  closeBrackets: { brackets: ["(", "[", "{", "$"] },
-});
-
 interface CompletionData {
   path: () => string | null;
   bib: () => { key: string; title: string | null; year: string | null }[];
@@ -752,7 +755,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
           editorTheme,
           syntaxHighlighting(texHighlight),
           flashField,
-          TEXLIKE.test(path) ? [stexLanguage, stexBrackets] : [],
+          /\.bib$/i.test(path) ? bibtexLanguage : TEXLIKE.test(path) ? latexLanguage : [],
           comp.editable.of(editableExt(!busyRef.current, completionSource)),
           comp.wrap.of(wrapRef.current ? EditorView.lineWrapping : []),
           // Before the default bindings: Mod-s saves, Mod-g goes to a line.
