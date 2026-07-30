@@ -1,6 +1,6 @@
-# 🍃 BlattBot
+# 🍃 BlattBot (beta)
 
-An agentic LaTeX editor that syncs with any Overleaf. BlattBot runs on your machine with a Claude agent built in. You can create local projects, write in the CodeMirror editor, compile, and manage your bibliography without ever touching Overleaf. When you want Overleaf, it connects to any instance, overleaf.com or self-hosted, over the git bridge or your browser session. Agent edits land as diffs. Only what you approve gets committed or pushed.
+An agentic LaTeX editor that syncs with any Overleaf. BlattBot runs on your machine with your (Claude) agent built in. You can create local projects, write in the editor, compile, and manage your bibliography without ever touching Overleaf. When you want Overleaf, it connects to any instance. Agent edits land as diffs. Only what you approve gets committed or pushed.
 
 ![BlattBot demo](docs/assets/demo.gif)
 
@@ -26,10 +26,9 @@ You need Node 20 or newer, git, and [Claude Code](https://claude.com/claude-code
 
 The agent works in a local git mirror and every turn ends in a diff you approve or discard. It compiles after editing and fixes its own LaTeX errors before showing you anything. A citation pipeline searches OpenAlex, Semantic Scholar, DBLP and Crossref, fetches BibTeX, dedupes against your bibliography and inserts the right cite keys. 
 
-It works with overleaf.com, university and self-hosted Community Edition instances, plain git remotes, and purely local projects that you can publish to Overleaf later.
 ## Connecting
 
-Sign in once per Overleaf instance. The easiest way is "Sign in from browser session", which imports the login you already have in Firefox, Chrome or most other browsers. There is also a login window for SSO and a manual cookie paste as fallback. 
+Sign in once per Overleaf instance. The easiest way is "Sign in from browser session", which imports the login you already have in Firefox, Chrome or most other browsers. 
 
 Instances with the git bridge (paid overleaf.com plans, Server Pro) can also be connected through a git URL. 
 
