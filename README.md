@@ -24,19 +24,18 @@ You need Node 20 or newer, git, and [Claude Code](https://claude.com/claude-code
 
 ## What it does
 
-The agent works in a local git mirror and every turn ends in a diff you approve or discard, per file or even per hunk. It compiles after editing and fixes its own LaTeX errors before showing you anything. A citation pipeline searches OpenAlex, Semantic Scholar, DBLP and Crossref, fetches BibTeX, dedupes against your bibliography and inserts the right cite keys. The editor is CodeMirror with LaTeX autocompletion for commands, environments, your own cite keys and labels. The PDF preview is interactive. Double clicking jumps to the matching source line and selected text can be quoted into the chat.
+The agent works in a local git mirror and every turn ends in a diff you approve or discard. It compiles after editing and fixes its own LaTeX errors before showing you anything. A citation pipeline searches OpenAlex, Semantic Scholar, DBLP and Crossref, fetches BibTeX, dedupes against your bibliography and inserts the right cite keys. 
 
-It works with overleaf.com, university and self-hosted Community Edition instances, plain git remotes, and purely local projects that you can publish to Overleaf later. The exact system prompt, tools and model are visible in the settings.
-
+It works with overleaf.com, university and self-hosted Community Edition instances, plain git remotes, and purely local projects that you can publish to Overleaf later.
 ## Connecting
 
-Sign in once per Overleaf instance. The easiest way is "Sign in from browser session", which imports the login you already have in Firefox, Chrome or most other browsers. There is also a login window for SSO and a manual cookie paste as fallback. Your projects then appear on the dashboard and import with one click.
+Sign in once per Overleaf instance. The easiest way is "Sign in from browser session", which imports the login you already have in Firefox, Chrome or most other browsers. There is also a login window for SSO and a manual cookie paste as fallback. 
 
-Instances with the git bridge (paid overleaf.com plans, Server Pro) can also be connected through a git URL. Cookie mode covers everything else, including Community Edition servers without a bridge. Session cookies expire eventually. BlattBot refreshes them from your browser automatically and marks the account disconnected only if that fails.
+Instances with the git bridge (paid overleaf.com plans, Server Pro) can also be connected through a git URL. 
 
 ## Security
 
-The server binds to 127.0.0.1 only, checks the Host header on every request and requires a local auth token for the API, so other users and web pages cannot drive it. Secrets live in `~/.local/share/blattbot` with 0600 permissions. Treat that folder like `~/.ssh`. Overleaf cookies are only ever sent to your own Overleaf instance. The agent is blocked from running git commit or push because version control belongs to the review flow.
+The server binds to 127.0.0.1 only, checks the Host header on every request and requires a local auth token for the API, so other users and web pages cannot drive it. Secrets live in `~/.local/share/blattbot` with 0600 permissions. Treat that folder like `~/.ssh`. Overleaf cookies are only ever sent to your own Overleaf instance. The agent is blocked from running git commit or push.
 
 ## Development
 
