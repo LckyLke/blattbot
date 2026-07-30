@@ -60,7 +60,11 @@ const TEMPLATE_BIB = `@article{template2020,
 }
 `;
 
-export async function startMockOverleaf(port: number, projectId: string): Promise<MockOverleaf> {
+export async function startMockOverleaf(
+  port: number,
+  projectId: string,
+  projectName = "Mock Thesis",
+): Promise<MockOverleaf> {
   let idCounter = 0;
   let projectCounter = 0;
 
@@ -74,7 +78,7 @@ export async function startMockOverleaf(port: number, projectId: string): Promis
     entityIds: new Map(),
   });
 
-  const primary = newProject(projectId, "Mock Thesis", "rootfolder0");
+  const primary = newProject(projectId, projectName, "rootfolder0");
   const projects = new Map<string, MockProject>([[projectId, primary]]);
 
   const state: MockOverleaf = {

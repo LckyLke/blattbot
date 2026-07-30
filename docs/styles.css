@@ -272,7 +272,8 @@ hr.booktabs::after {
 .shot {
   width: 100%;
 }
-.shot img {
+.shot img,
+.shot video {
   display: block;
   width: 100%;
   height: auto;
@@ -296,9 +297,63 @@ hr.booktabs::after {
   color: var(--gold);
 }
 
+/* The demo video dominates the fold: wide, raised on load,
+   straightening from a slight 3D tilt as it scrolls into view.
+   The rise runs on the figure, the tilt on the video itself,
+   so the two transforms never fight. */
 .hero-shot {
   margin-top: 3.2rem;
-  max-width: 62rem;
+  width: min(1200px, 92vw);
+  max-width: none;
+  animation: hero-rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.35s backwards;
+}
+.hero-shot video {
+  /* Reserve the frame before any media arrives: no layout shift. */
+  aspect-ratio: 1440 / 900;
+  border-radius: 12px;
+  box-shadow:
+    0 24px 50px -20px rgb(0 0 0 / 0.55),
+    0 60px 130px -40px rgb(0 0 0 / 0.6);
+}
+@keyframes hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Primary tilt implementation: CSS scroll-driven animation.
+   Browsers without support get the same effect from the JS fallback. */
+@media (min-width: 881px) {
+  @supports (animation-timeline: view()) {
+    .hero-shot video {
+      animation: hero-untilt linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 100%;
+    }
+  }
+}
+@keyframes hero-untilt {
+  from {
+    transform: perspective(1200px) rotateX(7deg) scale(0.96);
+  }
+  to {
+    transform: perspective(1200px) rotateX(0deg) scale(1);
+  }
+}
+@keyframes hero-rise-flat {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .will-reveal {
@@ -488,7 +543,7 @@ hr.booktabs::after {
   hr.booktabs {
     width: calc(100% - 2.5rem);
   }
-  /* Screenshots run edge to edge on small screens */
+  /* Screenshots and the demo video run edge to edge on small screens */
   .feature .shot,
   .hero-shot {
     width: calc(100% + 2.5rem);
@@ -497,8 +552,15 @@ hr.booktabs::after {
   .hero-shot {
     align-self: stretch;
     max-width: none;
+    /* No tilt on small screens, just a clean fade-up. */
+    animation-name: hero-rise-flat;
   }
-  .shot img {
+  .hero-shot video {
+    animation: none;
+    transform: none;
+  }
+  .shot img,
+  .shot video {
     border-radius: 0;
     border-left: none;
     border-right: none;
@@ -527,5 +589,12 @@ hr.booktabs::after {
   }
   .will-reveal.in {
     transition: none;
+  }
+  .hero-shot {
+    animation: none;
+  }
+  .hero-shot video {
+    animation: none;
+    transform: none;
   }
 }

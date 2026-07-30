@@ -1,6 +1,10 @@
 # 🍃 BlattBot
 
-Agentic LaTeX editing for Overleaf. BlattBot mirrors your project onto your machine, lets Claude edit it, compiles to make sure everything still builds, and shows you the result as a diff. Only what you approve gets pushed back to Overleaf.
+An agentic LaTeX editor that syncs with any Overleaf. BlattBot runs on your machine with a Claude agent built in. You can create local projects, write in the CodeMirror editor, compile, and manage your bibliography without ever touching Overleaf. When you want Overleaf, it connects to any instance, overleaf.com or self-hosted, over the git bridge or your browser session. Agent edits land as diffs. Only what you approve gets committed or pushed.
+
+![BlattBot demo](docs/assets/demo.gif)
+
+*A real agent session, sped up to 28 seconds.*
 
 ```
 Overleaf ⇄ local mirror ⇄ Claude agent (edit → compile → verify)
