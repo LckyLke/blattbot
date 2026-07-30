@@ -44,7 +44,7 @@
     </button>
     <p class="visually-hidden" role="status" id="copy-status"></p>
 
-    <p class="subline">Runs on your machine with your Claude Code login. Overleaf is optional.</p>
+    <p class="subline">Runs on your machine with your Claude Code or other LLMs.</p>
 
     <figure class="shot hero-shot">
       <video autoplay muted loop playsinline preload="auto"
@@ -52,7 +52,7 @@
              aria-label="Screen recording of a BlattBot session. A project opens with the chat on the left and the compiled PDF on the right. A prompt asking for three papers is typed, the agent searches the literature, edits, compiles, the PDF updates with the new citations, and the change is reviewed and pushed to Overleaf.">
         <source src="assets/demo.mp4" type="video/mp4">
       </video>
-      <figcaption><span class="fig-n">Figure 1:</span> a real agent session: literature search, three citations added and cited in the text, approved and pushed. Sped up.</figcaption>
+      <figcaption><span class="fig-n">Figure 1:</span> a real agent session: literature search, three citations added and cited in the text, approved and pushed.</figcaption>
     </figure>
   </section>
 
@@ -62,7 +62,7 @@
     <div class="feature-text">
       <p class="eyebrow">\section{proof}</p>
       <h2 id="f-proof">Agent edits land as diffs you approve</h2>
-      <p>The agent works in a local git checkout and compiles after editing to check its own work. You can watch the diff grow during the turn. When it ends, review the changes per file or per hunk. Keep what you want and discard the rest. On a connected project, approved changes are pushed to Overleaf with a normal history entry.</p>
+      <p>The agent works in a local git checkout and compiles after editing to check its own work. You can watch the diff grow during the turn. Keep what you want and discard the rest. On a connected project, approved changes are pushed to Overleaf with a normal history entry.</p>
     </div>
     <figure class="shot">
       <button class="figure-zoom" type="button" aria-label="Enlarge figure 2">
@@ -77,7 +77,7 @@
     <div class="feature-text">
       <p class="eyebrow">\section{editor}</p>
       <h2 id="f-editor">A full editor on its own</h2>
-      <p>Projects can live entirely on your machine. The editor is CodeMirror with LaTeX autocomplete, including your own cite keys and labels. Saving triggers a compile and the PDF sits next to the source. Double-click a line in the PDF to jump back to the code, or send a sentence from the PDF into the chat.</p>
+      <p>Projects can live entirely on your machine. Saving triggers a compile and the PDF sits next to the source. Double-click a line in the PDF to jump back to the code, or send a sentence from the PDF into the chat.</p>
     </div>
     <figure class="shot">
       <button class="figure-zoom" type="button" aria-label="Enlarge figure 3">
@@ -107,7 +107,7 @@
     <div class="feature-text">
       <p class="eyebrow">\section{overleaf}</p>
       <h2 id="f-overleaf">Syncs with any Overleaf</h2>
-      <p>overleaf.com works, and so does a self-hosted server. BlattBot was first built against a university's own instance. Connect over the git bridge or through your existing browser session. SSO logins work too. You can keep several accounts side by side, and an expired session re-imports itself from your browser. When a local project is ready to share, publish it to Overleaf.</p>
+      <p>Overleaf.com works, and so does a self-hosted server. Connect over the git bridge or through your existing browser session. You can keep several accounts side by side. When a local project is ready to share, publish it to Overleaf.</p>
     </div>
     <figure class="shot">
       <button class="figure-zoom" type="button" aria-label="Enlarge figure 5">
@@ -122,7 +122,7 @@
     <div class="feature-text">
       <p class="eyebrow">\section{trust}</p>
       <h2 id="f-trust">You can read the whole system prompt</h2>
-      <p>The system prompt sits in a settings tab, and every operating mode shows its full instructions. The server listens on loopback only and requires a token on every request. Secrets live in your data dir with <code>0600</code> permissions. Agent turns run on your own Claude Code login. No account, no telemetry.</p>
+      <p>The server listens on loopback only and requires a token on every request. Secrets live in your data dir with <code>0600</code> permissions.</p>
     </div>
     <figure class="shot">
       <button class="figure-zoom" type="button" aria-label="Enlarge figure 6">
@@ -144,15 +144,15 @@
     <ol class="steps">
       <li>
         <h3><code>npx blattbot</code></h3>
-        <p>Starts the local server and opens the app. If there's no TeX engine on your machine, it offers to fetch tectonic, about 20&thinsp;MB, downloaded once.</p>
+        <p>Starts the local server and opens the app.</p>
       </li>
       <li>
         <h3>Create or connect a project</h3>
-        <p>Start with a blank local project, or paste an Overleaf link. BlattBot imports the session from your browser, or opens a real login window where SSO works.</p>
+        <p>Start with a blank local project, or paste an Overleaf link. BlattBot imports the session from your browser./p>
       </li>
       <li>
         <h3>Ask, then approve</h3>
-        <p>Ask for an edit and read the diff. Approve it and it's committed. On an Overleaf project the change is pushed with a proper history entry.</p>
+        <p>Ask for an edit and read the diff. Approve it and it's committed.</p>
       </li>
     </ol>
     <p class="eyebrow end">\end{enumerate}</p>
