@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# release:pack build products (server/ is the publishable package)
+server/web-dist/
+server/README.md
+server/LICENSE
+*.tgz

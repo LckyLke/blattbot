@@ -1,0 +1,22 @@
+{
+  "name": "blattbot-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agentic LaTeX editing for Overleaf — Claude Code over the Overleaf git bridge, with a compile-verify loop and an integrated citation pipeline.",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=server",
+    "dev:web": "npm run dev --workspace=web",
+    "build": "npm run build --workspace=web && npm run build --workspace=server",
+    "start": "npm run start --workspace=server",
+    "test": "npm run test --workspace=server",
+    "release:pack": "node scripts/release-pack.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.62.0"
+  }
+}

@@ -1,0 +1,531 @@
+/* BlattBot landing — iron-gall ink and laid paper, typeset like a paper. */
+
+:root {
+  --ink: #12151d;
+  --ink-2: #191d27;
+  --ink-3: #212633;
+  --rule: #2d3342;
+  --paper: #e8e4d8;
+  --paper-dim: #b9b6ab;
+  --graphite: #7d8294;
+  --leaf: #8fb573;
+  --leaf-deep: #4f7942;
+  --pencil: #e06552;
+  --gold: #cfa75b;
+
+  --serif: "Spectral", Georgia, serif;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --measure: 66rem;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--leaf) 35%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--leaf);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+a {
+  color: var(--leaf);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--ink-3);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* --- TeX wordmark: raised a, lowered o ---------------------------------- */
+
+.tex-logo {
+  font-family: var(--serif);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.tex-logo .up {
+  display: inline-block;
+  transform: translateY(-0.22em);
+  font-size: 0.78em;
+  margin: 0 -0.04em;
+  transition: transform 0.16s ease-out;
+}
+.tex-logo .down {
+  display: inline-block;
+  transform: translateY(0.13em);
+  font-size: 0.78em;
+  margin: 0 -0.02em;
+  transition: transform 0.16s ease-out;
+}
+.tex-logo:hover .up,
+.tex-logo:hover .down,
+a:hover .tex-logo .up,
+a:hover .tex-logo .down {
+  transform: translateY(0);
+}
+
+/* Letters slide together once, on load (hero only). */
+.tex-logo .lt {
+  display: inline-block;
+  animation: logo-slide-in 0.3s cubic-bezier(0.2, 0.6, 0.25, 1) backwards;
+}
+.tex-logo .lt:nth-child(1) { animation-delay: 0ms;   --lx: -0.5em; }
+.tex-logo .lt:nth-child(2) { animation-delay: 40ms;  --lx: -0.36em; }
+.tex-logo .lt:nth-child(3) { animation-delay: 80ms;  --lx: -0.24em; }
+.tex-logo .lt:nth-child(4) { animation-delay: 120ms; --lx: -0.12em; }
+.tex-logo .lt:nth-child(5) { animation-delay: 160ms; --lx: 0.12em; }
+.tex-logo .lt:nth-child(6) { animation-delay: 200ms; --lx: 0.24em; }
+.tex-logo .lt:nth-child(7) { animation-delay: 240ms; --lx: 0.36em; }
+.tex-logo .lt:nth-child(8) { animation-delay: 280ms; --lx: 0.5em; }
+@keyframes logo-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--lx, 0));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* --- Booktabs: the double rule from academic tables --------------------- */
+
+hr.booktabs {
+  border: none;
+  border-top: 2px solid var(--rule);
+  position: relative;
+  max-width: var(--measure);
+  margin: 0 auto;
+  width: calc(100% - 3rem);
+}
+hr.booktabs::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--rule);
+}
+
+/* --- Header ------------------------------------------------------------- */
+
+.site-head {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 1.1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--paper);
+}
+.brand:hover {
+  text-decoration: none;
+}
+.brand-leaf {
+  width: 18px;
+  height: 34px;
+}
+.brand-mark {
+  font-size: 1.25rem;
+}
+.site-nav {
+  display: flex;
+  gap: 1.4rem;
+  font-size: 0.92rem;
+}
+.site-nav a {
+  color: var(--paper-dim);
+}
+.site-nav a:hover {
+  color: var(--leaf);
+}
+
+/* --- Hero --------------------------------------------------------------- */
+
+.hero {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 3.5rem 1.5rem 4.5rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.hero-leaf {
+  width: 34px;
+  height: 64px;
+  margin-bottom: 0.6rem;
+}
+.hero-mark {
+  font-size: clamp(3.1rem, 9vw, 5.4rem);
+  line-height: 1.1;
+  font-weight: 600;
+}
+.claim {
+  font-family: var(--serif);
+  font-size: clamp(1.15rem, 2.6vw, 1.45rem);
+  color: var(--paper);
+  margin-top: 1.1rem;
+  max-width: 34em;
+  text-wrap: balance;
+}
+.claim em {
+  color: var(--leaf);
+  font-style: italic;
+}
+
+.install {
+  margin-top: 1.9rem;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  font-family: var(--mono);
+  font-size: 1.05rem;
+  color: var(--paper);
+  background: var(--ink-2);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 0.72rem 1.1rem 0.72rem 1.2rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease-out;
+}
+.install:hover {
+  border-color: var(--leaf-deep);
+}
+.install-prompt {
+  color: var(--graphite);
+}
+.install-hint {
+  font-size: 0.72rem;
+  color: var(--graphite);
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  padding: 0.15rem 0.5rem;
+  margin-left: 0.35rem;
+  transition: color 0.15s ease-out, border-color 0.15s ease-out;
+}
+.install:hover .install-hint {
+  color: var(--paper-dim);
+}
+.install.is-copied {
+  border-color: var(--leaf-deep);
+}
+.install.is-copied .install-hint {
+  color: var(--leaf);
+  border-color: var(--leaf-deep);
+}
+
+.subline {
+  margin-top: 1.1rem;
+  font-size: 0.95rem;
+  color: var(--graphite);
+}
+
+/* --- Figures (screenshots as numbered figures) -------------------------- */
+
+.shot {
+  width: 100%;
+}
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--ink-2);
+  box-shadow: 0 24px 60px -24px rgb(0 0 0 / 0.6);
+}
+.shot figcaption {
+  margin-top: 0.8rem;
+  font-family: var(--serif);
+  font-size: 0.92rem;
+  color: var(--paper-dim);
+  text-align: center;
+  font-style: italic;
+}
+.fig-n {
+  font-style: normal;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.04em;
+  color: var(--gold);
+}
+
+.hero-shot {
+  margin-top: 3.2rem;
+  max-width: 62rem;
+}
+
+.will-reveal {
+  opacity: 0;
+  transform: translateY(14px);
+}
+.will-reveal.in {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.55s ease-out, transform 0.55s ease-out;
+}
+
+/* --- Feature sections ---------------------------------------------------- */
+
+.feature {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 4.2rem 1.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 2.8rem 3.4rem;
+  align-items: center;
+}
+.feature.flip .feature-text {
+  order: 2;
+}
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  color: var(--leaf);
+  margin-bottom: 0.9rem;
+}
+.eyebrow.end {
+  margin-top: 1.6rem;
+  margin-bottom: 0;
+}
+
+.feature-text h2 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(1.5rem, 3vw, 1.9rem);
+  line-height: 1.25;
+  text-wrap: balance;
+}
+.feature-text p {
+  margin-top: 0.9rem;
+  color: var(--paper-dim);
+  font-size: 1rem;
+  max-width: 34em;
+}
+
+/* --- How it works -------------------------------------------------------- */
+
+.how {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 4.2rem 1.5rem 4.6rem;
+}
+.how h2 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(1.5rem, 3vw, 1.9rem);
+}
+.pipeline {
+  margin-top: 1.4rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.7;
+  color: var(--gold);
+  background: var(--ink-2);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+  overflow-x: auto;
+}
+.steps {
+  margin-top: 2rem;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2rem;
+}
+.steps li {
+  counter-increment: step;
+  border-top: 1px solid var(--rule);
+  padding-top: 1rem;
+}
+.steps li::before {
+  content: counter(step) ".";
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  color: var(--gold);
+  display: block;
+  margin-bottom: 0.5rem;
+}
+.steps h3 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: 1.12rem;
+}
+.steps h3 code {
+  font-size: 0.86em;
+  color: var(--leaf);
+}
+.steps p {
+  margin-top: 0.45rem;
+  font-size: 0.94rem;
+  color: var(--paper-dim);
+}
+.requirements {
+  margin-top: 2.4rem;
+  font-size: 0.92rem;
+  color: var(--graphite);
+}
+.requirements strong {
+  color: var(--paper-dim);
+  font-weight: 500;
+}
+
+/* --- Footer -------------------------------------------------------------- */
+
+.site-foot {
+  padding-bottom: 3rem;
+}
+.foot-row {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 1.6rem 1.5rem 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.foot-brand {
+  color: var(--paper-dim);
+  font-size: 0.95rem;
+}
+.foot-brand .tex-logo {
+  font-size: 1.05rem;
+  color: var(--paper);
+}
+.foot-links {
+  font-size: 0.92rem;
+  color: var(--graphite);
+}
+.foot-note {
+  max-width: var(--measure);
+  margin: 0.6rem auto 0;
+  padding: 0 1.5rem;
+  font-size: 0.85rem;
+  color: var(--graphite);
+}
+
+/* --- Responsive ---------------------------------------------------------- */
+
+@media (max-width: 880px) {
+  .feature {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 3rem 1.25rem;
+    gap: 1.6rem;
+  }
+  .feature.flip .feature-text {
+    order: 0;
+  }
+  .steps {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.4rem;
+  }
+  .hero {
+    padding: 2.4rem 1.25rem 3.2rem;
+  }
+  .site-head {
+    padding: 0.9rem 1.25rem;
+  }
+  .how {
+    padding: 3rem 1.25rem 3.4rem;
+  }
+  .foot-row,
+  .foot-note {
+    padding-left: 1.25rem;
+    padding-right: 1.25rem;
+  }
+  hr.booktabs {
+    width: calc(100% - 2.5rem);
+  }
+  /* Screenshots run edge to edge on small screens */
+  .feature .shot,
+  .hero-shot {
+    width: calc(100% + 2.5rem);
+    margin-left: -1.25rem;
+  }
+  .hero-shot {
+    align-self: stretch;
+    max-width: none;
+  }
+  .shot img {
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+  .shot figcaption {
+    padding: 0 1.25rem;
+  }
+}
+
+/* --- Reduced motion ------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .tex-logo .lt {
+    animation: none;
+  }
+  .tex-logo .up,
+  .tex-logo .down {
+    transition: none;
+  }
+  .will-reveal {
+    opacity: 1;
+    transform: none;
+  }
+  .will-reveal.in {
+    transition: none;
+  }
+}

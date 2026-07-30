@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlattBot — agentic LaTeX editing for Overleaf</title>
+  <meta name="description" content="BlattBot mirrors an Overleaf project onto your machine, lets Claude edit it, verifies every change by compiling, and shows the result as a reviewable diff — only what you approve is pushed back to Overleaf.">
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="BlattBot — agentic LaTeX editing for Overleaf">
+  <meta property="og:description" content="Local-first, review-first: Claude edits your Overleaf project in a local mirror, compiles to verify, and every change lands as a diff you approve before it is pushed.">
+  <meta property="og:url" content="https://lckylke.github.io/blattbot/">
+  <meta property="og:image" content="https://lckylke.github.io/blattbot/assets/agent-turn-proof.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:ital,wght@0,400;0,600;0,700;1,400&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="site-head">
+  <a class="brand" href="#top" aria-label="BlattBot — top of page">
+    <img class="brand-leaf" src="logo.svg" alt="" width="18" height="34">
+    <span class="tex-logo brand-mark">Bl<span class="up">a</span>ttB<span class="down">o</span>t</span>
+  </a>
+  <nav class="site-nav" aria-label="Site">
+    <a href="#how">How it works</a>
+    <a href="https://github.com/lckylke/blattbot">GitHub</a>
+  </nav>
+</header>
+
+<main id="top">
+
+  <section class="hero">
+    <img class="hero-leaf" src="logo.svg" alt="" width="34" height="64">
+    <h1 class="tex-logo hero-mark" aria-label="BlattBot"><span class="lt">B</span><span class="lt">l</span><span class="lt"><span class="up">a</span></span><span class="lt">t</span><span class="lt">t</span><span class="lt">B</span><span class="lt"><span class="down">o</span></span><span class="lt">t</span></h1>
+    <p class="claim">Agentic LaTeX editing for Overleaf — <em>local-first, review-first.</em></p>
+
+    <button class="install" id="install" type="button" aria-label="Copy the command npx blattbot to the clipboard">
+      <span class="install-prompt" aria-hidden="true">$</span>
+      <span class="install-cmd">npx&nbsp;blattbot</span>
+      <span class="install-hint" id="install-hint">copy</span>
+    </button>
+    <p class="visually-hidden" role="status" id="copy-status"></p>
+
+    <p class="subline">Runs on your machine. Your Claude Code, your Overleaf session, your&nbsp;files.</p>
+
+    <figure class="shot hero-shot">
+      <img src="assets/agent-turn-proof.png" width="1500" height="920"
+           alt="The BlattBot app after an agent turn: the chat pane shows tool steps — scanning files, searching literature, adding a citation, compiling LaTeX — and the proof pane shows diffs for main.tex and references.bib above an Approve &amp; push button.">
+      <figcaption><span class="fig-n">Figure 1:</span> one agent turn — literature search, edits, a self-run compile, and a two-file proof waiting for approval.</figcaption>
+    </figure>
+  </section>
+
+  <hr class="booktabs" aria-hidden="true">
+
+  <section class="feature" aria-labelledby="f-proof">
+    <div class="feature-text">
+      <p class="eyebrow">\section{proof}</p>
+      <h2 id="f-proof">Every edit lands as a diff you approve</h2>
+      <p>The agent works in a local git mirror — nothing reaches Overleaf on its own. You watch the diff grow live while it works; when the turn ends, review per file or per hunk, discard what you don’t want, and push only what you approve, with proper history on the Overleaf side.</p>
+    </div>
+    <figure class="shot">
+      <img src="assets/review-proof.png" width="1500" height="920" loading="lazy"
+           alt="The Proof tab listing two edited files, each with added and removed line counts, a per-file discard button, a commit message field, and Approve &amp; push and Discard buttons.">
+      <figcaption><span class="fig-n">Figure 2:</span> the proof — per-file discard, line counts, an optional commit message.</figcaption>
+    </figure>
+  </section>
+
+  <section class="feature flip" aria-labelledby="f-editor">
+    <div class="feature-text">
+      <p class="eyebrow">\section{editor}</p>
+      <h2 id="f-editor">Writes with your tools, not instead of them</h2>
+      <p>A real CodeMirror editor with LaTeX autocomplete — commands, environments, and your own cite keys and labels. Compile on save, an inline PDF that double-clicks back to the source line, and quote-to-chat: select a sentence in the PDF and hand it straight to the agent.</p>
+    </div>
+    <figure class="shot">
+      <img src="assets/editor-source-pdf.png" width="1500" height="920" loading="lazy"
+           alt="Source and PDF side by side: a LaTeX file with syntax highlighting in the editor pane, and the freshly compiled document — title page and introduction — in the PDF pane.">
+      <figcaption><span class="fig-n">Figure 3:</span> source and PDF side by side; the compile ran in 0.8&thinsp;s.</figcaption>
+    </figure>
+  </section>
+
+  <section class="feature" aria-labelledby="f-citations">
+    <div class="feature-text">
+      <p class="eyebrow">\section{citations}</p>
+      <h2 id="f-citations">Citations that hold up</h2>
+      <p>Paper search across OpenAlex, Semantic Scholar, DBLP, and Crossref; per-paper TL;DRs to judge relevance fast; BibTeX import and export. The References tab tracks where every entry is cited — and flags the ones that aren’t used at all.</p>
+    </div>
+    <figure class="shot">
+      <img src="assets/references-usage.png" width="1500" height="920" loading="lazy"
+           alt="The References tab showing a bibliography entry with its cite key, year, usage count, the file and line where it is cited, and PDF, TL;DR and edit actions, next to Import and Export buttons.">
+      <figcaption><span class="fig-n">Figure 4:</span> the References tab — usage per entry, TL;DR, import/export.</figcaption>
+    </figure>
+  </section>
+
+  <section class="feature flip" aria-labelledby="f-overleaf">
+    <div class="feature-text">
+      <p class="eyebrow">\section{overleaf}</p>
+      <h2 id="f-overleaf">Your Overleaf, any Overleaf</h2>
+      <p>overleaf.com or self-hosted — BlattBot was built for a university’s own instance. Connect over the git bridge or your existing browser session (SSO included), keep multiple accounts side by side, and when a session expires it re-imports itself from your browser. Purely local projects work too, publishable to Overleaf later.</p>
+    </div>
+    <figure class="shot">
+      <img src="assets/dashboard-accounts.png" width="1500" height="920" loading="lazy"
+           alt="The projects dashboard: an Overleaf account section with a connected project card, a separate Local &amp; git section, and buttons to add an account, create a blank project, or connect a git repository.">
+      <figcaption><span class="fig-n">Figure 5:</span> the dashboard — accounts, connected projects, local &amp; git.</figcaption>
+    </figure>
+  </section>
+
+  <section class="feature" aria-labelledby="f-trust">
+    <div class="feature-text">
+      <p class="eyebrow">\section{trust}</p>
+      <h2 id="f-trust">Transparent, local, yours</h2>
+      <p>The exact system prompt is a settings tab, not a secret — every operating mode shows its full instructions. The server binds to loopback only, with a token on every request; secrets are stored <code>0600</code> in your data dir; agent turns run on your own Claude Code login. No accounts, no telemetry.</p>
+    </div>
+    <figure class="shot">
+      <img src="assets/settings-transparency.png" width="1500" height="920" loading="lazy"
+           alt="The Agent settings panel showing the backend, model and endpoint in plain text, the full system prompt BlattBot appends, and the per-mode instructions for the Research operating mode.">
+      <figcaption><span class="fig-n">Figure 6:</span> the agent’s configuration and full system prompt, in the open.</figcaption>
+    </figure>
+  </section>
+
+  <hr class="booktabs" aria-hidden="true">
+
+  <section class="how" id="how" aria-labelledby="how-h">
+    <p class="eyebrow">\begin{enumerate}</p>
+    <h2 id="how-h">How it works</h2>
+    <pre class="pipeline" aria-label="Data flow diagram">Overleaf ⇄ local mirror ⇄ Claude agent (edit → compile → verify)
+                       ⇩
+         you review the proof → approve → push</pre>
+    <ol class="steps">
+      <li>
+        <h3><code>npx blattbot</code></h3>
+        <p>Starts the local server and opens the app. No TeX engine? It offers to fetch tectonic (~20&thinsp;MB, once).</p>
+      </li>
+      <li>
+        <h3>Sign in to Overleaf</h3>
+        <p>Paste a project link; BlattBot imports the session from your browser — or opens a real login window, SSO included.</p>
+      </li>
+      <li>
+        <h3>Chat, review, push</h3>
+        <p>Ask for an edit, read the proof, approve — the change appears live in Overleaf, recorded in its history.</p>
+      </li>
+    </ol>
+    <p class="eyebrow end">\end{enumerate}</p>
+    <p class="requirements">Requires <strong>Node&nbsp;20+</strong>, <strong>git</strong>, and <strong>Claude&nbsp;Code</strong> (logged in). A TeX engine is auto-installable.</p>
+  </section>
+
+</main>
+
+<footer class="site-foot">
+  <hr class="booktabs" aria-hidden="true">
+  <div class="foot-row">
+    <p class="foot-brand"><span class="tex-logo">Bl<span class="up">a</span>ttB<span class="down">o</span>t</span> · MIT © Luke Friedrichs</p>
+    <p class="foot-links">
+      <a href="https://github.com/lckylke/blattbot">GitHub</a>
+      <span aria-hidden="true">·</span>
+      <a href="https://github.com/lckylke/blattbot/blob/main/LICENSE">License</a>
+    </p>
+  </div>
+  <p class="foot-note">Built with Claude Code. No analytics — the only external requests on this page are the fonts.</p>
+</footer>
+
+<script>
+  (function () {
+    var btn = document.getElementById('install');
+    var hint = document.getElementById('install-hint');
+    var status = document.getElementById('copy-status');
+    var timer = null;
+
+    function copied() {
+      btn.classList.add('is-copied');
+      hint.textContent = 'copied';
+      status.textContent = 'npx blattbot copied to clipboard';
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        btn.classList.remove('is-copied');
+        hint.textContent = 'copy';
+        status.textContent = '';
+      }, 1800);
+    }
+
+    function fallbackCopy(text) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (e) { /* best effort */ }
+      document.body.removeChild(ta);
+    }
+
+    btn.addEventListener('click', function () {
+      var text = 'npx blattbot';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(copied, function () {
+          fallbackCopy(text);
+          copied();
+        });
+      } else {
+        fallbackCopy(text);
+        copied();
+      }
+    });
+
+    // Gentle reveal for figures; motion only when the reader allows it.
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches &&
+        'IntersectionObserver' in window) {
+      var shots = document.querySelectorAll('.feature .shot');
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('in');
+            io.unobserve(entry.target);
+          }
+        });
+      }, { rootMargin: '0px 0px -8% 0px' });
+      shots.forEach(function (el) {
+        el.classList.add('will-reveal');
+        io.observe(el);
+      });
+    }
+  })();
+</script>
+
+</body>
+</html>

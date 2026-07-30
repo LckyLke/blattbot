@@ -1,0 +1,63 @@
+{
+  "name": "blattbot",
+  "version": "0.1.0",
+  "description": "Agentic LaTeX editing for Overleaf — Claude edits a synced working copy, verifies by compiling, and shows you a reviewable diff before anything is pushed. Local-first, with an integrated citation pipeline.",
+  "keywords": [
+    "latex",
+    "overleaf",
+    "claude",
+    "agent",
+    "tex",
+    "tectonic",
+    "citations",
+    "bibtex",
+    "writing"
+  ],
+  "license": "MIT",
+  "author": "Luke Friedrichs",
+  "homepage": "https://github.com/lckylke/blattbot#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lckylke/blattbot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lckylke/blattbot/issues"
+  },
+  "type": "module",
+  "bin": {
+    "blattbot": "bin/blattbot.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "web-dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@fastify/cors": "^11.0.0",
+    "@fastify/static": "^8.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "fastify": "^5.0.0",
+    "fflate": "^0.8.3",
+    "playwright-core": "^1.62.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

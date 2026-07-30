@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      # Typecheck both workspaces.
+      - run: npx tsc -p server/tsconfig.json
+      - run: npx tsc -p web/tsconfig.json
+      # Unit tests run on every OS. The cookie-decryption suite builds real
+      # Chromium-encrypted fixtures (v10/v11 CBC + v10 GCM) so the macOS and
+      # Windows crypto paths are exercised on their native runners too.
+      - run: npm test
+      # Web build must succeed on every OS.
+      - run: npm run build --workspace=web

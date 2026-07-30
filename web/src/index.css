@@ -1,0 +1,501 @@
+@import "tailwindcss";
+
+@theme {
+  /* Iron-gall ink and laid paper */
+  --color-ink: #12151d;
+  --color-ink-2: #191d27;
+  --color-ink-3: #212633;
+  --color-rule: #2d3342;
+  --color-paper: #e8e4d8;
+  --color-paper-dim: #b9b6ab;
+  --color-graphite: #7d8294;
+  --color-leaf: #8fb573;
+  --color-leaf-deep: #4f7942;
+  --color-pencil: #e06552;
+  --color-gold: #cfa75b;
+
+  --font-serif: "Spectral", Georgia, serif;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-paper);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-leaf) 35%, transparent);
+}
+
+/* Booktabs: the double rule from academic tables, used as a section divider */
+.booktabs {
+  border-top: 2px solid var(--color-rule);
+  position: relative;
+}
+.booktabs::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 0;
+  right: 0;
+  border-top: 1px solid var(--color-rule);
+}
+
+/* TeX-style logotype: Bl(a)ttB(o)t with kerned raised/lowered letters */
+.tex-logo {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.tex-logo .up {
+  display: inline-block;
+  transform: translateY(-0.22em);
+  font-size: 0.78em;
+  margin: 0 -0.04em;
+  transition: transform 0.16s ease-out;
+  will-change: transform;
+}
+.tex-logo .down {
+  display: inline-block;
+  transform: translateY(0.13em);
+  font-size: 0.78em;
+  margin: 0 -0.02em;
+  transition: transform 0.16s ease-out;
+  will-change: transform;
+}
+
+/* Wordmark entrance: letters slide together from slight horizontal offsets,
+   staggered ~40ms, once on mount. Hover: the displaced a and o glide
+   vertically into line with the rest of the word. */
+.tex-logo .lt {
+  display: inline-block;
+  animation: logo-slide-in 0.3s cubic-bezier(0.2, 0.6, 0.25, 1) backwards;
+}
+.tex-logo .lt:nth-child(1) { animation-delay: 0ms; --lx: -0.5em; }
+.tex-logo .lt:nth-child(2) { animation-delay: 40ms; --lx: -0.36em; }
+.tex-logo .lt:nth-child(3) { animation-delay: 80ms; --lx: -0.24em; }
+.tex-logo .lt:nth-child(4) { animation-delay: 120ms; --lx: -0.12em; }
+.tex-logo .lt:nth-child(5) { animation-delay: 160ms; --lx: 0.12em; }
+.tex-logo .lt:nth-child(6) { animation-delay: 200ms; --lx: 0.24em; }
+.tex-logo .lt:nth-child(7) { animation-delay: 240ms; --lx: 0.36em; }
+.tex-logo .lt:nth-child(8) { animation-delay: 280ms; --lx: 0.5em; }
+@keyframes logo-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--lx, 0));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+button:hover > .tex-logo .up,
+.tex-logo:hover .up,
+button:hover > .tex-logo .down,
+.tex-logo:hover .down {
+  transform: translateY(0);
+}
+
+/* Confirm/alert dialog card: a quick settle-in */
+.dialog-card {
+  animation: dialog-in 0.16s ease-out;
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+
+/* Streaming caret: a TeX cursor block */
+.tex-caret::after {
+  content: "▍";
+  color: var(--color-leaf);
+  animation: caret-blink 1s steps(2) infinite;
+}
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.working-dot {
+  animation: working-pulse 1.6s ease-in-out infinite;
+}
+
+/* "thinking…" with dots that walk in */
+.thinking-ellipsis::after {
+  display: inline-block;
+  width: 1.2em;
+  text-align: left;
+  content: "";
+  animation: thinking-dots 1.4s steps(1, end) infinite;
+}
+@keyframes thinking-dots {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75% {
+    content: "...";
+  }
+}
+@keyframes working-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+/* Indeterminate compile progress: a gold segment sweeping a faint track */
+.compile-bar {
+  position: relative;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-gold) 18%, transparent);
+}
+.compile-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  background: var(--color-gold);
+  animation: compile-sweep 1.2s ease-in-out infinite;
+}
+@keyframes compile-sweep {
+  from {
+    left: -35%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+/* Dashboard project cards: a subtle staggered fade/slide-in, capped at 10 */
+.card-grid > * {
+  animation: card-in 0.35s ease-out backwards;
+}
+.card-grid > *:nth-child(1) { animation-delay: 0ms; }
+.card-grid > *:nth-child(2) { animation-delay: 35ms; }
+.card-grid > *:nth-child(3) { animation-delay: 70ms; }
+.card-grid > *:nth-child(4) { animation-delay: 105ms; }
+.card-grid > *:nth-child(5) { animation-delay: 140ms; }
+.card-grid > *:nth-child(6) { animation-delay: 175ms; }
+.card-grid > *:nth-child(7) { animation-delay: 210ms; }
+.card-grid > *:nth-child(8) { animation-delay: 245ms; }
+.card-grid > *:nth-child(9) { animation-delay: 280ms; }
+.card-grid > *:nth-child(n + 10) { animation-delay: 315ms; }
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tex-caret::after,
+  .working-dot,
+  .tex-logo .lt,
+  .dialog-card,
+  .card-grid > * {
+    animation: none;
+  }
+  .tex-logo,
+  .tex-logo .up,
+  .tex-logo .down {
+    transition: none;
+  }
+  .thinking-ellipsis::after {
+    animation: none;
+    content: "…";
+  }
+  .compile-bar::after {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.55;
+  }
+}
+
+/* Agent prose is a manuscript: set in Spectral */
+.prose-agent {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  line-height: 1.65;
+}
+.prose-agent code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--color-ink-3);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.prose-agent pre {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  background: var(--color-ink-3);
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.prose-agent pre code {
+  background: none;
+  padding: 0;
+}
+.prose-agent p {
+  margin: 0.55em 0;
+}
+.prose-agent p:first-child {
+  margin-top: 0;
+}
+.prose-agent p:last-child {
+  margin-bottom: 0;
+}
+
+/* Scrollbars that recede into the ink */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-rule) transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-leaf);
+  outline-offset: 1px;
+  border-radius: 2px;
+}
+
+/* The CodeMirror source editor manages its own focus affordances (visible
+   caret, active-line tint) — the global ring would box the whole content. */
+[data-editor="codemirror"] .cm-content:focus-visible,
+[data-editor="codemirror"] .cm-editor:focus-visible {
+  outline: none;
+}
+
+/* --- CodeMirror panels (search / goto-line are plain DOM, themed here) --- */
+.cm-editor .cm-panels {
+  background: var(--color-ink-2);
+  color: var(--color-paper-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-color: var(--color-rule);
+}
+.cm-editor .cm-panels-top {
+  border-bottom: 1px solid var(--color-rule);
+}
+.cm-editor .cm-panels-bottom {
+  border-top: 1px solid var(--color-rule);
+}
+.cm-editor .cm-panel.cm-search,
+.cm-editor .cm-panel.cm-gotoLine {
+  padding: 5px 8px;
+}
+.cm-editor .cm-panel.cm-search label {
+  font-size: 11px;
+  text-transform: lowercase;
+  color: var(--color-graphite);
+}
+.cm-editor .cm-panel.cm-search input[type="checkbox"] {
+  accent-color: var(--color-leaf);
+  margin-right: 3px;
+}
+.cm-editor .cm-textfield {
+  background: var(--color-ink);
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  color: var(--color-paper);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.cm-editor .cm-textfield:focus {
+  border-color: var(--color-leaf);
+  outline: none;
+}
+.cm-editor .cm-button {
+  background: var(--color-ink-3);
+  background-image: none;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  color: var(--color-paper-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.cm-editor .cm-button:hover {
+  border-color: var(--color-leaf);
+  color: var(--color-leaf);
+}
+.cm-editor .cm-button:active {
+  background-image: none;
+  background: var(--color-ink);
+}
+.cm-editor .cm-panel.cm-search [name="close"] {
+  color: var(--color-graphite);
+  font-size: 15px;
+  right: 6px;
+}
+.cm-editor .cm-panel.cm-search [name="close"]:hover {
+  color: var(--color-pencil);
+}
+
+/* --- CodeMirror autocomplete: the tooltip, info panel, and snippet fields
+   are plain DOM injected by @codemirror/autocomplete, themed to the ink. --- */
+.cm-editor .cm-tooltip.cm-tooltip-autocomplete {
+  background: var(--color-ink-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  box-shadow: 0 10px 28px rgb(0 0 0 / 0.5);
+  overflow: hidden;
+}
+.cm-editor .cm-tooltip-autocomplete > ul {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  max-height: 17em;
+}
+.cm-editor .cm-tooltip-autocomplete > ul > li {
+  color: var(--color-paper-dim);
+  padding: 2px 8px 2px 3px;
+  line-height: 1.55;
+}
+.cm-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: color-mix(in srgb, var(--color-leaf) 20%, transparent);
+  color: var(--color-paper);
+}
+.cm-editor .cm-tooltip-autocomplete .cm-completionIcon {
+  color: var(--color-graphite);
+  opacity: 0.75;
+}
+/* Commands are typed as "keyword" — a backslash beats the default key emoji */
+.cm-editor .cm-completionIcon-keyword::after {
+  content: "\\";
+  font-size: 100%;
+  vertical-align: baseline;
+}
+.cm-editor .cm-completionMatchedText {
+  text-decoration: none;
+  color: var(--color-gold);
+}
+.cm-editor .cm-completionDetail {
+  margin-left: 0.75em;
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--color-graphite);
+}
+.cm-editor .cm-tooltip.cm-completionInfo {
+  background: var(--color-ink-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 6px 9px;
+  max-width: 22rem;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-paper-dim);
+}
+/* Snippet tab stops: a faint gold underlay, a dotted caret for empty stops */
+.cm-editor .cm-snippetField {
+  background: color-mix(in srgb, var(--color-gold) 14%, transparent);
+  border-radius: 2px;
+}
+.cm-editor .cm-snippetFieldPosition {
+  border-left: 1.5px dotted color-mix(in srgb, var(--color-gold) 65%, transparent);
+}
+
+/* --- PDF text layer (pdfjs v6 TextLayer): invisible, selectable glyphs
+   positioned over each page canvas. The component sets --scale-factor on the
+   layer to the rendered CSS scale; pdfjs sets --min-font-size, per-span
+   --font-height/--scale-x/--rotate, and sizes the layer via
+   --total-scale-factor and --scale-round-x/y. --- */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 1;
+  --user-unit: 1;
+  --total-scale-factor: calc(var(--scale-factor, 1) * var(--user-unit));
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  margin: 0;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.textLayer .markedContent {
+  display: contents;
+}
+/* Selection must visibly highlight on the white page; the glyphs themselves
+   stay transparent (the canvas below shows the real ink). */
+.textLayer ::selection {
+  background: color-mix(in srgb, var(--color-leaf) 45%, transparent);
+  color: transparent;
+}
+
+/* Reveal flash: a leaf-tinted line highlight that fades away */
+.cm-editor .cm-flash-line {
+  animation: cm-line-flash 1.2s ease-out forwards;
+}
+@keyframes cm-line-flash {
+  from {
+    background-color: color-mix(in srgb, var(--color-leaf) 30%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cm-editor .cm-flash-line {
+    animation: none;
+    background-color: color-mix(in srgb, var(--color-leaf) 18%, transparent);
+  }
+}
