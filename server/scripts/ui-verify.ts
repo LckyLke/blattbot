@@ -663,6 +663,42 @@ async function main() {
     await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Agent" }).click();
     await page.getByText("API base URL").waitFor({ timeout: 5_000 });
     await shot("29-settings-agent");
+
+    // ---- Backend picker: two radio cards; switching persists via /api/settings ----
+    const settingsDlg = page.getByRole("dialog", { name: "Settings" });
+    const claudeRadio = settingsDlg.getByRole("radio", { name: "Claude Code (Agent SDK)" });
+    const openaiRadio = settingsDlg.getByRole("radio", { name: "OpenAI-compatible API" });
+    const backendPickerOk =
+      (await claudeRadio.count()) === 1 &&
+      (await openaiRadio.count()) === 1 &&
+      (await claudeRadio.isChecked()) &&
+      !(await openaiRadio.isChecked());
+    await openaiRadio.check();
+    // The openai fields replace the claude ones (base URL with the local-server hint).
+    await settingsDlg.getByPlaceholder("http://127.0.0.1:11434/v1").waitFor({ timeout: 5_000 });
+    const backendFieldsSwapOk = (await settingsDlg.getByText("API base URL").count()) === 0;
+    await shot("29b-settings-backend-openai");
+    await settingsDlg.getByRole("button", { name: "Save settings" }).click();
+    await settingsDlg.getByText("Saved.").waitFor({ timeout: 5_000 });
+    const getBackend = async () =>
+      ((await (await afetch(`${apiBase}/settings`)).json()) as { backend: string }).backend;
+    const backendAfterOpenai = await getBackend();
+    // Switch back to Claude and save — the claude fields return.
+    await claudeRadio.check();
+    await settingsDlg.getByText("API base URL").waitFor({ timeout: 5_000 });
+    await settingsDlg.getByRole("button", { name: "Save settings" }).click();
+    await settingsDlg.getByText("Saved.").waitFor({ timeout: 5_000 });
+    const backendAfterClaude = await getBackend();
+    // Reset to the stored default ("" = claude) so the rest of the flow is untouched.
+    await afetch(`${apiBase}/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backend: "" }),
+    });
+    const backendReset = await getBackend();
+    const backendSwitchOk =
+      backendAfterOpenai === "openai" && backendAfterClaude === "claude" && backendReset === "";
+
     await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Transparency" }).click();
     await page.getByText("compile_latex").filter({ visible: true }).first().waitFor({ timeout: 5_000 });
     const transparencyText = await page.getByRole("dialog", { name: "Settings" }).innerText();
@@ -918,6 +954,9 @@ async function main() {
         acDollarPaired,
         acUndone,
         settingsOk,
+        backendPickerOk,
+        backendFieldsSwapOk,
+        backendSwitchOk,
         compilingSeen,
         canvasesDuringCompile,
         compilingCleared,
@@ -1010,6 +1049,15 @@ async function main() {
     }
     if (!compilingCleared) throw new Error("Compiling… indicator did not clear after the compile");
     if (!settingsOk) throw new Error("Settings transparency tab is missing prompt/tool info");
+    if (!backendPickerOk) {
+      throw new Error("Settings → Agent does not show the two backend radio cards with Claude preselected");
+    }
+    if (!backendFieldsSwapOk) {
+      throw new Error("switching to the openai backend did not swap in its base URL/key/model fields");
+    }
+    if (!backendSwitchOk) {
+      throw new Error("backend switching did not persist openai → claude → \"\" via GET /api/settings");
+    }
     if (canvases < 1) throw new Error("PDF viewer rendered no pages");
     if (downloads > 0) throw new Error("PDF triggered a browser download — must render inline");
     if (Math.abs(widthAfter - widthBefore) < 100) throw new Error("panel resize had no effect");

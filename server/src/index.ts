@@ -48,15 +48,23 @@ import {
   DISALLOWED_TOOLS,
   MODEL_ALIASES,
   SYSTEM_APPEND,
+  activeBackendId,
   interruptTurn,
   isTurnActive,
+  resolveBackendModel,
   resolveModel,
-  resolveProjectModel,
   runTurn,
   validateProjectSettingsPatch,
   validateScope,
   type AgentMode,
 } from "./agent.js";
+import {
+  MAX_HISTORY_MESSAGES,
+  OPENAI_SYSTEM_PROMPT,
+  OPENAI_TOOL_INFO,
+  openaiBackend,
+} from "./backends/openai.js";
+import { claudeBackend } from "./backends/claude.js";
 import { broadcast, subscribe } from "./events.js";
 import {
   appendEvent,
@@ -177,35 +185,60 @@ app.get("/api/health", async () => {
 
 // ---- Settings & transparency ----------------------------------------------
 
-// resolvedModel: what the agent will actually run ("" and aliases resolved).
+// resolvedModel: what the active backend will actually run — "" and aliases
+// resolved for claude, the configured id verbatim for openai.
 app.get("/api/settings", async () => {
   const s = loadSettings();
-  return { ...publicSettings(s), resolvedModel: resolveModel(s.model) };
+  return { ...publicSettings(s), resolvedModel: resolveBackendModel(undefined, s) };
 });
 
 app.put<{ Body: Partial<Settings> }>("/api/settings", async (req) => {
   const s = saveSettings(req.body ?? {});
-  return { ...publicSettings(s), resolvedModel: resolveModel(s.model) };
+  return { ...publicSettings(s), resolvedModel: resolveBackendModel(undefined, s) };
 });
 
+// Reflects the ACTIVE backend (Settings → Agent): id, endpoint, model, tools.
 app.get("/api/agent/info", async () => {
   const s = loadSettings();
+  const common = {
+    modes: AGENT_MODES,
+    userSystemPromptAppend: s.systemPromptAppend,
+    dataDir: DATA_DIR,
+    projectsDir: PROJECTS_DIR,
+  };
+  if (activeBackendId(s) === "openai") {
+    const base = s.openaiBaseUrl.trim().replace(/\/+$/, "");
+    return {
+      backend: "openai-compatible",
+      backendLabel: openaiBackend.label,
+      backendDescription: openaiBackend.description,
+      model: s.openaiModel.trim() || "(not set — configure it in Settings → Agent)",
+      usingApiKey: Boolean(s.openaiApiKey),
+      endpoint: base ? `${base}/chat/completions` : "(base URL not set)",
+      systemPromptAppend: OPENAI_SYSTEM_PROMPT,
+      tools: OPENAI_TOOL_INFO,
+      disallowedTools: [],
+      sessionNote:
+        `Conversation memory is a local message log under ${DATA_DIR}/oai-sessions, capped at ` +
+        `${MAX_HISTORY_MESSAGES} messages — there is no provider-side session resume across ` +
+        `restarts beyond that stored history.`,
+      ...common,
+    };
+  }
   return {
     backend: "claude-agent-sdk",
-    backendDescription:
-      "Claude Agent SDK running locally — reuses your Claude Code CLI login unless an API key is set.",
+    backendLabel: claudeBackend.label,
+    backendDescription: claudeBackend.description,
     model: `${resolveModel(s.model)}${s.model ? "" : " (BlattBot default)"}`,
     modelAliases: MODEL_ALIASES,
     usingApiKey: Boolean(s.apiKey),
+    endpoint: s.anthropicBaseUrl || "https://api.anthropic.com",
     anthropicBaseUrl: s.anthropicBaseUrl || "https://api.anthropic.com",
     systemPromptPreset: "claude_code",
     systemPromptAppend: SYSTEM_APPEND,
-    userSystemPromptAppend: s.systemPromptAppend,
     tools: AGENT_TOOL_INFO,
-    modes: AGENT_MODES,
     disallowedTools: DISALLOWED_TOOLS,
-    dataDir: DATA_DIR,
-    projectsDir: PROJECTS_DIR,
+    ...common,
   };
 });
 
@@ -582,11 +615,13 @@ app.get<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
 
 // ---- Per-project settings ---------------------------------------------------
 
-/** The stored settings object plus the model a turn on this project actually runs. */
+/** The stored settings object plus the model a turn on this project actually
+ *  runs under the ACTIVE backend (override → global, aliases resolved for
+ *  claude, verbatim for openai). */
 function projectSettingsView(project: Project) {
   return {
     ...(project.settings ?? {}),
-    resolvedModel: resolveProjectModel(project, loadSettings().model),
+    resolvedModel: resolveBackendModel(project, loadSettings()),
   };
 }
 

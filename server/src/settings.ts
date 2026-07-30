@@ -21,6 +21,14 @@ export interface Settings {
   engine: "" | "tectonic" | "latexmk" | "pdflatex";
   /** Optional Semantic Scholar API key — lifts the shared-pool rate limit on paper search. */
   s2ApiKey: string;
+  /** Agent backend running the turns. "" = the Claude Agent SDK (the default). */
+  backend: "" | "claude" | "openai";
+  /** OpenAI-compatible endpoint base URL, e.g. http://127.0.0.1:11434/v1 (llama.cpp, Ollama, vLLM, OpenRouter, …). */
+  openaiBaseUrl: string;
+  /** API key for the OpenAI-compatible endpoint. "" = none (fine for most local servers). */
+  openaiApiKey: string;
+  /** Model id sent VERBATIM to the OpenAI-compatible endpoint — no alias mapping. */
+  openaiModel: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -30,6 +38,10 @@ export const DEFAULT_SETTINGS: Settings = {
   systemPromptAppend: "",
   engine: "",
   s2ApiKey: "",
+  backend: "",
+  openaiBaseUrl: "",
+  openaiApiKey: "",
+  openaiModel: "",
 };
 
 export function loadSettings(): Settings {
@@ -55,11 +67,12 @@ export function saveSettings(patch: Partial<Settings>): Settings {
 
 /** Settings as sent to the UI — key material never leaves the server. */
 export function publicSettings(s = loadSettings()) {
-  const { apiKey, s2ApiKey, ...rest } = s;
+  const { apiKey, s2ApiKey, openaiApiKey, ...rest } = s;
   return {
     ...rest,
     hasApiKey: Boolean(apiKey),
     hasS2ApiKey: Boolean(s2ApiKey),
+    hasOpenaiApiKey: Boolean(openaiApiKey),
     settingsPath: SETTINGS_PATH,
   };
 }

@@ -26,7 +26,8 @@ export interface Account {
 
 export interface Settings {
   model: string;
-  /** What the agent actually runs: "" and tier aliases resolved server-side. */
+  /** What the ACTIVE backend actually runs: "" and tier aliases resolved for
+   *  claude, the configured id verbatim for openai. */
   resolvedModel: string;
   hasApiKey: boolean;
   hasS2ApiKey: boolean;
@@ -34,6 +35,11 @@ export interface Settings {
   systemPromptAppend: string;
   engine: "" | "tectonic" | "latexmk" | "pdflatex";
   settingsPath: string;
+  /** Agent backend: "" = Claude Agent SDK (the default). */
+  backend: "" | "claude" | "openai";
+  openaiBaseUrl: string;
+  openaiModel: string;
+  hasOpenaiApiKey: boolean;
 }
 
 /** A persistent conversation of a project (session id stays on the server). */
@@ -51,14 +57,22 @@ export interface ChatTranscriptEvent {
 }
 
 export interface AgentInfo {
+  /** Backend id string, e.g. "claude-agent-sdk" or "openai-compatible". */
   backend: string;
+  backendLabel?: string;
   backendDescription: string;
   model: string;
   usingApiKey: boolean;
-  anthropicBaseUrl: string;
-  systemPromptPreset: string;
+  /** The endpoint the active backend talks to. */
+  endpoint?: string;
+  /** Claude backend only (legacy field, same value as endpoint). */
+  anthropicBaseUrl?: string;
+  /** Claude backend only — the SDK's system-prompt preset. */
+  systemPromptPreset?: string;
   systemPromptAppend: string;
   userSystemPromptAppend: string;
+  /** OpenAI backend only — how conversation memory works. */
+  sessionNote?: string;
   tools: { name: string; description: string }[];
   modes: { id: string; label: string; description: string; prompt: string; readOnly?: boolean }[];
   disallowedTools: string[];
@@ -228,9 +242,12 @@ export const api = {
     request<{ baseUrl: string; projects: OlProject[] }>(`/api/accounts/${id}/projects`),
   settings: () => request<Settings>("/api/settings"),
   saveSettings: (
-    patch: Partial<Omit<Settings, "hasApiKey" | "hasS2ApiKey" | "settingsPath">> & {
+    patch: Partial<
+      Omit<Settings, "hasApiKey" | "hasS2ApiKey" | "hasOpenaiApiKey" | "settingsPath">
+    > & {
       apiKey?: string;
       s2ApiKey?: string;
+      openaiApiKey?: string;
     },
   ) =>
     request<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),

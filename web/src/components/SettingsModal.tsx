@@ -30,11 +30,16 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
   const [info, setInfo] = useState<AgentInfo | null>(null);
 
   // Agent form state
+  const [backend, setBackend] = useState<"claude" | "openai">("claude");
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [s2Key, setS2Key] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [oaiBaseUrl, setOaiBaseUrl] = useState("");
+  const [oaiModel, setOaiModel] = useState("");
+  const [oaiKey, setOaiKey] = useState("");
+  const [clearOaiKey, setClearOaiKey] = useState(false);
   const [promptAppend, setPromptAppend] = useState("");
   const [engine, setEngine] = useState<Settings["engine"]>("");
   const [saving, setSaving] = useState(false);
@@ -52,8 +57,11 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
     void refreshAccounts();
     api.settings().then((s) => {
       setSettings(s);
+      setBackend(s.backend === "openai" ? "openai" : "claude");
       setModel(s.model);
       setBaseUrl(s.anthropicBaseUrl);
+      setOaiBaseUrl(s.openaiBaseUrl);
+      setOaiModel(s.openaiModel);
       setPromptAppend(s.systemPromptAppend);
       setEngine(s.engine);
     });
@@ -74,19 +82,26 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
     setSavedMsg(null);
     try {
       const patch: any = {
+        backend,
         model: model.trim(),
         anthropicBaseUrl: baseUrl.trim(),
+        openaiBaseUrl: oaiBaseUrl.trim(),
+        openaiModel: oaiModel.trim(),
         systemPromptAppend: promptAppend,
         engine,
       };
       if (apiKey.trim()) patch.apiKey = apiKey.trim();
       else if (clearKey) patch.apiKey = "";
+      if (oaiKey.trim()) patch.openaiApiKey = oaiKey.trim();
+      else if (clearOaiKey) patch.openaiApiKey = "";
       if (s2Key.trim()) patch.s2ApiKey = s2Key.trim();
       const next = await api.saveSettings(patch);
       setSettings(next);
       setApiKey("");
       setS2Key("");
       setClearKey(false);
+      setOaiKey("");
+      setClearOaiKey(false);
       setSavedMsg("Saved.");
       api.agentInfo().then(setInfo).catch(() => {});
       setTimeout(() => setSavedMsg(null), 2000);
@@ -268,73 +283,200 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
           {tab === "agent" && settings && (
             <div className="max-w-[520px]">
               <p className="mb-4 font-serif text-[13px] leading-relaxed text-graphite">
-                {info?.backendDescription ??
-                  "The agent runs locally via the Claude Agent SDK and reuses your Claude Code login."}
+                Pick the engine that runs BlattBot's agent turns. Everything below it — prompts,
+                tools, review flow — stays the same.
               </p>
 
-              <label className="block text-[11px] text-graphite">
-                Model{" "}
-                <span className="text-graphite/60">
-                  (empty = claude-sonnet-5; aliases sonnet/opus/fable/haiku map to the newest of each tier)
-                </span>
-                <input
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  list="blattbot-models"
-                  placeholder="claude-sonnet-5"
-                  className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
-                />
-                <datalist id="blattbot-models">
-                  {MODEL_SUGGESTIONS.map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-              </label>
+              {/* Backend picker: two radio cards. */}
+              <fieldset className="mb-4">
+                <legend className="sr-only">Agent backend</legend>
+                <div className="flex flex-col gap-2">
+                  <label
+                    className={`flex cursor-pointer items-start gap-2.5 rounded-md border p-3 transition-colors ${
+                      backend === "claude" ? "border-leaf/60 bg-leaf/5" : "border-rule hover:border-leaf/30"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="agent-backend"
+                      value="claude"
+                      checked={backend === "claude"}
+                      onChange={() => setBackend("claude")}
+                      className="mt-0.5 accent-[#8fb573]"
+                      aria-label="Claude Code (Agent SDK)"
+                    />
+                    <span>
+                      <span className="block text-[13px] font-medium text-paper">
+                        Claude Code (Agent SDK)
+                        <span className="ml-2 rounded border border-rule px-1.5 py-px text-[9.5px] uppercase tracking-wide text-graphite">
+                          default
+                        </span>
+                      </span>
+                      <span className="mt-0.5 block text-[11.5px] leading-snug text-graphite">
+                        Runs locally via the Claude Agent SDK — reuses your Claude Code login unless
+                        an API key is set below.
+                      </span>
+                    </span>
+                  </label>
+                  <label
+                    className={`flex cursor-pointer items-start gap-2.5 rounded-md border p-3 transition-colors ${
+                      backend === "openai" ? "border-leaf/60 bg-leaf/5" : "border-rule hover:border-leaf/30"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="agent-backend"
+                      value="openai"
+                      checked={backend === "openai"}
+                      onChange={() => setBackend("openai")}
+                      className="mt-0.5 accent-[#8fb573]"
+                      aria-label="OpenAI-compatible API"
+                    />
+                    <span>
+                      <span className="block text-[13px] font-medium text-paper">
+                        OpenAI-compatible API
+                      </span>
+                      <span className="mt-0.5 block text-[11.5px] leading-snug text-graphite">
+                        Any server speaking the OpenAI chat-completions API with tool calling:
+                        llama.cpp, Ollama, vLLM, LM Studio, OpenRouter, … File edits go through
+                        BlattBot's own sandboxed tools.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </fieldset>
 
-              <label className="mt-3 block text-[11px] text-graphite">
-                API key{" "}
-                <span className="text-graphite/60">
-                  {settings.hasApiKey
-                    ? "(a key is set — it never leaves this machine)"
-                    : "(empty = your local Claude Code login is used)"}
-                </span>
-                <span className="mt-1 flex gap-1.5">
-                  <input
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    type="password"
-                    placeholder={settings.hasApiKey ? "•••••••• (set)" : "sk-ant-…"}
-                    className="min-w-0 flex-1 rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
-                  />
-                  {settings.hasApiKey && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setClearKey(true);
-                        setApiKey("");
-                      }}
-                      className={`rounded border px-2.5 text-[11px] transition-colors ${
-                        clearKey
-                          ? "border-pencil text-pencil"
-                          : "border-rule text-graphite hover:border-pencil hover:text-pencil"
-                      }`}
-                    >
-                      {clearKey ? "will clear" : "clear"}
-                    </button>
-                  )}
-                </span>
-              </label>
+              {backend === "claude" && (
+                <>
+                  <label className="block text-[11px] text-graphite">
+                    Model{" "}
+                    <span className="text-graphite/60">
+                      (empty = claude-sonnet-5; aliases sonnet/opus/fable/haiku map to the newest of each tier)
+                    </span>
+                    <input
+                      value={model}
+                      onChange={(e) => setModel(e.target.value)}
+                      list="blattbot-models"
+                      placeholder="claude-sonnet-5"
+                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                    />
+                    <datalist id="blattbot-models">
+                      {MODEL_SUGGESTIONS.map((m) => (
+                        <option key={m} value={m} />
+                      ))}
+                    </datalist>
+                  </label>
 
-              <label className="mt-3 block text-[11px] text-graphite">
-                API base URL{" "}
-                <span className="text-graphite/60">(for Anthropic-compatible proxies, e.g. LiteLLM)</span>
-                <input
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder="https://api.anthropic.com"
-                  className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
-                />
-              </label>
+                  <label className="mt-3 block text-[11px] text-graphite">
+                    API key{" "}
+                    <span className="text-graphite/60">
+                      {settings.hasApiKey
+                        ? "(a key is set — it never leaves this machine)"
+                        : "(empty = your local Claude Code login is used)"}
+                    </span>
+                    <span className="mt-1 flex gap-1.5">
+                      <input
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        type="password"
+                        placeholder={settings.hasApiKey ? "•••••••• (set)" : "sk-ant-…"}
+                        className="min-w-0 flex-1 rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                      />
+                      {settings.hasApiKey && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setClearKey(true);
+                            setApiKey("");
+                          }}
+                          className={`rounded border px-2.5 text-[11px] transition-colors ${
+                            clearKey
+                              ? "border-pencil text-pencil"
+                              : "border-rule text-graphite hover:border-pencil hover:text-pencil"
+                          }`}
+                        >
+                          {clearKey ? "will clear" : "clear"}
+                        </button>
+                      )}
+                    </span>
+                  </label>
+
+                  <label className="mt-3 block text-[11px] text-graphite">
+                    API base URL{" "}
+                    <span className="text-graphite/60">(for Anthropic-compatible proxies, e.g. LiteLLM)</span>
+                    <input
+                      value={baseUrl}
+                      onChange={(e) => setBaseUrl(e.target.value)}
+                      placeholder="https://api.anthropic.com"
+                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                    />
+                  </label>
+                </>
+              )}
+
+              {backend === "openai" && (
+                <>
+                  <label className="block text-[11px] text-graphite">
+                    Base URL{" "}
+                    <span className="text-graphite/60">
+                      (BlattBot calls {"{base}"}/chat/completions — include the /v1 if your server uses it)
+                    </span>
+                    <input
+                      value={oaiBaseUrl}
+                      onChange={(e) => setOaiBaseUrl(e.target.value)}
+                      placeholder="http://127.0.0.1:11434/v1"
+                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                    />
+                  </label>
+
+                  <label className="mt-3 block text-[11px] text-graphite">
+                    API key{" "}
+                    <span className="text-graphite/60">
+                      {settings.hasOpenaiApiKey
+                        ? "(a key is set — it never leaves this machine)"
+                        : "(optional — most local servers need none)"}
+                    </span>
+                    <span className="mt-1 flex gap-1.5">
+                      <input
+                        value={oaiKey}
+                        onChange={(e) => setOaiKey(e.target.value)}
+                        type="password"
+                        placeholder={settings.hasOpenaiApiKey ? "•••••••• (set)" : "sk-…"}
+                        className="min-w-0 flex-1 rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                      />
+                      {settings.hasOpenaiApiKey && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setClearOaiKey(true);
+                            setOaiKey("");
+                          }}
+                          className={`rounded border px-2.5 text-[11px] transition-colors ${
+                            clearOaiKey
+                              ? "border-pencil text-pencil"
+                              : "border-rule text-graphite hover:border-pencil hover:text-pencil"
+                          }`}
+                        >
+                          {clearOaiKey ? "will clear" : "clear"}
+                        </button>
+                      )}
+                    </span>
+                  </label>
+
+                  <label className="mt-3 block text-[11px] text-graphite">
+                    Model{" "}
+                    <span className="text-graphite/60">
+                      (sent verbatim — whatever your server expects; needs tool calling)
+                    </span>
+                    <input
+                      value={oaiModel}
+                      onChange={(e) => setOaiModel(e.target.value)}
+                      placeholder="e.g. llama3.3:70b, qwen2.5-coder, gpt-4o-mini"
+                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                    />
+                  </label>
+                </>
+              )}
 
               <label className="mt-3 block text-[11px] text-graphite">
                 Extra instructions <span className="text-graphite/60">(appended to the system prompt)</span>
@@ -401,16 +543,32 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
                 <>
                   <dl className="mb-4 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 font-mono text-[11.5px]">
                     <dt className="text-graphite">backend</dt>
-                    <dd className="text-paper-dim">{info.backend}</dd>
+                    <dd className="text-paper-dim">
+                      {info.backendLabel ? `${info.backendLabel} — ${info.backend}` : info.backend}
+                    </dd>
                     <dt className="text-graphite">model</dt>
                     <dd className="text-paper-dim">{info.model}</dd>
                     <dt className="text-graphite">endpoint</dt>
-                    <dd className="text-paper-dim">
-                      {info.anthropicBaseUrl}
-                      {info.usingApiKey ? " (API key)" : " (Claude Code login)"}
+                    <dd className="break-all text-paper-dim">
+                      {info.endpoint ?? info.anthropicBaseUrl}
+                      {info.usingApiKey
+                        ? " (API key)"
+                        : info.systemPromptPreset
+                          ? " (Claude Code login)"
+                          : " (no API key)"}
                     </dd>
                     <dt className="text-graphite">base prompt</dt>
-                    <dd className="text-paper-dim">Claude Code preset ({info.systemPromptPreset})</dd>
+                    <dd className="text-paper-dim">
+                      {info.systemPromptPreset
+                        ? `Claude Code preset (${info.systemPromptPreset})`
+                        : "BlattBot's own prompt (shown in full below)"}
+                    </dd>
+                    {info.sessionNote && (
+                      <>
+                        <dt className="text-graphite">sessions</dt>
+                        <dd className="break-all text-paper-dim">{info.sessionNote}</dd>
+                      </>
+                    )}
                     <dt className="text-graphite">data dir</dt>
                     <dd className="break-all text-paper-dim">{info.dataDir}</dd>
                     <dt className="text-graphite">settings</dt>
@@ -418,7 +576,7 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
                   </dl>
 
                   <h3 className="mb-1 text-[11px] font-medium uppercase tracking-[0.14em] text-graphite">
-                    System prompt (BlattBot's append)
+                    {info.systemPromptPreset ? "System prompt (BlattBot's append)" : "System prompt"}
                   </h3>
                   <pre className="mb-4 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-rule bg-ink px-3 py-2 font-mono text-[11px] leading-relaxed text-paper-dim">
                     {info.systemPromptAppend}
@@ -455,13 +613,22 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
                       </li>
                     ))}
                   </ul>
-                  <p className="mb-1 text-[12px] text-graphite">
-                    Plus Claude Code's standard file tools (Read, Edit, Grep, …). Blocked for the
-                    agent — the harness owns version control:
-                  </p>
-                  <p className="font-mono text-[11px] text-pencil/90">
-                    {info.disallowedTools.join("  ")}
-                  </p>
+                  {info.disallowedTools.length > 0 ? (
+                    <>
+                      <p className="mb-1 text-[12px] text-graphite">
+                        Plus Claude Code's standard file tools (Read, Edit, Grep, …). Blocked for the
+                        agent — the harness owns version control:
+                      </p>
+                      <p className="font-mono text-[11px] text-pencil/90">
+                        {info.disallowedTools.join("  ")}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="mb-1 text-[12px] text-graphite">
+                      The list above is the complete toolset — this backend has no shell and no other
+                      file access; every path is validated against the project directory.
+                    </p>
+                  )}
                 </>
               ) : (
                 <p className="text-sm text-graphite">Loading…</p>
