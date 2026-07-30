@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolve } from "node:path";
 import {
   TRUNCATION_MARKER,
   isEditTool,
@@ -11,10 +12,14 @@ import { parseDiff } from "../../web/src/diff.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// A platform-real absolute dir — a bare "/proj" never prefix-matches the
+// drive-letter paths resolve() produces on Windows.
+const PROJ = resolve("/proj");
+
 function collectingSink(opts: Parameters<typeof makeTurnEventSink>[2] = {}) {
   const events: AgentEventLike[] = [];
   const calls = { workingDiff: 0, fileDiff: [] as string[] };
-  const sink = makeTurnEventSink("/proj", (e) => events.push(e), {
+  const sink = makeTurnEventSink(PROJ, (e) => events.push(e), {
     debounceMs: 10,
     workingDiff: async () => {
       calls.workingDiff++;

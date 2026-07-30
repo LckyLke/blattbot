@@ -25,7 +25,10 @@ describe("auth token", () => {
     const a = await load();
     const t1 = a.getAuthToken();
     expect(t1).toMatch(/^[a-f0-9]{64}$/);
-    expect(statSync(join(dir, "auth-token")).mode & 0o777).toBe(0o600);
+    // POSIX file modes don't exist on Windows — chmod there is a no-op.
+    if (process.platform !== "win32") {
+      expect(statSync(join(dir, "auth-token")).mode & 0o777).toBe(0o600);
+    }
     vi.resetModules();
     const b = await load();
     expect(b.getAuthToken()).toBe(t1);

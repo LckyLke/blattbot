@@ -5,7 +5,7 @@
  *  - uploads: files copied into DATA_DIR/context/<projectId>/ (papers, notes)
  */
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { DATA_DIR, projectDir, type Project } from "./config.js";
 
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -60,7 +60,7 @@ export function validateLinkPath(project: Project, raw: string): string {
   if (!isAbsolute(p)) throw new Error("path must be absolute");
   if (!existsSync(p)) throw new Error(`path does not exist: ${p}`);
   const mirror = projectDir(project.id);
-  if (p === mirror || p.startsWith(mirror + "/")) {
+  if (p === mirror || p.startsWith(mirror + sep)) {
     throw new Error("that path is inside the project itself — it is already available");
   }
   return p;

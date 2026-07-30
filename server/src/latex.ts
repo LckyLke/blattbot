@@ -14,7 +14,9 @@ export function listFiles(root: string, subdir = ""): string[] {
   for (const name of entries) {
     if (name.startsWith(".")) continue;
     if (name === "node_modules") continue;
-    const rel = subdir ? join(subdir, name) : name;
+    // Always "/"-separated: these are protocol paths (Overleaf, git, scope),
+    // not OS paths — join() would leak backslashes on Windows.
+    const rel = subdir ? `${subdir}/${name}` : name;
     const st = statSync(join(root, rel));
     if (st.isDirectory()) out.push(...listFiles(root, rel));
     else out.push(rel);
