@@ -36,6 +36,18 @@ Instances with the git bridge (paid overleaf.com plans, Server Pro) can also be 
 
 The server binds to 127.0.0.1 only, checks the Host header on every request and requires a local auth token for the API, so other users and web pages cannot drive it. Secrets live in `~/.local/share/blattbot` with 0600 permissions. Treat that folder like `~/.ssh`. Overleaf cookies are only ever sent to your own Overleaf instance. The agent is blocked from running git commit or push.
 
+## Install from source
+
+```bash
+git clone https://github.com/LckyLke/blattbot.git
+cd blattbot
+npm install
+npm run build --workspace=web
+npm run dev
+```
+
+The app then runs on http://127.0.0.1:4560, same as the npx version.
+
 ## Development
 
 npm workspaces. `server/` is Fastify and TypeScript, `web/` is React and Vite.
