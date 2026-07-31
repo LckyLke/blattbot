@@ -15,7 +15,7 @@ describe("validateScope", () => {
   });
 
   afterAll(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("accepts existing relative files and dedupes", () => {

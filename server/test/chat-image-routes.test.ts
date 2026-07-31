@@ -81,7 +81,7 @@ describe("chat image routes", () => {
   afterAll(async () => {
     await app?.close();
     vi.unstubAllEnvs();
-    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("stores an accepted image and serves it back with its own media type", async () => {

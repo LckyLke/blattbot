@@ -74,7 +74,7 @@ describe("question routes over HTTP", () => {
   afterAll(async () => {
     await app?.close();
     vi.unstubAllEnvs();
-    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("answers the pending question and resolves the registry promise", async () => {

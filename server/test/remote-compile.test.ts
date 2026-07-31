@@ -69,7 +69,7 @@ describe("verify on Overleaf (remote compile)", () => {
     await app?.close();
     await mock.close();
     vi.unstubAllEnvs();
-    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("client compileProject returns the PDF bytes on success", async () => {

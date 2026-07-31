@@ -27,7 +27,7 @@ describe("manual reference editing (add/update/delete)", () => {
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   const read = (file = "refs.bib") => readFileSync(join(dir, file), "utf8");

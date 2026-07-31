@@ -28,7 +28,7 @@ describe("publishTree (local → Overleaf)", () => {
 
   afterAll(async () => {
     await mock.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("creates a remote project, wipes the template, and uploads the full tree", async () => {

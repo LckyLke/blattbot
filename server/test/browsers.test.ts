@@ -24,7 +24,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.BLATTBOT_HOME;
   delete process.env.XDG_CONFIG_HOME;
-  rmSync(sandbox, { recursive: true, force: true });
+  rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 function encCbc(value: string, key: Buffer): Buffer {

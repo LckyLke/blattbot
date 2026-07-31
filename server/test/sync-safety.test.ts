@@ -54,7 +54,7 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   /** Identical state on both sides, like right after a sync. */

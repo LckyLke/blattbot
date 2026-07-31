@@ -870,7 +870,10 @@ app.get<{ Params: { id: string; imageId: string } }>(
     reply.header("Content-Disposition", "inline");
     // Ids are unique per upload, so the bytes behind one never change.
     reply.header("Cache-Control", "private, max-age=31536000, immutable");
-    return reply.type(found.mime).send(createReadStream(found.path));
+    // Read into a buffer rather than streaming: these files are capped at a
+    // few MB, and on Windows a stream's handle can outlive the response long
+    // enough to make deleting the project's uploads fail with EPERM.
+    return reply.type(found.mime).send(readFileSync(found.path));
   },
 );
 

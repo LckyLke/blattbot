@@ -155,7 +155,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await mock.close();
   vi.unstubAllEnvs();
-  rmSync(dataDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 const MAIN_TEX = "\\documentclass{article}\n\\begin{document}\nHello world.\n\\end{document}\n";

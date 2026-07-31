@@ -101,7 +101,7 @@ describe("compile-rev (approval-base build cache)", () => {
   afterAll(async () => {
     await app?.close();
     vi.unstubAllEnvs();
-    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("compiles HEAD into a per-sha cache and serves it via ?rev=<sha>", async () => {

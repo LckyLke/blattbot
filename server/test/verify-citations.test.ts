@@ -22,8 +22,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
-  rmSync(dataDir, { recursive: true, force: true });
-  rmSync(projectDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  rmSync(projectDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 const load = () => import("../src/papers.js");

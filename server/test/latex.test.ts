@@ -18,7 +18,7 @@ function fixture(files: Record<string, string>): string {
 }
 
 afterEach(() => {
-  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 describe("findMainTex", () => {

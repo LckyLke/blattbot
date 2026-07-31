@@ -183,7 +183,7 @@ describe("project settings persistence", () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("stores the whole settings object and replaces it wholesale on update", async () => {

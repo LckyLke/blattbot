@@ -110,7 +110,7 @@ describe("in-place OT doc updates (pushChanges)", () => {
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   /** Identical state on both sides, like right after a sync. */

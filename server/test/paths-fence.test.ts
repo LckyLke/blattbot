@@ -23,8 +23,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  rmSync(dataDir, { recursive: true, force: true });
-  rmSync(projectDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  rmSync(projectDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 const load = () => import("../src/backends/paths.js");
@@ -117,7 +117,7 @@ describe("canUseTool fence", () => {
       expect(w.ok).toBe(false);
       expect(w.message).toMatch(/inside the project working tree/);
     } finally {
-      rmSync(ctx, { recursive: true, force: true });
+      rmSync(ctx, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   });
 
