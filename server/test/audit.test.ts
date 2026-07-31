@@ -41,19 +41,33 @@ const DOI_ENTRY = `@article{lecun2015deep,
   doi = {10.1038/nature14539}
 }`;
 
-/** Route the audit's three endpoints; anything unrouted throws. */
+/**
+ * Route the audit's endpoints; anything unrouted throws. Title search fans out
+ * to four indexes — Semantic Scholar and DBLP answer empty by default so a
+ * "not found" is never confused with "every source was unreachable".
+ */
 function stubFetch(routes: {
   doi?: (url: string) => any;
+  arxiv?: (url: string) => any;
   openalex?: (url: string) => any;
   crossrefSearch?: (url: string) => any;
+  s2?: (url: string) => any;
+  dblp?: (url: string) => any;
 }) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: any) => {
       const u = String(url);
-      if (u.startsWith("https://api.crossref.org/works?") && routes.crossrefSearch) return routes.crossrefSearch(u);
+      if (u.includes("export.arxiv.org")) return routes.arxiv ? routes.arxiv(u) : jsonRes(404, {});
+      if (u.startsWith("https://api.crossref.org/works?")) {
+        return routes.crossrefSearch ? routes.crossrefSearch(u) : jsonRes(200, { message: { items: [] } });
+      }
       if (u.startsWith("https://api.crossref.org/works/") && routes.doi) return routes.doi(u);
-      if (u.startsWith("https://api.openalex.org/works?") && routes.openalex) return routes.openalex(u);
+      if (u.startsWith("https://api.openalex.org/works?")) {
+        return routes.openalex ? routes.openalex(u) : jsonRes(200, { results: [] });
+      }
+      if (u.includes("api.semanticscholar.org")) return routes.s2 ? routes.s2(u) : jsonRes(200, { data: [] });
+      if (u.includes("dblp.org")) return routes.dblp ? routes.dblp(u) : jsonRes(200, { result: {} });
       throw new Error(`unexpected fetch: ${u}`);
     }),
   );
@@ -84,7 +98,7 @@ describe("auditCitations", () => {
     expect(r.url).toBe("https://doi.org/10.1038/nature14539");
   });
 
-  it("marks a 404 DOI unresolved but a network failure skipped — they are not the same", async () => {
+  it("a 404 DOI is unresolved only after the title search also finds nothing", async () => {
     const papers = await load();
     writeBib(
       DOI_ENTRY +
@@ -99,9 +113,35 @@ describe("auditCitations", () => {
             })(),
     });
     const audit = await papers.auditCitations("proj1", projectDir, { delayMs: 0 });
+    // Crossref 404s the DOI and no index knows the title either.
     expect(audit.results["gone2020"].status).toBe("unresolved");
+    // A network failure is "unchecked", never "no such paper".
     expect(audit.results["lecun2015deep"].status).toBe("skipped");
     expect(audit.results["lecun2015deep"].detail).toContain("connection reset");
+  });
+
+  it("rescues a DOI Crossref does not index when another index knows the title", async () => {
+    const papers = await load();
+    // Plenty of real DOIs (ACM DL, preprint mirrors) are absent from Crossref;
+    // that alone must never brand a correct reference unresolved.
+    writeBib(DOI_ENTRY);
+    stubFetch({
+      doi: () => jsonRes(404, {}),
+      openalex: () =>
+        jsonRes(200, {
+          results: [
+            {
+              id: "https://openalex.org/W42",
+              display_name: "Deep learning",
+              publication_year: 2015,
+              authorships: [{ author: { display_name: "Yann LeCun" } }],
+            },
+          ],
+        }),
+    });
+    const r = (await papers.auditCitations("proj1", projectDir, { delayMs: 0 })).results["lecun2015deep"];
+    expect(r.status).toBe("verified");
+    expect(r.detail).toMatch(/not indexed there/);
   });
 
   it("verifies a DOI-less entry by OpenAlex title search", async () => {
@@ -120,13 +160,13 @@ describe("auditCitations", () => {
         }),
     });
     const audit = await papers.auditCitations("proj1", projectDir, { delayMs: 0 });
-    expect(audit.results["glove2014"]).toEqual({
+    expect(audit.results["glove2014"]).toMatchObject({
       status: "verified",
       url: "https://openalex.org/W2250748100",
     });
   });
 
-  it("falls back to Crossref search when OpenAlex is down, and skips only when both fail", async () => {
+  it("falls back across indexes when one is down, and skips only when ALL are", async () => {
     const papers = await load();
     writeBib("@article{noid2020,\n  title = {A Paper Without Identifiers},\n  year = {2020}\n}");
     stubFetch({
@@ -139,15 +179,21 @@ describe("auditCitations", () => {
         }),
     });
     let audit = await papers.auditCitations("proj1", projectDir, { delayMs: 0 });
-    expect(audit.results["noid2020"]).toEqual({ status: "verified", url: "https://doi.org/10.5555/found" });
+    expect(audit.results["noid2020"]).toMatchObject({
+      status: "verified",
+      url: "https://doi.org/10.5555/found",
+    });
 
+    // "Unchecked" requires EVERY index to fail — two of four answering with no
+    // results is a genuine "not found", not an outage.
+    const down = (name: string) => () => {
+      throw new Error(`${name} down`);
+    };
     stubFetch({
-      openalex: () => {
-        throw new Error("openalex down");
-      },
-      crossrefSearch: () => {
-        throw new Error("crossref down");
-      },
+      openalex: down("openalex"),
+      crossrefSearch: down("crossref"),
+      s2: down("semantic scholar"),
+      dblp: down("dblp"),
     });
     audit = await papers.auditCitations("proj1", projectDir, { delayMs: 0 });
     expect(audit.results["noid2020"].status).toBe("skipped");

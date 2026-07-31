@@ -38,6 +38,20 @@ const jsonRes = (status: number, body: any) => ({
 
 const crossrefWork = (title: string) => jsonRes(200, { message: { title: [title] } });
 
+/**
+ * searchPapers queries FOUR indexes (Semantic Scholar, DBLP, Crossref,
+ * OpenAlex). A stub that only knows two makes every source fail, which the
+ * audit correctly reports as "unavailable" rather than "not found".
+ */
+const isTitleSearch = (u: string) =>
+  u.startsWith("https://api.openalex.org/works?") ||
+  u.startsWith("https://api.crossref.org/works?") ||
+  u.includes("api.semanticscholar.org") ||
+  u.includes("dblp.org");
+
+/** All four title indexes answer successfully, with no results. */
+const emptyTitleSearch = () => jsonRes(200, { results: [], message: { items: [] }, data: [], result: {} });
+
 function writeBib(content: string) {
   writeFileSync(join(projectDir, "refs.bib"), content);
 }
@@ -99,8 +113,7 @@ describe("verify on add (add_citation → deterministic check)", () => {
       "fetch",
       vi.fn(async (url: any) => {
         const u = String(url);
-        if (u.startsWith("https://api.openalex.org/works?")) return jsonRes(200, { results: [] });
-        if (u.startsWith("https://api.crossref.org/works?")) return jsonRes(200, { message: { items: [] } });
+        if (isTitleSearch(u)) return emptyTitleSearch();
         throw new Error(`unexpected fetch: ${u}`);
       }),
     );
@@ -188,8 +201,7 @@ describe("audit_citations tool (targeted re-checks)", () => {
       vi.fn(async (url: any) => {
         const u = String(url);
         if (u.startsWith("https://api.crossref.org/works/")) return crossrefWork("Attention Is All You Need");
-        if (u.startsWith("https://api.openalex.org/works?")) return jsonRes(200, { results: [] });
-        if (u.startsWith("https://api.crossref.org/works?")) return jsonRes(200, { message: { items: [] } });
+        if (isTitleSearch(u)) return emptyTitleSearch();
         throw new Error(`unexpected fetch: ${u}`);
       }),
     );
@@ -324,15 +336,27 @@ describe("record matching (false positives cost trust)", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("accepts a differently-written title when author AND year corroborate", async () => {
+  it("accepts a differently-written but related title when author AND year corroborate", async () => {
     const { matchesRecord } = await load();
+    const r = matchesRecord(
+      { title: "Rule mining under incomplete evidence", author: "Galárraga, Luis", year: "2013" },
+      ["Rule mining in ontological knowledge bases"],
+      { author: "Galárraga Luis Antonio", year: "2013" },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.note).toMatch(/author and year match/);
+  });
+
+  it("refuses author+year corroboration for an unrelated title — the wrong-DOI case", async () => {
+    const { matchesRecord } = await load();
+    // A mistyped identifier commonly lands on another paper by the same
+    // authors in the same year; matching metadata must not rubber-stamp it.
     const r = matchesRecord(
       { title: "Rule mining in knowledge bases", author: "Galárraga, Luis", year: "2013" },
       ["A completely different phrasing entirely"],
       { author: "Galárraga Luis Antonio", year: "2013" },
     );
-    expect(r.ok).toBe(true);
-    expect(r.note).toMatch(/author and year match/);
+    expect(r.ok).toBe(false);
   });
 
   it("STILL flags a DOI that resolves to a genuinely different paper", async () => {
@@ -426,6 +450,148 @@ describe("accepting an entry the audit flagged", () => {
   });
 });
 
+
+describe("preprints and non-Crossref venues (the false-positive class)", () => {
+  const DRUM = `@article{sadeghian2019drum,
+  title = {DRUM: End-To-End Differentiable Rule Mining On Knowledge Graphs},
+  author = {Sadeghian, Ali and Armandpour, Mohammadreza},
+  year = {2019},
+  doi = {10.48550/arXiv.1911.00055}
+}`;
+
+  const arxivFeed = (title: string, author = "Ali Sadeghian", year = "2019") =>
+    `<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><entry>` +
+    `<title>${title}</title><author><name>${author}</name></author>` +
+    `<published>${year}-11-01T00:00:00Z</published></entry></feed>`;
+
+  const textRes = (body: string, status = 200) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => body,
+    json: async () => ({}),
+  });
+
+  it("verifies an arXiv DOI against arXiv — Crossref never indexes 10.48550", async () => {
+    writeBib(DRUM);
+    const seen: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any) => {
+        const u = String(url);
+        seen.push(u);
+        if (u.startsWith("https://export.arxiv.org/api/query")) {
+          return textRes(arxivFeed("DRUM: End-To-End Differentiable Rule Mining On Knowledge Graphs"));
+        }
+        throw new Error(`unexpected fetch: ${u}`);
+      }),
+    );
+    const { verifyEntry } = await load();
+
+    const result = await verifyEntry("proj1", projectDir, "sadeghian2019drum");
+
+    expect(result?.status).toBe("verified");
+    expect(result?.url).toBe("https://arxiv.org/abs/1911.00055");
+    // Crossref is not even asked for an arXiv DOI.
+    expect(seen.every((u) => !u.startsWith("https://api.crossref.org/works/10.48550"))).toBe(true);
+  });
+
+  it("uses the eprint field when the entry carries no DOI", async () => {
+    writeBib(`@article{lee2023ingram,
+  title = {InGram: Inductive Knowledge Graph Embedding via Relation Graphs},
+  author = {Lee, Jaejun},
+  year = {2023},
+  eprint = {2305.19987}
+}`);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any) => {
+        const u = String(url);
+        if (u.includes("export.arxiv.org")) {
+          expect(u).toContain("2305.19987");
+          return textRes(arxivFeed("InGram: Inductive Knowledge Graph Embedding via Relation Graphs", "Jaejun Lee", "2023"));
+        }
+        throw new Error(`unexpected fetch: ${u}`);
+      }),
+    );
+    const { verifyEntry } = await load();
+    expect((await verifyEntry("proj1", projectDir, "lee2023ingram"))?.status).toBe("verified");
+  });
+
+  it("falls back to a multi-index title search when a DOI is not in Crossref", async () => {
+    writeBib(ATTENTION); // an ACM DOI Crossref does not hold either
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any) => {
+        const u = String(url);
+        if (u.startsWith("https://api.crossref.org/works/")) return jsonRes(404, {});
+        if (u.startsWith("https://api.openalex.org/works?")) {
+          return jsonRes(200, {
+            results: [
+              {
+                id: "https://openalex.org/W123",
+                display_name: "Attention Is All You Need",
+                publication_year: 2017,
+                authorships: [{ author: { display_name: "Ashish Vaswani" } }],
+              },
+            ],
+          });
+        }
+        // The other three sources answer with nothing.
+        return emptyTitleSearch();
+      }),
+    );
+    const { verifyEntry } = await load();
+
+    const result = await verifyEntry("proj1", projectDir, "vaswani2017attention");
+
+    expect(result?.status).toBe("verified");
+    expect(result?.detail).toMatch(/not indexed there/);
+  });
+
+  it("keeps a mismatch authoritative — a title search never softens it", async () => {
+    writeBib(DRUM);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any) => {
+        if (String(url).includes("export.arxiv.org")) {
+          return textRes(arxivFeed("A Completely Different Paper About Something Else"));
+        }
+        throw new Error("the title search must not run after a mismatch");
+      }),
+    );
+    const { verifyEntry } = await load();
+
+    const result = await verifyEntry("proj1", projectDir, "sadeghian2019drum");
+
+    expect(result?.status).toBe("mismatch");
+  });
+
+  it("treats a withdrawn/non-existent arXiv id as unresolved, then tries the title", async () => {
+    writeBib(DRUM);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: any) => {
+        const u = String(url);
+        if (u.includes("export.arxiv.org")) return textRes(arxivFeed("Error"));
+        return emptyTitleSearch(); // every title index answers, with nothing
+      }),
+    );
+    const { verifyEntry } = await load();
+
+    expect((await verifyEntry("proj1", projectDir, "sadeghian2019drum"))?.status).toBe("unresolved");
+  });
+
+  it("does not report 'no such paper' when the lookup itself was unreachable", async () => {
+    writeBib(DRUM);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    const { verifyEntry } = await load();
+
+    // Identifier check failed with a network error and the title search found
+    // nothing — that is "unchecked", not "fabricated".
+    expect((await verifyEntry("proj1", projectDir, "sadeghian2019drum"))?.status).toBe("skipped");
+  });
+});
+
 describe("backend wiring (the seam that actually runs it)", () => {
   /** A ctx shaped like the OpenAI backend's turn context. */
   const ctxFor = (dir: string) => ({ dir, contextDirs: [], readOnly: false, project: { id: "proj1" } }) as any;
@@ -493,8 +659,7 @@ describe("backend wiring (the seam that actually runs it)", () => {
       vi.fn(async (url: any) => {
         const u = String(url);
         if (u.startsWith("https://api.crossref.org/works/")) return crossrefWork("Attention Is All You Need");
-        if (u.startsWith("https://api.openalex.org/works?")) return jsonRes(200, { results: [] });
-        if (u.startsWith("https://api.crossref.org/works?")) return jsonRes(200, { message: { items: [] } });
+        if (isTitleSearch(u)) return emptyTitleSearch();
         throw new Error(`unexpected fetch: ${u}`);
       }),
     );

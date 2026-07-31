@@ -10,6 +10,7 @@
 - New read-only chat mode for Q&A about the project's text, math, and arguments — especially a co-author's passages. Every answer quotes the passage and names the file, and labels what the text says vs. background knowledge vs. interpretation. File edits are blocked exactly as in Review mode, on both backends.
 
 ### Verified citations
+- The audit checks arXiv preprints against arXiv itself (Crossref does not index the `10.48550` DOI namespace) and falls back to a title search across Semantic Scholar, DBLP, Crossref, and OpenAlex before calling any entry unresolved — correct references to preprints and ML-venue papers are no longer flagged as possibly fabricated. A `mismatch` from the identifier lookup is never softened by the fallback, and matching author+year alone no longer rubber-stamps an unrelated title.
 - `add_citation` now verifies each new entry against Crossref/OpenAlex the moment it is written and reports the verdict to the agent, so a wrong reference surfaces during the turn rather than at review time.
 - New `audit_citations` tool lets the agent re-check entries — required by the prompts for any BibTeX written by hand, the path where fabricated references originate.
 - The audit no longer flags correct entries whose title Crossref splits across `title` and `subtitle` (e.g. "AMIE" + its subtitle); short and long title forms, and author+year corroboration, are accepted. Genuinely wrong DOIs are still flagged.

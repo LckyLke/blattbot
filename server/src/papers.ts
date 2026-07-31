@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./config.js";
 import { loadSettings } from "./settings.js";
-import { readAllBibEntries, searchCrossref, searchOpenAlex, type PaperHit } from "./citations.js";
+import { readAllBibEntries, searchCrossref, searchOpenAlex, searchPapers, type PaperHit } from "./citations.js";
 import { entryDoi, type BibEntry } from "./bib.js";
 
 // ---- Persistent per-project store -----------------------------------------
@@ -387,6 +387,16 @@ export function titleCandidates(msg: any): string[] {
   return [...out];
 }
 
+/** Share of the shorter title's words that also appear in the other. */
+function titleOverlap(a: string, b: string): number {
+  const wa = new Set(normTitle(a).split(" ").filter(Boolean));
+  const wb = new Set(normTitle(b).split(" ").filter(Boolean));
+  if (wa.size === 0 || wb.size === 0) return 0;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / Math.min(wa.size, wb.size);
+}
+
 /** Normalized word-boundary containment — a short official title inside a fuller one. */
 function titleContains(a: string, b: string): boolean {
   const na = normTitle(a);
@@ -440,13 +450,65 @@ export function matchesRecord(
   const surname = firstAuthorSurname(entry.author);
   const sameAuthor = Boolean(surname && record.author && record.author.toLowerCase().includes(surname));
   const sameYear = Boolean(entry.year && record.year && entry.year.trim() === record.year);
-  if (sameAuthor && sameYear) {
+  // Author+year alone is NOT enough: a mistyped identifier often lands on
+  // another paper by the same authors in the same year. Require the titles to
+  // be at least related before accepting a differently-written one.
+  if (sameAuthor && sameYear && candidates.some((c) => titleOverlap(title, c) >= 0.34)) {
     return { ok: true, note: "the record's title is written differently, but author and year match" };
   }
   return { ok: false };
 }
 
 /** Check a DOI against Crossref and compare titles. */
+/**
+ * arXiv's own DOI namespace. Crossref does not index these at all (they are
+ * registered with DataCite), so a Crossref lookup 404s on a perfectly real
+ * preprint — which is why the audit must ask arXiv directly instead of
+ * reporting the entry as unfindable.
+ */
+export function arxivIdFromDoi(doi: string): string | undefined {
+  const m = /^10\.48550\/arxiv\.(.+)$/i.exec(doi.trim());
+  return m ? m[1] : undefined;
+}
+
+/** Check an arXiv id against arXiv's own API and compare titles. */
+async function auditByArxiv(arxivId: string, entry: EntryFacts): Promise<AuditResult> {
+  const bare = arxivId.replace(/v\d+$/i, "");
+  const evidence = `https://arxiv.org/abs/${bare}`;
+  let xml: string;
+  try {
+    const res = await fetch(
+      `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(bare)}&max_results=1`,
+      { signal: AbortSignal.timeout(15000) },
+    );
+    if (!res.ok) return { status: "skipped", detail: `arXiv: HTTP ${res.status}` };
+    xml = await res.text();
+  } catch (err: any) {
+    return { status: "skipped", detail: `arXiv unreachable: ${err?.message ?? err}` };
+  }
+  const body = /<entry>([\s\S]*?)<\/entry>/.exec(xml)?.[1];
+  const remoteTitle = body
+    ? /<title>([\s\S]*?)<\/title>/.exec(body)?.[1].replace(/\s+/g, " ").trim()
+    : undefined;
+  // A withdrawn or non-existent id yields a feed whose single entry is titled
+  // "Error" — that is arXiv saying "no such paper", not a title mismatch.
+  if (!body || !remoteTitle || /^error$/i.test(remoteTitle)) {
+    return { status: "unresolved", detail: `arXiv has no record for ${bare}` };
+  }
+  if (!entry.title) return { status: "verified", detail: "arXiv id resolves (no title to compare)", url: evidence };
+  const authors = [...body.matchAll(/<name>([\s\S]*?)<\/name>/g)].map((m) => m[1].trim()).join(" ");
+  const year = /<published>(\d{4})/.exec(body)?.[1];
+  const match = matchesRecord(entry, [remoteTitle], { author: authors, year });
+  if (match.ok) {
+    return { status: "verified", detail: match.note ?? "verified on arXiv", url: evidence };
+  }
+  return {
+    status: "mismatch",
+    detail: `entry title "${entry.title}" vs arXiv "${remoteTitle}"`,
+    url: evidence,
+  };
+}
+
 async function auditByDoi(doi: string, entry: EntryFacts): Promise<AuditResult> {
   const title = entry.title;
   const evidence = `https://doi.org/${doi}`;
@@ -483,27 +545,45 @@ async function auditByDoi(doi: string, entry: EntryFacts): Promise<AuditResult> 
 }
 
 /** Look a title up on OpenAlex, then Crossref (same tolerant comparison). */
+/**
+ * Search every index BlattBot knows for a matching title. Crossref alone is
+ * not enough — it misses the ML venues (NeurIPS, ICML, ICLR) and preprints
+ * where a lot of the literature lives, which is the same reason paper search
+ * queries four sources. The matching source is reported so the user can see
+ * WHERE a reference was confirmed.
+ */
 async function auditByTitle(entry: EntryFacts): Promise<AuditResult> {
   const title = entry.title!;
   const accepts = (hit: PaperHit) =>
     matchesRecord(entry, [hit.title], { author: hit.authors, year: hit.year ? String(hit.year) : undefined }).ok;
-  let failures = 0;
+  let hits: PaperHit[];
   try {
-    const hit = (await searchOpenAlex(title, 3)).find(accepts);
-    if (hit) return { status: "verified", url: auditHitUrl(hit) };
-  } catch {
-    failures++;
+    // searchPapers merges Semantic Scholar, DBLP, Crossref, and OpenAlex, and
+    // already tolerates individual sources failing.
+    hits = await searchPapers(title, 8);
+  } catch (err: any) {
+    return { status: "skipped", detail: `title lookup unavailable: ${err?.message ?? err}` };
   }
-  try {
-    const hit = (await searchCrossref(title, 3)).find(accepts);
-    if (hit) return { status: "verified", url: auditHitUrl(hit) };
-  } catch {
-    failures++;
+  const hit = hits.find(accepts);
+  if (hit) {
+    return { status: "verified", detail: `matched on ${hit.source}`, url: auditHitUrl(hit) };
   }
-  if (failures === 2) return { status: "skipped", detail: "OpenAlex and Crossref both unreachable" };
-  return { status: "unresolved", detail: "no record with a matching title on OpenAlex or Crossref" };
+  // No hit from indexes that DID answer means "not found" — searchPapers
+  // throws (handled above) when every source failed.
+  return {
+    status: "unresolved",
+    detail: "no record with a matching title on Semantic Scholar, DBLP, Crossref, or OpenAlex",
+  };
 }
 
+/**
+ * Audit one entry. The order matters: an arXiv id is checked against arXiv
+ * itself (Crossref does not index the 10.48550 namespace), a DOI against
+ * Crossref, and anything the identifier route cannot confirm falls through to
+ * a multi-index title search before the entry is called unresolved. A
+ * `mismatch` is authoritative and never softened by a later lookup — it means
+ * the identifier resolves to a different work.
+ */
 export async function auditEntry(entry: BibEntry): Promise<AuditResult> {
   const doi = entryDoi(entry.fields);
   const facts: EntryFacts = {
@@ -511,9 +591,30 @@ export async function auditEntry(entry: BibEntry): Promise<AuditResult> {
     author: entry.fields.author,
     year: entry.fields.year,
   };
-  if (doi) return auditByDoi(doi, facts);
-  if (facts.title) return auditByTitle(facts);
-  return { status: "unresolved", detail: "entry has no DOI or title to check" };
+  const arxivId = arxivIdFromEntry(entry);
+  let first: AuditResult | undefined;
+
+  if (arxivId) {
+    first = await auditByArxiv(arxivId, facts);
+  } else if (doi) {
+    first = await auditByDoi(doi, facts);
+  }
+  // Verified or contradicted — done. Otherwise the identifier simply is not in
+  // that index, which is routine for preprints and CS proceedings.
+  if (first && (first.status === "verified" || first.status === "mismatch")) return first;
+
+  if (facts.title) {
+    const byTitle = await auditByTitle(facts);
+    if (byTitle.status === "verified" && first) {
+      const where = doi ? `${doi} is not indexed there` : "the identifier lookup found nothing";
+      return { ...byTitle, detail: `${where}, but the record ${byTitle.detail ?? "matched by title"}` };
+    }
+    // A network failure on the identifier route should not masquerade as
+    // "no such paper" just because the title search also came up empty.
+    if (byTitle.status === "unresolved" && first?.status === "skipped") return first;
+    return byTitle;
+  }
+  return first ?? { status: "unresolved", detail: "entry has no DOI or title to check" };
 }
 
 /**
