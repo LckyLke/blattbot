@@ -25,6 +25,7 @@ const MODE_OPTIONS = [
   ["research", "Research"],
   ["polish", "Polish"],
   ["review", "Review"],
+  ["understand", "Understand"],
 ] as const;
 
 const MAX_STYLE = 4000;

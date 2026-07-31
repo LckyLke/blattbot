@@ -70,8 +70,34 @@ describe("validateProjectSettingsPatch", () => {
     for (const m of AGENT_MODES) {
       expect(validateProjectSettingsPatch({ defaultMode: m.id })).toEqual({ defaultMode: m.id });
     }
+    // The read-only modes are explicitly accepted as defaults.
+    expect(validateProjectSettingsPatch({ defaultMode: "review" })).toEqual({ defaultMode: "review" });
+    expect(validateProjectSettingsPatch({ defaultMode: "understand" })).toEqual({
+      defaultMode: "understand",
+    });
     expect(() => validateProjectSettingsPatch({ defaultMode: "yolo" })).toThrow(/defaultMode/);
     expect(() => validateProjectSettingsPatch({ defaultMode: "Edit" })).toThrow(/defaultMode/);
+  });
+});
+
+describe("AGENT_MODES catalog", () => {
+  it("marks exactly review and understand as read-only (the flag both backends gate on)", () => {
+    // The Claude backend adds Edit/Write/MultiEdit/NotebookEdit/add_citation to
+    // disallowedTools and the openai backend drops its editing tools whenever
+    // ctx.readOnly — which runTurn sets from this flag — is true.
+    expect(AGENT_MODES.filter((m) => m.readOnly).map((m) => m.id)).toEqual([
+      "review",
+      "understand",
+    ]);
+  });
+
+  it("understand mode explains instead of editing and points at Edit mode for changes", () => {
+    const understand = AGENT_MODES.find((m) => m.id === "understand")!;
+    expect(understand.label).toBe("Understand");
+    expect(understand.prompt).toContain("must not modify any files");
+    expect(understand.prompt).toContain("quote the relevant passage");
+    expect(understand.prompt).toContain("AskUserQuestion");
+    expect(understand.prompt).toContain("switch to Edit mode");
   });
 });
 

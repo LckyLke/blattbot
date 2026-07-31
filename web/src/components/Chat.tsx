@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { parseDiff } from "../diff";
 import type { AgentQuestion, ChatMeta, ProjectStats } from "../api";
 import DiffView from "./DiffView";
+import Markdown from "./Markdown";
 
 export type ChatItem =
   | { kind: "user"; text: string; scope?: string[] }
@@ -14,6 +15,8 @@ export type ChatItem =
       status: "running" | "done" | "error";
       /** Unified diff of the file this edit touched — expandable under the chip. */
       fileDiff?: string;
+      /** One-line result summary of a read-only tool (Grep/Read/search…). */
+      resultHead?: string;
     }
   | { kind: "notice"; tone: "info" | "warn" | "error" | "ok"; text: string }
   | {
@@ -71,6 +74,22 @@ interface Props {
   projectStats?: ProjectStats | null;
   /** A PDF selection to quote into the draft; each new nonce injects once. */
   quote?: { text: string; nonce: number } | null;
+  /** Project files (relative paths) — enables `file[:line]` links in bubbles. */
+  files: string[];
+  /** Reveal a file (1-based line) in the Source panel. */
+  onOpenFile: (file: string, line: number) => void;
+  /** Locate a quoted passage in the .tex sources; resolves false on a miss. */
+  onLocateQuote: (text: string) => Promise<boolean>;
+  /** True while a PDF pane is visible — blockquotes then offer "find in PDF". */
+  pdfVisible: boolean;
+  /** Highlight a passage in the rendered PDF's text layer. */
+  onFindInPdf: (text: string) => void;
+}
+
+/** The project-aware props every chat Markdown instance receives (job B). */
+interface MdLinkProps {
+  files: string[];
+  onOpenFile: (file: string, line: number) => void;
 }
 
 /** Short display label for a model id: "claude-sonnet-5" → "sonnet-5". */
@@ -118,6 +137,7 @@ const MODES = [
   { id: "research", label: "Research", hint: "Find literature and fill missing citations." },
   { id: "polish", label: "Polish", hint: "Grammar, style, and LaTeX consistency only." },
   { id: "review", label: "Review", hint: "Structured referee report — file edits are blocked." },
+  { id: "understand", label: "Understand", hint: "Explain the project's text and math — file edits are blocked." },
 ];
 
 const isModeId = (v: string | null | undefined): v is string => MODES.some((m) => m.id === v);
@@ -160,42 +180,30 @@ function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? name.replace(/^mcp__\w+__/, "");
 }
 
-/** Tiny markdown-ish renderer: fenced code, inline code, bold. Safe by construction (text nodes). */
-function AgentText({ text, streaming }: { text: string; streaming: boolean }) {
-  const parts = text.split(/```(?:[a-zA-Z]*\n)?/);
+/** Assistant prose: full markdown + math via the shared renderer (Markdown.tsx). */
+function AgentText({
+  text,
+  streaming,
+  link,
+  onLocateQuote,
+  onFindInPdf,
+}: {
+  text: string;
+  streaming: boolean;
+  link: MdLinkProps;
+  onLocateQuote: (text: string) => Promise<boolean>;
+  onFindInPdf?: (text: string) => void;
+}) {
   return (
-    <div className={`prose-agent ${streaming ? "tex-caret" : ""}`}>
-      {parts.map((part, i) =>
-        i % 2 === 1 ? (
-          <pre key={i}>
-            <code>{part.replace(/\n$/, "")}</code>
-          </pre>
-        ) : (
-          part
-            .split(/\n{2,}/)
-            .filter((p) => p.trim())
-            .map((para, j) => <p key={`${i}-${j}`}>{renderInline(para)}</p>)
-        ),
-      )}
-    </div>
+    <Markdown
+      text={text}
+      className={`prose-agent ${streaming ? "tex-caret" : ""}`}
+      files={link.files}
+      onOpenFile={link.onOpenFile}
+      onLocateQuote={onLocateQuote}
+      onFindInPdf={onFindInPdf}
+    />
   );
-}
-
-function renderInline(text: string): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
-  const re = /(`[^`]+`|\*\*[^*]+\*\*)/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  let k = 0;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) nodes.push(text.slice(last, m.index));
-    const token = m[0];
-    if (token.startsWith("`")) nodes.push(<code key={k++}>{token.slice(1, -1)}</code>);
-    else nodes.push(<strong key={k++}>{token.slice(2, -2)}</strong>);
-    last = m.index + token.length;
-  }
-  if (last < text.length) nodes.push(text.slice(last));
-  return nodes;
 }
 
 export default function Chat({
@@ -222,6 +230,11 @@ export default function Chat({
   onSetProjectModel,
   projectStats,
   quote,
+  files,
+  onOpenFile,
+  onLocateQuote,
+  pdfVisible,
+  onFindInPdf,
 }: Props) {
   const [draft, setDraft] = useState("");
   const [mode, setMode] = useState(() => preselectedMode(projectId, defaultMode));
@@ -236,6 +249,8 @@ export default function Chat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // Stable identity so the memoized Markdown bubbles don't re-render per keystroke.
+  const mdLink = useMemo<MdLinkProps>(() => ({ files, onOpenFile }), [files, onOpenFile]);
 
   // Quote-from-PDF injection: append the quoted block to whatever draft
   // exists, once per nonce (the mount-time nonce is deliberately skipped so
@@ -401,6 +416,9 @@ export default function Chat({
               item={item}
               onAnswerQuestion={onAnswerQuestion}
               onDismissQuestion={onDismissQuestion}
+              link={mdLink}
+              onLocateQuote={onLocateQuote}
+              onFindInPdf={pdfVisible ? onFindInPdf : undefined}
             />
           ))}
           {busy && activity === "thinking" && (
@@ -657,16 +675,23 @@ function ChatBubble({
   item,
   onAnswerQuestion,
   onDismissQuestion,
+  link,
+  onLocateQuote,
+  onFindInPdf,
 }: {
   item: ChatItem;
   onAnswerQuestion: (questionId: string, answers: Record<string, string>) => void;
   onDismissQuestion: (questionId: string) => void;
+  link: MdLinkProps;
+  onLocateQuote: (text: string) => Promise<boolean>;
+  /** Present only while a PDF pane is visible. */
+  onFindInPdf?: (text: string) => void;
 }) {
   switch (item.kind) {
     case "user":
       return (
         <div className="ml-12 self-end rounded-xl rounded-br-sm bg-ink-3 px-4 py-2.5 text-[14px] leading-relaxed text-paper">
-          {item.text}
+          <Markdown text={item.text} className="md-user" files={link.files} onOpenFile={link.onOpenFile} />
           {item.scope && item.scope.length > 0 && (
             <span
               title={item.scope.join("\n")}
@@ -680,13 +705,21 @@ function ChatBubble({
     case "agent":
       return (
         <div className="mr-6 text-paper">
-          <AgentText text={item.text} streaming={item.streaming} />
+          <AgentText
+            text={item.text}
+            streaming={item.streaming}
+            link={link}
+            onLocateQuote={onLocateQuote}
+            onFindInPdf={onFindInPdf}
+          />
         </div>
       );
     case "tool":
       return <ToolChip item={item} />;
     case "question":
-      return <QuestionCard item={item} onAnswer={onAnswerQuestion} onDismiss={onDismissQuestion} />;
+      return (
+        <QuestionCard item={item} onAnswer={onAnswerQuestion} onDismiss={onDismissQuestion} link={link} />
+      );
     case "notice": {
       const tone =
         item.tone === "error"
@@ -753,6 +786,14 @@ function ToolChip({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
           </button>
         )}
       </div>
+      {item.resultHead && (
+        <div
+          title={item.resultHead}
+          className="mt-0.5 max-w-[420px] truncate self-start pl-4 font-mono text-[10.5px] text-graphite/80"
+        >
+          {item.resultHead}
+        </div>
+      )}
       {open && expandable && (
         <div className="mt-1.5 w-full min-w-0 rounded border border-rule bg-ink p-1.5">
           {files.map((file) => (
@@ -777,10 +818,12 @@ function QuestionCard({
   item,
   onAnswer,
   onDismiss,
+  link,
 }: {
   item: Extract<ChatItem, { kind: "question" }>;
   onAnswer: (questionId: string, answers: Record<string, string>) => void;
   onDismiss: (questionId: string) => void;
+  link: MdLinkProps;
 }) {
   /** Single-select: question text → chosen label (or free text). */
   const [picked, setPicked] = useState<Record<string, string>>({});
@@ -807,7 +850,12 @@ function QuestionCard({
             <span className="font-mono text-[10px] uppercase tracking-wide text-graphite/80">
               {q.header}
             </span>
-            <span className="text-paper-dim">{q.question}</span>
+            <Markdown
+              text={q.question}
+              className="min-w-0 text-paper-dim"
+              files={link.files}
+              onOpenFile={link.onOpenFile}
+            />
             <span className="text-graphite">→</span>
             <span className={item.status === "answered" ? "text-leaf" : "italic text-graphite"}>
               {item.status === "answered"
@@ -891,7 +939,12 @@ function QuestionCard({
             <span className="shrink-0 rounded-full border border-gold/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-gold">
               {q.header}
             </span>
-            <span className="font-serif text-[14.5px] leading-snug text-paper">{q.question}</span>
+            <Markdown
+              text={q.question}
+              className="min-w-0 font-serif text-[14.5px] leading-snug text-paper"
+              files={link.files}
+              onOpenFile={link.onOpenFile}
+            />
           </div>
           <div className="flex flex-col gap-1">
             {q.options.map((o) =>

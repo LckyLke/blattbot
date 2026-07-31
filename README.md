@@ -38,6 +38,7 @@ The agent works in the local git mirror and every turn ends in a diff you approv
 - **Rendered PDF diff.** Besides the text diff, the Proof tab can render the current and pre-change PDFs and highlight the pages and regions that visually changed — the latexdiff use case, without Perl.
 - **Cost transparency.** Every turn shows its cost (or token count), each project shows a running total, and a disclosure generator writes an AI-use statement from your actual usage logs — useful for venue and institutional AI policies.
 - **Review mode.** A structured referee-report mode with a venue-style rubric; file edits are blocked in it.
+- **Understand mode.** A read-only Q&A mode that explains the project's text, math, and arguments, grounding every answer in quoted passages from your files; file edits are blocked in it too.
 
 ## Honesty notes
 

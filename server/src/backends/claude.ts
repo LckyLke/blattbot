@@ -16,6 +16,7 @@ import {
   AGENT_TOOL_INFO,
   DISALLOWED_TOOLS,
   resolveModel,
+  resultHead,
   type AgentBackend,
   type BackendTurnContext,
   type EventSink,
@@ -146,7 +147,7 @@ export function extractResultUsage(m: any): {
  * bypass-mode auto-allow, so the ask reaches this callback even in bypass
  * mode. The passthrough arm is belt-and-braces for any other tool a future
  * SDK routes here; it preserves bypass-equivalent permissiveness
- * (review-mode/edit blocking stays enforced via disallowedTools).
+ * (read-only-mode/edit blocking stays enforced via disallowedTools).
  *
  * On AskUserQuestion: validate the questions, register them as the project's
  * pending question, stream a `question` event to the UI, and block until the
@@ -194,6 +195,22 @@ export function makeCanUseTool(projectId: string, emit: EventSink, signal: Abort
     }
     return { behavior: "deny", message: "The turn was interrupted before the questions were answered." };
   };
+}
+
+/**
+ * The plain text of an SDK tool_result block's content: a string comes back
+ * as-is; an array of content blocks contributes its text blocks joined by
+ * newlines. Anything else (images, junk) yields "". Exported for unit tests.
+ */
+export function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("\n");
+  }
+  return "";
 }
 
 /** Extract a compact, UI-friendly summary of a tool input. */
@@ -277,6 +294,8 @@ export const claudeBackend: AgentBackend = {
 
     // Emit "thinking" once per thinking block, not once per streamed token.
     let thinkingNotified = false;
+    // tool_use id → tool name, so results can be summarized per tool kind.
+    const toolNames = new Map<string, string>();
 
     for await (const m of q as AsyncIterable<any>) {
       switch (m.type) {
@@ -314,6 +333,7 @@ export const claudeBackend: AgentBackend = {
             if (block.type === "text" && block.text) {
               ctx.emit({ type: "text_final", text: block.text });
             } else if (block.type === "tool_use") {
+              toolNames.set(block.id, block.name);
               ctx.emit({
                 type: "tool_use",
                 id: block.id,
@@ -328,10 +348,17 @@ export const claudeBackend: AgentBackend = {
           const blocks = Array.isArray(m.message?.content) ? m.message.content : [];
           for (const block of blocks) {
             if (block.type === "tool_result") {
+              // Read-only tools get a one-line result summary for the chat;
+              // edit tools stay opaque (only livediff's fileDiff is shown).
+              const head = resultHead(
+                toolNames.get(block.tool_use_id) ?? "",
+                toolResultText(block.content),
+              );
               ctx.emit({
                 type: "tool_result",
                 id: block.tool_use_id,
                 isError: Boolean(block.is_error),
+                ...(head !== undefined ? { resultHead: head } : {}),
               });
             }
           }

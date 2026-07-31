@@ -277,6 +277,174 @@ button:hover > .tex-logo .down,
   margin-bottom: 0;
 }
 
+/* --- Shared markdown body (chat bubbles, question cards): react-markdown +
+   KaTeX output, kept compact so rendered prose sits naturally in a bubble.
+   Headings stay near the running text size — chat is not a document. --- */
+.md-body > :first-child {
+  margin-top: 0;
+}
+.md-body > :last-child {
+  margin-bottom: 0;
+}
+.md-body p {
+  margin: 0.55em 0;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  margin: 0.9em 0 0.35em;
+  font-size: 1.05em;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.md-body h1 {
+  font-size: 1.16em;
+}
+.md-body h2 {
+  font-size: 1.1em;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0.45em 0;
+  padding-left: 1.5em;
+}
+.md-body ul {
+  list-style: disc;
+}
+.md-body ol {
+  list-style: decimal;
+}
+.md-body li {
+  margin: 0.15em 0;
+}
+.md-body li > p {
+  margin: 0.2em 0;
+}
+.md-body blockquote {
+  margin: 0.55em 0;
+  padding-left: 0.9em;
+  border-left: 2px solid var(--color-rule);
+  color: var(--color-paper-dim);
+}
+.md-body hr {
+  border: none;
+  border-top: 1px solid var(--color-rule);
+  margin: 0.8em 0;
+}
+.md-body code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--color-ink-3);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.md-body pre {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  background: var(--color-ink-3);
+  border: 1px solid var(--color-rule);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.md-body pre code {
+  background: none;
+  padding: 0;
+}
+/* User bubbles are ink-3 themselves — step code down a shade to stay visible. */
+.md-user code,
+.md-user pre {
+  background: var(--color-ink);
+}
+/* GFM tables scroll in their own wrapper; the bubble never widens sideways. */
+.md-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.md-body table {
+  border-collapse: collapse;
+  font-size: 0.9em;
+  line-height: 1.45;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--color-rule);
+  padding: 3px 10px;
+  text-align: left;
+}
+.md-body th {
+  background: var(--color-ink-2);
+  font-weight: 600;
+}
+.md-body a {
+  color: var(--color-leaf);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-leaf) 45%, transparent);
+  text-underline-offset: 2px;
+}
+/* Images never load in chat (untrusted content must not trigger network
+   requests) — an inert chip names the alt text and host instead. */
+.md-img-chip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--color-graphite);
+}
+/* A file[:line] mention linked into the Source panel — dotted to read as an
+   in-app jump, not a web link; inherits code styling inside a code span. */
+.md-body a.md-file-link {
+  cursor: pointer;
+  text-decoration-style: dotted;
+}
+/* Blockquote jump actions: a quiet mono footer under the quoted passage. */
+.md-quote-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+.md-quote-actions button {
+  color: var(--color-graphite);
+  transition: color 0.15s;
+}
+.md-quote-actions button:hover {
+  color: var(--color-leaf);
+}
+.md-quote-miss {
+  font-style: italic;
+  color: var(--color-graphite);
+}
+/* KaTeX inherits the surrounding text color; its default 1.21em blows up
+   chat lines, so scale it to sit inside the prose. Wide display equations
+   scroll within their own block instead of the bubble. */
+.md-body .katex {
+  font-size: 1.06em;
+}
+.md-body .katex-display {
+  margin: 0.6em 0;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 /* Scrollbars that recede into the ink */
 * {
   scrollbar-width: thin;
@@ -478,6 +646,12 @@ button:hover > .tex-logo .down,
    stay transparent (the canvas below shows the real ink). */
 .textLayer ::selection {
   background: color-mix(in srgb, var(--color-leaf) 45%, transparent);
+  color: transparent;
+}
+/* Find-in-PDF (chat blockquote → PDF): the matched spans flash gold; the
+   glyphs stay transparent — the canvas below shows the real ink. */
+.textLayer span.pdf-find-flash {
+  background: color-mix(in srgb, var(--color-gold) 50%, transparent);
   color: transparent;
 }
 

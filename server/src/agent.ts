@@ -108,14 +108,14 @@ export function resolveBackendModel(
 
 // ---- Modes ------------------------------------------------------------------
 
-export type AgentMode = "edit" | "research" | "polish" | "review";
+export type AgentMode = "edit" | "research" | "polish" | "review" | "understand";
 
 export interface AgentModeInfo {
   id: AgentMode;
   label: string;
   description: string;
   prompt: string;
-  /** Review mode blocks all file-editing tools. */
+  /** Read-only modes (review, understand) block all file-editing tools. */
   readOnly?: boolean;
 }
 
@@ -159,8 +159,23 @@ Read the relevant files, then structure the report exactly as follows:
 5. Minor issues: typos, notation inconsistencies, grammar, and LaTeX problems.
 6. Rubric — score each dimension /10 with a one-line justification: clarity; technical soundness; support for claims; presentation.
 7. Prioritized revision recommendations: what to fix first and why, most important first.
-Ground every comment in the actual text; point to the section, equation, or line it concerns.
+Ground every comment in the actual text: cite the exact location as file.tex:line and quote the passage a comment concerns verbatim in a > blockquote.
 You must not modify any files in this mode; file-editing tools are disabled.`,
+    readOnly: true,
+  },
+  {
+    id: "understand",
+    label: "Understand",
+    description: "Explain the project's text and math — file edits are blocked.",
+    prompt: `Mode: Understand — explain the project; do not change it.
+The user wants to UNDERSTAND, not change: answer questions about the project and explain the concepts, math, and arguments in it — especially text written by co-authors.
+- Ground every answer in the actual files: quote the relevant passage verbatim in a > blockquote and cite its location as file.tex:line before explaining it.
+- Distinguish clearly between (a) what the text actually says, (b) standard background knowledge, and (c) your interpretation or inference — label each as such.
+- If a passage seems wrong or inconsistent, say so plainly and show why.
+- Explain in plain language first, then give the precise technical restatement.
+- If the question is ambiguous or the right depth is unclear (intuition vs. formal detail), ask with the AskUserQuestion tool.
+- When the question refers to linked context directories (papers), read them.
+You must not modify any files in this mode; file-editing tools are disabled. If the user asks for changes, tell them to switch to Edit mode.`,
     readOnly: true,
   },
 ];

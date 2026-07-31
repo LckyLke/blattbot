@@ -23,11 +23,15 @@ interface Props {
   chatVisible: boolean;
   /** Push normalized PDF-selection text into the chat composer draft. */
   onQuoteToChat: (text: string) => void;
+  /** A chat-blockquote passage to find and highlight; each new nonce runs once. */
+  find?: { text: string; nonce: number } | null;
 }
 
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 4;
 const QUOTE_MAX = 600;
+/** How long the find-in-PDF highlight stays on the matched spans. */
+const FIND_FLASH_MS = 2000;
 
 /**
  * Normalize text lifted from the PDF text layer: drop soft hyphens, expand
@@ -35,16 +39,104 @@ const QUOTE_MAX = 600;
  * "example"), and collapse whitespace.
  */
 function normalizePdfText(s: string): string {
+  return foldGlyphs(s)
+    .replace(/([A-Za-z])-\s+(?=[a-z])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Expand typographic ligatures and drop soft hyphens (mirrors locate.ts). */
+function foldGlyphs(s: string): string {
   return s
     .replace(/\u00AD/g, "")
     .replace(/ﬀ/g, "ff")
     .replace(/ﬁ/g, "fi")
     .replace(/ﬂ/g, "fl")
     .replace(/ﬃ/g, "ffi")
-    .replace(/ﬄ/g, "ffl")
-    .replace(/([A-Za-z])-\s+(?=[a-z])/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/ﬄ/g, "ffl");
+}
+
+// ---- Find-in-PDF: word-run matching over the pages' text content ------------
+// The client-side sibling of the server's locate.ts: both sides fold into
+// comparison words, then the longest run of consecutive shared words wins and
+// a hit needs ≥4 words (or ≥60% of a shorter query).
+
+interface PageToken {
+  /** Folded, lowercased alphanumerics only. */
+  key: string;
+  /** Character range in the page's item strings joined with single spaces. */
+  start: number;
+  end: number;
+  /** The raw word ended in "-" — a line-break hyphenation candidate. */
+  hyphen: boolean;
+}
+
+/** Comparison words of a chat passage (query side — no offsets needed). */
+function queryKeys(s: string): string[] {
+  return foldGlyphs(s)
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-z0-9À-ɏ]+/g, ""))
+    .filter(Boolean)
+    .slice(0, 80);
+}
+
+/** Tokenize a page's joined item text, rejoining hyphenated line breaks. */
+function pageTokens(joined: string): PageToken[] {
+  const raw: PageToken[] = [];
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(joined)) !== null) {
+    const folded = foldGlyphs(m[0]);
+    const key = folded.toLowerCase().replace(/[^a-z0-9À-ɏ]+/g, "");
+    if (!key) continue;
+    raw.push({
+      key,
+      start: m.index,
+      end: m.index + m[0].length,
+      hyphen: /[a-zA-Z0-9À-ɏ]-$/.test(folded),
+    });
+  }
+  const out: PageToken[] = [];
+  for (const t of raw) {
+    const prev = out[out.length - 1];
+    if (prev?.hyphen && /^[a-zÀ-ɏ]/.test(t.key)) {
+      prev.key += t.key;
+      prev.end = t.end;
+      prev.hyphen = t.hyphen;
+    } else {
+      out.push({ ...t });
+    }
+  }
+  return out;
+}
+
+/** Longest run of consecutive shared words (same DP as locate.ts's bestRun). */
+function bestRun(q: string[], src: string[]): { len: number; start: number } {
+  let prev = new Int32Array(q.length);
+  let cur = new Int32Array(q.length);
+  let len = 0;
+  let start = -1;
+  for (let i = 0; i < src.length; i++) {
+    const key = src[i];
+    for (let j = 0; j < q.length; j++) {
+      cur[j] = key === q[j] ? (j > 0 ? prev[j - 1] : 0) + 1 : 0;
+      if (cur[j] > len) {
+        len = cur[j];
+        start = i - cur[j] + 1;
+      }
+    }
+    [prev, cur] = [cur, prev];
+  }
+  return { len, start };
+}
+
+/** Where a find landed: a char range in page `page`'s joined item text. */
+interface FindHighlight {
+  nonce: number;
+  page: number;
+  start: number;
+  end: number;
 }
 
 export default function PdfPanel({
@@ -58,6 +150,7 @@ export default function PdfPanel({
   onJumpToSource,
   chatVisible,
   onQuoteToChat,
+  find,
 }: Props) {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -145,6 +238,64 @@ export default function PdfPanel({
     toastTimer.current = setTimeout(() => setToast(null), 2400);
   }, []);
   useEffect(() => () => clearTimeout(toastTimer.current), []);
+
+  // Find-in-PDF (chat blockquote action): search every page's text content
+  // for the passage, then hand the winning char range to that page, which
+  // scrolls to and flashes the matching text-layer spans. Runs once per nonce
+  // (the mount-time nonce is skipped so remounting a pane never re-runs an
+  // old find). A miss uses the same toast as the dblclick locate flow.
+  const [findHl, setFindHl] = useState<FindHighlight | null>(null);
+  const lastFindNonce = useRef(find?.nonce ?? 0);
+  useEffect(() => {
+    if (!find || find.nonce === lastFindNonce.current) return;
+    lastFindNonce.current = find.nonce;
+    const d = doc;
+    if (!d) {
+      showToast("couldn't find that passage in the PDF");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const q = queryKeys(find.text);
+        if (q.length === 0) return;
+        const need = Math.min(4, Math.max(1, Math.ceil(q.length * 0.6)));
+        let best: { page: number; len: number; start: number; end: number } | null = null;
+        for (let p = 1; p <= d.numPages; p++) {
+          const content = await (await d.getPage(p)).getTextContent();
+          if (cancelled) return;
+          const joined = content.items.map((it) => ("str" in it ? it.str : "")).join(" ");
+          const toks = pageTokens(joined);
+          const run = bestRun(q, toks.map((t) => t.key));
+          if (run.len >= need && run.len > (best?.len ?? 0)) {
+            best = {
+              page: p,
+              len: run.len,
+              start: toks[run.start].start,
+              end: toks[run.start + run.len - 1].end,
+            };
+          }
+        }
+        if (cancelled) return;
+        if (!best) {
+          showToast("couldn't find that passage in the PDF");
+          return;
+        }
+        const hit = best;
+        setFindHl((prev) => ({
+          nonce: (prev?.nonce ?? 0) + 1,
+          page: hit.page,
+          start: hit.start,
+          end: hit.end,
+        }));
+      } catch {
+        if (!cancelled) showToast("couldn't find that passage in the PDF");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [find, doc, showToast]);
 
   /** Double-clicked word + context → the server's best source position. */
   const locate = useCallback(
@@ -387,6 +538,7 @@ export default function PdfPanel({
                   pageNo={i + 1}
                   width={pageWidth}
                   onLocate={locate}
+                  highlight={findHl && findHl.page === i + 1 ? findHl : undefined}
                 />
               ))}
           </div>
@@ -411,11 +563,14 @@ function PdfPage({
   pageNo,
   width,
   onLocate,
+  highlight,
 }: {
   doc: PDFDocumentProxy;
   pageNo: number;
   width: number;
   onLocate: (query: string) => void;
+  /** A find hit on THIS page: scroll to and flash the matching spans. */
+  highlight?: FindHighlight;
 }) {
   const holderRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -424,6 +579,46 @@ function PdfPage({
   const itemsRef = useRef<{ divs: HTMLElement[]; strs: string[] }>({ divs: [], strs: [] });
   const [near, setNear] = useState(false);
   const [aspect, setAspect] = useState(Math.SQRT2); // height/width; A4 until measured
+  /** A highlight waiting for the (lazily rendered) text layer. */
+  const pendingHl = useRef<{ start: number; end: number } | null>(null);
+
+  /**
+   * Flash the text-layer spans covering the pending char range. The text
+   * layer renders lazily (IntersectionObserver), so this runs both when the
+   * highlight arrives (layer may already be up) and again after the layer
+   * finishes rendering — whichever comes last applies it.
+   */
+  const applyHighlight = useCallback(() => {
+    const hl = pendingHl.current;
+    const { divs, strs } = itemsRef.current;
+    if (!hl || divs.length === 0) return;
+    pendingHl.current = null;
+    let off = 0;
+    const hit: HTMLElement[] = [];
+    for (let i = 0; i < strs.length; i++) {
+      const start = off;
+      const end = off + strs[i].length;
+      if (end > hl.start && start < hl.end && divs[i]) hit.push(divs[i]);
+      off = end + 1; // the join space
+      if (start >= hl.end) break;
+    }
+    if (hit.length === 0) return;
+    hit[0].scrollIntoView({ block: "center" });
+    for (const el of hit) el.classList.add("pdf-find-flash");
+    window.setTimeout(() => {
+      for (const el of hit) el.classList.remove("pdf-find-flash");
+    }, FIND_FLASH_MS);
+  }, []);
+
+  // A new find hit: park it, pull the page into view (which triggers the lazy
+  // text layer when it wasn't rendered yet), and apply if the layer is up.
+  useEffect(() => {
+    if (!highlight) return;
+    pendingHl.current = { start: highlight.start, end: highlight.end };
+    holderRef.current?.scrollIntoView({ block: "start" });
+    applyHighlight();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight?.nonce]);
 
   useEffect(() => {
     const el = holderRef.current;
@@ -491,6 +686,7 @@ function PdfPage({
         });
         itemsRef.current = { divs: layer.textDivs, strs: layer.textContentItemsStr };
         await layer.render();
+        if (!cancelled) applyHighlight(); // a find may be waiting for this layer
       } catch {
         /* text layer cancelled or doc destroyed */
       }
@@ -499,7 +695,7 @@ function PdfPage({
       cancelled = true;
       layer?.cancel();
     };
-  }, [doc, pageNo, near, width]);
+  }, [doc, pageNo, near, width, applyHighlight]);
 
   /**
    * Double-click on a word: build a query from the word plus ~10 surrounding

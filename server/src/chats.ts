@@ -7,8 +7,9 @@
  *   chats/<projectId>/<chatId>.jsonl transcript, one JSON event per line
  *
  * Events are the UI-relevant subset of a turn (user_message, text_final,
- * tool_use, tool_result incl. fileDiff, turn_end, notice) — high-frequency
- * stream deltas are never persisted; text_final carries the full text.
+ * tool_use, tool_result incl. fileDiff and the read-only resultHead summary,
+ * turn_end, notice) — high-frequency stream deltas are never persisted;
+ * text_final carries the full text.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

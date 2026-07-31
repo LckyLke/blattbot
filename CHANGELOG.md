@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- New **Understand** chat mode: read-only Q&A that explains the project's text, math, and arguments (especially co-authors' passages), quoting and naming the file for every answer and labeling what the text says vs. background knowledge vs. interpretation. File edits are blocked exactly like in Review mode, on both backends; it is available in the composer's mode picker and as a per-project default mode.
+
 ## 0.2.0 — 2026-07-30
 
 ### Conflict-safe sync

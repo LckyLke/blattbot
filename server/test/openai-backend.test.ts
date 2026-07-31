@@ -229,6 +229,12 @@ describe("openai backend turn loop", () => {
     expect(results.every((e) => e.isError === false)).toBe(true);
     // Every result matches its use by id.
     expect(results.map((e) => e.id)).toEqual(uses.map((e) => e.id));
+    // Read-only tools carry a one-line result summary — list_files included
+    // (the Glob analog); Edit must never expose result content.
+    expect(String(results[1].resultHead)).toContain("\\documentclass{article}");
+    expect(String(results[1].resultHead)).not.toContain("\n");
+    expect(String(results[0].resultHead)).toContain("main.tex");
+    expect(results[2].resultHead).toBeUndefined();
     // tool_start fired as the calls began streaming.
     expect(events.filter((e) => e.type === "tool_start").map((e) => e.name)).toEqual([
       "list_files",
@@ -298,26 +304,31 @@ describe("openai backend turn loop", () => {
     ]);
   });
 
-  it("review mode drops the editing tools and blocks stray write calls", async () => {
-    const { agent, project, dir } = await setup();
-    mock.queue = [
-      { kind: "tools", calls: [{ name: "write_file", args: { path: "hack.tex", content: "nope" } }] },
-      { kind: "text", text: "Understood, review only." },
-    ];
-    const { events, done } = runCollected(agent, project, "Review this", { mode: "review" });
-    await done;
+  it.each(["review", "understand"] as const)(
+    "%s mode drops the editing tools and blocks stray write calls",
+    async (mode) => {
+      const { agent, project, dir } = await setup();
+      mock.queue = [
+        { kind: "tools", calls: [{ name: "write_file", args: { path: "hack.tex", content: "nope" } }] },
+        { kind: "text", text: "Understood, read-only." },
+      ];
+      const { events, done } = runCollected(agent, project, "Look at this", { mode });
+      await done;
 
-    const toolNames = mock.requests[0].body.tools.map((t: any) => t.function.name);
-    expect(toolNames).not.toContain("write_file");
-    expect(toolNames).not.toContain("edit_file");
-    expect(toolNames).not.toContain("add_citation");
-    expect(toolNames).toContain("read_file");
+      const toolNames = mock.requests[0].body.tools.map((t: any) => t.function.name);
+      expect(toolNames).not.toContain("write_file");
+      expect(toolNames).not.toContain("edit_file");
+      expect(toolNames).not.toContain("add_citation");
+      expect(toolNames).toContain("read_file");
+      // ask_user only talks to the user — it stays available in read-only modes.
+      expect(toolNames).toContain("ask_user");
 
-    const result = events.find((e) => e.type === "tool_result")!;
-    expect(result.isError).toBe(true);
-    expect(existsSync(join(dir, "hack.tex"))).toBe(false);
-    expect(events.at(-1)).toMatchObject({ type: "turn_end", isError: false });
-  });
+      const result = events.find((e) => e.type === "tool_result")!;
+      expect(result.isError).toBe(true);
+      expect(existsSync(join(dir, "hack.tex"))).toBe(false);
+      expect(events.at(-1)).toMatchObject({ type: "turn_end", isError: false });
+    },
+  );
 
   it("rejects path traversal in the file tools", async () => {
     const { agent, project, dir } = await setup();

@@ -137,6 +137,9 @@ function itemsFromEvents(
               ...(typeof ev.fileDiff === "string" && ev.fileDiff.trim()
                 ? { fileDiff: ev.fileDiff }
                 : {}),
+              ...(typeof ev.resultHead === "string" && ev.resultHead
+                ? { resultHead: ev.resultHead }
+                : {}),
             };
             break;
           }
@@ -461,6 +464,9 @@ function AppShell() {
                     status: ev.isError ? "error" : "done",
                     ...(typeof ev.fileDiff === "string" && ev.fileDiff.trim()
                       ? { fileDiff: ev.fileDiff }
+                      : {}),
+                    ...(typeof ev.resultHead === "string" && ev.resultHead
+                      ? { resultHead: ev.resultHead }
                       : {}),
                   }
                 : item,
@@ -1162,14 +1168,47 @@ function AppShell() {
     setChatQuote((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
 
-  // Jump to a file/line in the Source view (cite-jump et al.). Targets the
-  // pane already showing the source, else switches the right pane over to it.
+  // Jump to a file/line in the Source view (cite-jump, chat file links, quote
+  // locate). Targets the pane already showing the source; otherwise the right
+  // pane — unless that one shows the chat (whose link likely triggered the
+  // jump), in which case the left pane switches over instead.
   const revealInSource = useCallback((file: string, line: number) => {
     setPanes((prev) => {
       if (prev.left === "source" || prev.right === "source") return prev;
-      return { ...prev, right: "source" };
+      return prev.right === "chat" ? { ...prev, left: "source" } : { ...prev, right: "source" };
     });
     setSourceReveal((r) => ({ file, line, nonce: (r?.nonce ?? 0) + 1 }));
+  }, []);
+
+  // Chat blockquote → source: locate the quoted passage in the .tex sources
+  // (the same n-gram endpoint the PDF double-click uses) and reveal the hit.
+  // Resolves false on a miss so the blockquote can show its muted state.
+  const locateQuote = useCallback(
+    async (text: string): Promise<boolean> => {
+      const id = selectedRef.current?.id;
+      if (!id) return false;
+      try {
+        const res = await fetch(`/api/projects/${id}/locate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        if (!res.ok) return false;
+        const { file, line } = (await res.json()) as { file: string; line: number };
+        revealInSource(file, line);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [revealInSource],
+  );
+
+  // Chat blockquote → PDF: hand the passage to the PDF pane, which searches
+  // its text layer and highlights (or toasts) — each new nonce runs once.
+  const [pdfFind, setPdfFind] = useState<{ text: string; nonce: number } | null>(null);
+  const findInPdf = useCallback((text: string) => {
+    setPdfFind((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
 
   const startCompileRef = useRef<() => Promise<void>>(async () => {});
@@ -1325,6 +1364,11 @@ function AppShell() {
             onSetProjectModel={changeProjectModel}
             projectStats={detail?.stats ?? null}
             quote={chatQuote}
+            files={detail?.files ?? []}
+            onOpenFile={revealInSource}
+            onLocateQuote={locateQuote}
+            pdfVisible={panes.left === "pdf" || panes.right === "pdf"}
+            onFindInPdf={findInPdf}
           />
         );
       case "proof":
@@ -1371,6 +1415,7 @@ function AppShell() {
             onJumpToSource={revealInSource}
             chatVisible={panes.left === "chat" || panes.right === "chat"}
             onQuoteToChat={quoteToChat}
+            find={pdfFind}
           />
         );
       case "refs":
