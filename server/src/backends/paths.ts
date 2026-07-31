@@ -80,13 +80,29 @@ export function secretRoots(): string[] {
  * transcripts) — not a project-only jail: rules cannot express "everything
  * except the project". True confinement would need an OS-level sandbox.
  */
+/**
+ * Every spelling of one protected root that a permission rule might need.
+ * Patterns are glob-style, so separators must be forward slashes — on Windows
+ * a rule built from a native path (`~\.ssh`, `C:\Users\me\.ssh`) matches
+ * nothing. The native form is emitted too, in case the matcher compares
+ * against raw platform paths. Pure and home-injectable so both platforms'
+ * shapes can be tested from either OS.
+ */
+export function denyPathForms(root: string, home: string): string[] {
+  const posix = (p: string) => p.replace(/\\/g, "/");
+  const sameRoot = root === home || root.startsWith(home + "\\") || root.startsWith(home + "/");
+  const forms = new Set<string>();
+  if (sameRoot) forms.add(`~${posix(root.slice(home.length))}`);
+  forms.add(posix(root));
+  forms.add(root);
+  return [...forms];
+}
+
 export function secretDenyRules(): string[] {
   const home = homedir();
   const rules: string[] = [];
   for (const root of secretRoots()) {
-    // Both spellings: the matcher understands ~-relative and absolute globs.
-    const rel = isInside(root, home) ? `~${root.slice(home.length)}` : null;
-    for (const form of rel ? [rel, root] : [root]) {
+    for (const form of denyPathForms(root, home)) {
       for (const tool of ["Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep"]) {
         rules.push(`${tool}(${form}/**)`);
         rules.push(`${tool}(${form})`);

@@ -63,8 +63,33 @@ describe("deny rules (the layer enforced under bypassPermissions)", () => {
   it("emits ~-relative and absolute spellings so either match form is caught", async () => {
     const { secretDenyRules } = await load();
     const ssh = secretDenyRules().filter((r) => r.startsWith("Read(") && r.includes(".ssh"));
+    // The ~ form is always glob-style (forward slashes) whatever the platform.
     expect(ssh.some((r) => r.includes("~/"))).toBe(true);
     expect(ssh.some((r) => r.includes(homedir()))).toBe(true);
+  });
+
+  it("builds Windows rules with glob separators — backslash patterns match nothing", async () => {
+    const { denyPathForms } = await load();
+    // Exercised from any OS: a native Windows path must still yield ~/-style
+    // and forward-slash absolute patterns (this failed only on Windows CI).
+    const forms = denyPathForms("C:\\Users\\me\\.ssh", "C:\\Users\\me");
+    expect(forms).toContain("~/.ssh");
+    expect(forms).toContain("C:/Users/me/.ssh");
+    // The native spelling is kept as well, for a matcher comparing raw paths.
+    expect(forms).toContain("C:\\Users\\me\\.ssh");
+  });
+
+  it("builds POSIX rules unchanged, without duplicate spellings", async () => {
+    const { denyPathForms } = await load();
+    const forms = denyPathForms("/home/me/.ssh", "/home/me");
+    expect(forms).toEqual(["~/.ssh", "/home/me/.ssh"]);
+  });
+
+  it("omits the ~ form for a root outside the home directory", async () => {
+    const { denyPathForms } = await load();
+    expect(denyPathForms("/var/lib/blattbot/accounts.json", "/home/me")).toEqual([
+      "/var/lib/blattbot/accounts.json",
+    ]);
   });
 });
 
