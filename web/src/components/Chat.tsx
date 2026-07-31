@@ -1,11 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { parseDiff } from "../diff";
+import {
+  CHAT_IMAGE_TYPES,
+  MAX_CHAT_IMAGES,
+  MAX_CHAT_IMAGE_BYTES,
+  MAX_CHAT_IMAGE_LABEL,
+  api,
+} from "../api";
 import type { AgentQuestion, ChatMeta, ProjectStats } from "../api";
 import DiffView from "./DiffView";
 import Markdown from "./Markdown";
+import { useDialog } from "./Dialog";
+
+/** An image the user attached to a message, as the transcript records it. */
+export interface ChatAttachment {
+  id: string;
+  mime: string;
+}
 
 export type ChatItem =
-  | { kind: "user"; text: string; scope?: string[] }
+  | { kind: "user"; text: string; scope?: string[]; images?: ChatAttachment[] }
   | { kind: "agent"; text: string; streaming: boolean }
   | {
       kind: "tool";
@@ -51,7 +65,9 @@ interface Props {
   /** Files the next message is scoped to (empty = whole project). */
   scope: string[];
   onClearScope: () => void;
-  onSend: (message: string, mode: string) => void;
+  /** `images` are the composer's attachments — App uploads them, then sends. */
+  /** Resolves false when the message was NOT sent — the composer restores it. */
+  onSend: (message: string, mode: string, images: File[]) => Promise<boolean>;
   onInterrupt: () => void;
   /** Submit the answers of a pending mid-turn question (question text → answer). */
   onAnswerQuestion: (questionId: string, answers: Record<string, string>) => void;
@@ -72,8 +88,8 @@ interface Props {
   onSetProjectModel: (model: string) => void;
   /** Cumulative cost/turn totals of the project (null until loaded). */
   projectStats?: ProjectStats | null;
-  /** A PDF selection to quote into the draft; each new nonce injects once. */
-  quote?: { text: string; nonce: number } | null;
+  /** A selection to quote into the draft; each new nonce injects once. */
+  quote?: { text: string; nonce: number; source?: string } | null;
   /** Project files (relative paths) — enables `file[:line]` links in bubbles. */
   files: string[];
   /** Reveal a file (1-based line) in the Source panel. */
@@ -129,6 +145,144 @@ export function scopeLabel(scope: string[]): string {
   if (scope.length === 0) return "";
   const first = scope[0].split("/").pop() ?? scope[0];
   return scope.length > 1 ? `${first} +${scope.length - 1}` : first;
+}
+
+/** One not-yet-uploaded composer attachment (the object URL previews it). */
+interface PendingImage {
+  key: number;
+  file: File;
+  url: string;
+  name: string;
+}
+
+/**
+ * Sort a paste/drop/picker payload into what can be attached as-is, what is
+ * merely too big (a phone photo, a 4K screenshot — the caller downscales those
+ * before giving up), and the first reason anything was refused outright.
+ * Mirrors the server's rules: accepted types, MAX_CHAT_IMAGE_BYTES each,
+ * MAX_CHAT_IMAGES per message. Oversized files still take a slot, so four
+ * huge pictures do not turn into eight after shrinking.
+ */
+export function acceptImageFiles(
+  incoming: File[],
+  alreadyPending: number,
+): { files: File[]; oversized: File[]; error: string } {
+  const files: File[] = [];
+  const oversized: File[] = [];
+  let error = "";
+  for (const file of incoming) {
+    if (!CHAT_IMAGE_TYPES.includes(file.type)) {
+      error ||= `${file.name || "that file"} is not a PNG, JPEG, WebP, or GIF.`;
+      continue;
+    }
+    if (alreadyPending + files.length + oversized.length >= MAX_CHAT_IMAGES) {
+      error ||= `At most ${MAX_CHAT_IMAGES} images per message.`;
+      continue;
+    }
+    if (file.size > MAX_CHAT_IMAGE_BYTES) oversized.push(file);
+    else files.push(file);
+  }
+  return { files, oversized, error };
+}
+
+/** The message shown when an oversized image could not be shrunk in the browser. */
+export function tooLargeMessage(file: File): string {
+  return (
+    `${file.name || "That image"} is larger than ${MAX_CHAT_IMAGE_LABEL} and could not be ` +
+    `resized here — attach a smaller version (the ${MAX_CHAT_IMAGE_LABEL} limit is what the ` +
+    `model's API accepts per image).`
+  );
+}
+
+/**
+ * Pixel size for one downscale attempt, preserving the aspect ratio and never
+ * upscaling. Encoded size tracks pixel AREA, so the edge scales by
+ * sqrt(maxBytes / bytes); `attempt` (0-based) tightens that by a further 15 %
+ * each round because re-encoding is never exactly proportional — a photo of a
+ * noisy scene compresses worse than the ratio predicts. Pure, so the maths is
+ * unit-testable without a canvas.
+ */
+export function downscaleSize(
+  width: number,
+  height: number,
+  bytes: number,
+  maxBytes: number,
+  attempt = 0,
+): { width: number; height: number } {
+  if (width <= 0 || height <= 0) return { width: 0, height: 0 };
+  const fit = Math.min(1, Math.sqrt(maxBytes / Math.max(bytes, 1)));
+  const ratio = fit * Math.pow(0.85, attempt);
+  return {
+    width: Math.max(1, Math.round(width * ratio)),
+    height: Math.max(1, Math.round(height * ratio)),
+  };
+}
+
+/** How many re-encodes downscaleImageFile will try before giving up. */
+export const DOWNSCALE_ATTEMPTS = 4;
+/** JPEG quality for the re-encode — readable for screenshots of text. */
+const DOWNSCALE_QUALITY = 0.85;
+
+/**
+ * Shrink an oversized image in the browser so an ordinary phone photo or 4K
+ * screenshot just works instead of being refused. Re-encodes through a canvas
+ * to JPEG (predictable size, and the source is a photo or a screenshot either
+ * way), repeating with a smaller target until the result fits.
+ *
+ * Returns null when it cannot be done — an animated GIF (a re-encode would
+ * silently keep one frame), a decode failure, or no canvas at all — and the
+ * caller then shows the size error. Never throws.
+ */
+export async function downscaleImageFile(
+  file: File,
+  maxBytes: number = MAX_CHAT_IMAGE_BYTES,
+): Promise<File | null> {
+  if (file.size <= maxBytes) return file;
+  if (file.type === "image/gif") return null; // re-encoding would drop the animation
+  if (typeof document === "undefined" || typeof createImageBitmap !== "function") return null;
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    return null;
+  }
+  try {
+    let width = bitmap.width;
+    let height = bitmap.height;
+    let bytes = file.size;
+    for (let attempt = 0; attempt < DOWNSCALE_ATTEMPTS; attempt++) {
+      const target = downscaleSize(width, height, bytes, maxBytes, attempt);
+      const canvas = document.createElement("canvas");
+      canvas.width = target.width;
+      canvas.height = target.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(bitmap, 0, 0, target.width, target.height);
+      const blob = await new Promise<Blob | null>((res) =>
+        canvas.toBlob(res, "image/jpeg", DOWNSCALE_QUALITY),
+      );
+      if (!blob) return null;
+      if (blob.size <= maxBytes) {
+        const name = (file.name || "image").replace(/\.[^.]*$/, "") + ".jpg";
+        return new File([blob], name, { type: "image/jpeg" });
+      }
+      // Still too big: shrink from where this round landed, not from the original.
+      width = target.width;
+      height = target.height;
+      bytes = blob.size;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+/** The image files a clipboard or drop payload carries (screenshots included). */
+function imageFilesFrom(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  return [...(data.files ?? [])].filter((f) => f.type.startsWith("image/"));
 }
 
 /** Mirrors AGENT_MODES on the server (which validates the id). */
@@ -249,6 +403,90 @@ export default function Chat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // ---- Image attachments: paste, drop, or the paperclip picker.
+  const [pending, setPending] = useState<PendingImage[]>([]);
+  const [attachError, setAttachError] = useState("");
+  const [dragging, setDragging] = useState(false);
+  /** An oversized image is being re-encoded — the composer says so. */
+  const [shrinking, setShrinking] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const nextKey = useRef(0);
+
+  // Object URLs outlive their component unless revoked — drop them all when
+  // the panel unmounts (moving the chat between panes remounts it).
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+  useEffect(() => () => pendingRef.current.forEach((p) => URL.revokeObjectURL(p.url)), []);
+  /** The project on screen right now, readable after an await. */
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
+
+  // Object URLs are created and revoked OUTSIDE the state updaters: React may
+  // run an updater twice (StrictMode), and a doubled createObjectURL leaks.
+  // pendingRef (not `pending`) supplies the count, because staging can resume
+  // after an await while a downscale runs.
+  function stage(files: File[]) {
+    const room = MAX_CHAT_IMAGES - pendingRef.current.length;
+    const added = files.slice(0, Math.max(0, room)).map((file) => ({
+      key: nextKey.current++,
+      file,
+      url: URL.createObjectURL(file),
+      name: file.name || "pasted image",
+    }));
+    if (added.length === 0) return;
+    pendingRef.current = [...pendingRef.current, ...added];
+    setPending((prev) => [...prev, ...added]);
+  }
+
+  async function addFiles(incoming: File[]) {
+    if (incoming.length === 0) return;
+    // A drop always reaches here, even mid-turn (the handler must
+    // preventDefault or the browser navigates to the file) — say why nothing
+    // was attached instead of swallowing it.
+    if (busy) {
+      setAttachError("Wait for the current turn to finish before attaching images.");
+      return;
+    }
+    const startedFor = projectId;
+    const { files, oversized, error } = acceptImageFiles(incoming, pendingRef.current.length);
+    setAttachError(error);
+    stage(files);
+    if (oversized.length === 0) return;
+    // Too big for one API image block, but a phone photo or a 4K screenshot
+    // should still just work: re-encode it smaller rather than refuse.
+    setShrinking(true);
+    try {
+      for (const file of oversized) {
+        const smaller = await downscaleImageFile(file);
+        // The user switched projects while it was being re-encoded — the
+        // picture belongs to the composer they left.
+        if (projectIdRef.current !== startedFor) return;
+        if (smaller) stage([smaller]);
+        else setAttachError(tooLargeMessage(file));
+      }
+    } finally {
+      setShrinking(false);
+    }
+  }
+
+  function removePending(key: number) {
+    const gone = pending.find((p) => p.key === key);
+    if (gone) URL.revokeObjectURL(gone.url);
+    setPending((prev) => prev.filter((p) => p.key !== key));
+    setAttachError("");
+  }
+
+  // Attachments are per-project state, like the transcript and the scope: the
+  // panel is never remounted on a project switch (panes stay mounted so drafts
+  // and scroll survive), so without this a figure staged in project A would be
+  // uploaded into project B on the next send.
+  useEffect(() => {
+    pendingRef.current.forEach((p) => URL.revokeObjectURL(p.url));
+    pendingRef.current = [];
+    setPending([]);
+    setAttachError("");
+    setDragging(false);
+  }, [projectId]);
   // Stable identity so the memoized Markdown bubbles don't re-render per keystroke.
   const mdLink = useMemo<MdLinkProps>(() => ({ files, onOpenFile }), [files, onOpenFile]);
 
@@ -259,7 +497,10 @@ export default function Chat({
   useEffect(() => {
     if (!quote || quote.nonce === lastQuoteNonce.current) return;
     lastQuoteNonce.current = quote.nonce;
-    setDraft((d) => `${d && !d.endsWith("\n") ? `${d}\n` : d}> "${quote.text}" (from the PDF)\n\n`);
+    setDraft(
+      (d) =>
+        `${d && !d.endsWith("\n") ? `${d}\n` : d}> "${quote.text}" (from ${quote.source ?? "the PDF"})\n\n`,
+    );
     composerRef.current?.focus();
   }, [quote]);
 
@@ -288,12 +529,34 @@ export default function Chat({
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
-  function submit(e?: React.FormEvent) {
+  async function submit(e?: React.FormEvent) {
     e?.preventDefault();
     const text = draft.trim();
-    if (!text || busy) return;
+    // Pictures alone are a complete message — "here's a screenshot" with no
+    // words is the most natural way to use a paste-an-image composer.
+    if (busy || shrinking || (!text && pending.length === 0)) return;
+    const taken = pending;
+    const startedFor = projectId;
+    const images = taken.map((p) => p.file);
     setDraft("");
-    onSend(text, mode);
+    setPending([]);
+    pendingRef.current = [];
+    setAttachError("");
+    const sent = await onSend(text, mode, images);
+    // The previews are handed over to the send; their object URLs are no
+    // longer needed (the bubble loads the stored image from the server) — and
+    // on a project switch mid-send the message belongs to the project the user
+    // left, so it must not reappear in the one they are now looking at.
+    if (sent || projectIdRef.current !== startedFor) {
+      taken.forEach((p) => URL.revokeObjectURL(p.url));
+      return;
+    }
+    // The send never happened (a failed upload, a rejected request). Put the
+    // message back rather than destroying what the user typed — whatever they
+    // wrote in the meantime wins.
+    setDraft((d) => d || text);
+    setPending((prev) => (prev.length > 0 ? prev : taken));
+    pendingRef.current = pendingRef.current.length > 0 ? pendingRef.current : taken;
   }
 
   return (
@@ -414,6 +677,7 @@ export default function Chat({
             <ChatBubble
               key={i}
               item={item}
+              projectId={projectId}
               onAnswerQuestion={onAnswerQuestion}
               onDismissQuestion={onDismissQuestion}
               link={mdLink}
@@ -430,7 +694,42 @@ export default function Chat({
         </div>
       </div>
 
-      <form onSubmit={submit} className="shrink-0 border-t border-rule bg-ink-2 px-6 py-3">
+      <form
+        onSubmit={submit}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes("Files")) return;
+          // ALWAYS preventDefault, busy or not: without it the form is not a
+          // drop target, onDrop never fires, and the browser follows its
+          // default action — navigating the tab to the dropped file, which
+          // unmounts the whole SPA mid-turn.
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(e) => {
+          // Ignore the leaves fired while crossing the composer's own children.
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setDragging(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          // Unfiltered on purpose: a dropped PDF must produce acceptImageFiles'
+          // precise "not a PNG, JPEG, WebP, or GIF" message rather than
+          // vanishing, and drop is the one entry point with no `accept` filter.
+          void addFiles([...(e.dataTransfer.files ?? [])]);
+        }}
+        className={`shrink-0 border-t bg-ink-2 px-6 py-3 ${
+          dragging ? "border-t-leaf border-dashed" : "border-rule"
+        }`}
+      >
+        {dragging && (
+          <p
+            role="status"
+            className="mx-auto mb-2 max-w-2xl rounded border border-dashed border-leaf/70 px-3 py-1 text-center font-mono text-[11px] text-leaf"
+          >
+            {busy ? "BlattBot is working — attachments wait for the next message" : "↓ Drop images to attach"}
+          </p>
+        )}
         {scope.length > 0 && (
           <div className="mx-auto mb-2 flex max-w-2xl items-center">
             <span
@@ -487,11 +786,79 @@ export default function Chat({
             </span>
           )}
         </div>
+        {pending.length > 0 && (
+          <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-2.5">
+            {pending.map((p) => (
+              <span key={p.key} className="relative inline-block">
+                <img
+                  src={p.url}
+                  alt={p.name}
+                  className="block h-14 w-14 rounded-lg border border-rule object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={() => removePending(p.key)}
+                  disabled={busy}
+                  aria-label={`Remove ${p.name}`}
+                  title={`Remove ${p.name}`}
+                  className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-rule bg-ink-2 text-[11px] leading-none text-graphite transition-colors hover:border-pencil/60 hover:text-pencil disabled:opacity-40"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <span className="font-mono text-[10.5px] text-graphite">
+              {pending.length} of {MAX_CHAT_IMAGES} images
+            </span>
+          </div>
+        )}
+        {shrinking && (
+          <p role="status" className="mx-auto mb-2 max-w-2xl text-[11px] text-graphite">
+            Resizing an image to fit the {MAX_CHAT_IMAGE_LABEL} limit…
+          </p>
+        )}
+        {attachError && (
+          <p role="status" className="mx-auto mb-2 max-w-2xl text-[11px] text-pencil">
+            {attachError}
+          </p>
+        )}
         <div className="mx-auto flex max-w-2xl items-end gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={CHAT_IMAGE_TYPES.join(",")}
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              void addFiles([...(e.target.files ?? [])]);
+              // Reset so picking the same file twice still fires a change.
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={busy || pending.length >= MAX_CHAT_IMAGES}
+            aria-label="Attach images"
+            title="Attach images — you can also paste or drop them here"
+            className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-lg border border-rule text-graphite transition-colors hover:border-leaf/50 hover:text-paper disabled:opacity-40"
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none"
+              stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5" />
+            </svg>
+          </button>
           <textarea
             ref={composerRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
+            onPaste={(e) => {
+              const files = imageFilesFrom(e.clipboardData);
+              if (files.length === 0) return;
+              // A pasted screenshot must not also drop its file name as text.
+              e.preventDefault();
+              void addFiles(files);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -514,7 +881,9 @@ export default function Chat({
           ) : (
             <button
               type="submit"
-              disabled={!draft.trim()}
+              // Attachments alone are enough — an image-only message is valid.
+              disabled={(!draft.trim() && pending.length === 0) || shrinking}
+              title={shrinking ? "Resizing an attached image…" : "Send (Enter)"}
               className="h-[42px] rounded-lg bg-leaf-deep px-4 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-40"
             >
               Send
@@ -671,8 +1040,51 @@ function ModelChip({
   );
 }
 
+/**
+ * The thumbnails of a user message's attachments. Each opens full size in the
+ * app's own Dialog — no lightbox dependency, and the same focus/Escape
+ * behaviour every other modal has.
+ */
+function UserImages({ projectId, images }: { projectId: string; images: ChatAttachment[] }) {
+  const dialog = useDialog();
+  return (
+    <div className="mb-1.5 flex flex-wrap justify-end gap-1.5">
+      {images.map((img, n) => {
+        const src = api.chatImageUrl(projectId, img.id);
+        const label = `Attached image ${n + 1} of ${images.length}`;
+        return (
+          <button
+            key={img.id}
+            type="button"
+            aria-label={`${label} — view full size`}
+            title="View full size"
+            onClick={() =>
+              void dialog.alert({
+                title: label,
+                wide: true,
+                dismissLabel: "Close",
+                body: (
+                  <img
+                    src={src}
+                    alt={label}
+                    className="mx-auto block max-h-[70vh] w-auto max-w-full rounded"
+                  />
+                ),
+              })
+            }
+            className="overflow-hidden rounded-lg border border-rule transition-colors hover:border-leaf/60"
+          >
+            <img src={src} alt={label} className="block max-h-[140px] max-w-[140px] object-cover" />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ChatBubble({
   item,
+  projectId,
   onAnswerQuestion,
   onDismissQuestion,
   link,
@@ -680,6 +1092,7 @@ function ChatBubble({
   onFindInPdf,
 }: {
   item: ChatItem;
+  projectId: string;
   onAnswerQuestion: (questionId: string, answers: Record<string, string>) => void;
   onDismissQuestion: (questionId: string) => void;
   link: MdLinkProps;
@@ -691,6 +1104,9 @@ function ChatBubble({
     case "user":
       return (
         <div className="ml-12 self-end rounded-xl rounded-br-sm bg-ink-3 px-4 py-2.5 text-[14px] leading-relaxed text-paper">
+          {item.images && item.images.length > 0 && (
+            <UserImages projectId={projectId} images={item.images} />
+          )}
           <Markdown text={item.text} className="md-user" files={link.files} onOpenFile={link.onOpenFile} />
           {item.scope && item.scope.length > 0 && (
             <span
@@ -909,7 +1325,7 @@ function QuestionCard({
   return (
     <div
       data-question-card
-      className="w-full max-w-full self-start rounded-lg border border-gold/50 bg-ink-2 px-4 py-3"
+      className="flex w-full max-w-full flex-col self-start rounded-lg border border-gold/50 bg-ink-2 px-4 py-3"
     >
       {/* The card itself is interactive, so the announcement lives on a
           visually-hidden status line (same W7 pattern as the notices):
@@ -933,7 +1349,10 @@ function QuestionCard({
           Skip
         </button>
       </div>
-      {item.questions.map((q) => (
+      {/* A question with long options can otherwise dwarf the whole chat —
+          cap it and let the card scroll internally instead. */}
+      <div className="max-h-[26rem] min-h-0 overflow-y-auto">
+        {item.questions.map((q) => (
         <div key={q.question} className="mb-3 last:mb-0">
           <div className="mb-1.5 flex items-baseline gap-2">
             <span className="shrink-0 rounded-full border border-gold/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-gold">
@@ -1010,7 +1429,8 @@ function QuestionCard({
             />
           </div>
         </div>
-      ))}
+        ))}
+      </div>
       {anyMulti && (
         <button
           type="button"

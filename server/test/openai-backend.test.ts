@@ -184,15 +184,35 @@ function runCollected(
   agent: typeof import("../src/agent.js"),
   project: import("../src/config.js").Project,
   prompt: string,
-  opts: { mode?: import("../src/agent.js").AgentMode; sessionId?: string } = {},
+  opts: {
+    mode?: import("../src/agent.js").AgentMode;
+    sessionId?: string;
+    attachments?: import("../src/chatimages.js").TurnAttachment[];
+  } = {},
 ) {
   const events: Ev[] = [];
   let sessionId: string | undefined;
-  const done = agent.runTurn(project, prompt, (e) => events.push(e), opts.mode ?? "edit", undefined, {
-    sessionId: opts.sessionId,
-    onSessionId: (id) => (sessionId = id),
-  });
+  const done = agent.runTurn(
+    project,
+    prompt,
+    (e) => events.push(e),
+    opts.mode ?? "edit",
+    undefined,
+    { sessionId: opts.sessionId, onSessionId: (id) => (sessionId = id) },
+    opts.attachments,
+  );
   return { events, done, session: () => sessionId };
+}
+
+/** A 1×1-ish PNG header — enough for sniffing, storage, and base64 round-trips. */
+function pngBytes(): Buffer {
+  const buf = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buf, 0);
+  buf.writeUInt32BE(13, 8);
+  buf.write("IHDR", 12, "latin1");
+  buf.writeUInt32BE(2, 16);
+  buf.writeUInt32BE(2, 20);
+  return buf;
 }
 
 // ---- Integration: the full loop against the mock ----------------------------
@@ -548,6 +568,179 @@ describe("openai backend turn loop", () => {
     const { done } = runCollected(agent, updated, "hi");
     await done;
     expect(mock.requests[0].body.model).toBe("project-model-x");
+  });
+
+  it("sends attached images as image_url parts and names their paths in the text", async () => {
+    const { agent, project } = await setup();
+    const images = await import("../src/chatimages.js");
+    const ids = [images.saveChatImage(project.id, pngBytes()).id, images.saveChatImage(project.id, pngBytes()).id];
+    const attachments = images.resolveAttachments(project.id, ids);
+
+    mock.queue = [{ kind: "text", text: "I see two screenshots." }];
+    const { events, done, session } = runCollected(agent, project, "what is wrong here?", { attachments });
+    await done;
+
+    const sent = mock.requests[0].body.messages.at(-1);
+    expect(sent.role).toBe("user");
+    expect(Array.isArray(sent.content)).toBe(true);
+    expect(sent.content[0].type).toBe("text");
+    expect(sent.content[0].text).toContain("what is wrong here?");
+    // The on-disk paths ride along so the agent can re-open one mid-turn.
+    expect(sent.content[0].text).toContain(attachments[0].path);
+    const parts = sent.content.slice(1);
+    expect(parts.map((p: any) => p.type)).toEqual(["image_url", "image_url"]);
+    for (const p of parts) {
+      expect(p.image_url.url.startsWith("data:image/png;base64,")).toBe(true);
+      expect(Buffer.from(p.image_url.url.split(",")[1], "base64").equals(pngBytes())).toBe(true);
+    }
+    expect(events.at(-1)!.type).toBe("turn_end");
+
+    // The stored history keeps the text, never the megabytes of base64.
+    const history = JSON.parse(readFileSync(join(dataDir, "oai-sessions", `${session()}.json`), "utf8"));
+    expect(JSON.stringify(history)).not.toContain("base64");
+    expect(history[0].content).toMatch(/2 attached images — sent with this message/);
+  });
+
+  it("sends the base64 payload once — never again on the turn's later iterations", async () => {
+    const { agent, project } = await setup();
+    const images = await import("../src/chatimages.js");
+    const attachments = images.resolveAttachments(project.id, [
+      images.saveChatImage(project.id, pngBytes()).id,
+      images.saveChatImage(project.id, pngBytes()).id,
+    ]);
+
+    // A tool-using turn: four requests, and only the first may carry pictures.
+    mock.queue = [
+      { kind: "tools", calls: [{ name: "list_files", args: {} }] },
+      { kind: "tools", calls: [{ name: "read_file", args: { path: "main.tex" } }] },
+      { kind: "tools", calls: [{ name: "list_files", args: {} }] },
+      { kind: "text", text: "Done looking." },
+    ];
+    const { done } = runCollected(agent, project, "check these screenshots", { attachments });
+    await done;
+
+    expect(mock.requests).toHaveLength(4);
+    // Regression: `messages` kept the OaiContentPart[] for the life of the
+    // turn, so each of up to 30 iterations re-uploaded (and re-billed) every
+    // attached image — ~1.5 GB of upload for one message at the old caps.
+    expect(Array.isArray(mock.requests[0].body.messages.at(-1).content)).toBe(true);
+    for (const request of mock.requests.slice(1)) {
+      expect(JSON.stringify(request.body)).not.toContain("base64");
+    }
+    // The user message survives as text, with a note saying where the images went.
+    const later = mock.requests[3].body.messages.find((m: any) => m.role === "user");
+    expect(typeof later.content).toBe("string");
+    expect(later.content).toContain("check these screenshots");
+    expect(later.content).toMatch(/2 attached images — sent with this message/);
+    expect(later.content).toContain(attachments[0].path);
+  });
+
+  it("gives an image-only message a prompt of its own", async () => {
+    const { agent, project } = await setup();
+    const images = await import("../src/chatimages.js");
+    const attachments = images.resolveAttachments(project.id, [
+      images.saveChatImage(project.id, pngBytes()).id,
+    ]);
+    mock.queue = [{ kind: "text", text: "That table is misaligned." }];
+    const { done } = runCollected(agent, project, "", { attachments });
+    await done;
+
+    // A message may be pictures alone; the model must not receive a bare
+    // bracket note with no instruction in front of it.
+    const text = mock.requests[0].body.messages.at(-1).content[0].text;
+    expect(text.startsWith(agent.IMAGE_ONLY_PROMPT)).toBe(true);
+    expect(text).toContain(attachments[0].path);
+  });
+
+  it("read_file on an attachment describes the image instead of failing on its bytes", async () => {
+    const { agent, project } = await setup();
+    const images = await import("../src/chatimages.js");
+    const stored = images.saveChatImage(project.id, pngBytes());
+    const attachments = images.resolveAttachments(project.id, [stored.id]);
+
+    mock.queue = [
+      { kind: "tools", calls: [{ name: "read_file", args: { path: attachments[0].path } }] },
+      { kind: "text", text: "Got it." },
+    ];
+    const { events, done } = runCollected(agent, project, "look at this", { attachments });
+    await done;
+
+    // attachmentNote tells the model these paths are readable; read_file used
+    // to answer "binary file — cannot read as text" for every one of them.
+    const result = events.find((e) => e.type === "tool_result")!;
+    expect(result.isError).toBe(false);
+    const sentBack = mock.requests[1].body.messages.find((m: any) => m.role === "tool");
+    expect(sentBack.content).toContain("image the user attached");
+    expect(sentBack.content).toContain("image/png");
+    expect(sentBack.content).toContain("2×2 px");
+    expect(sentBack.content).not.toMatch(/binary file/);
+  });
+
+  it("read_file still refuses a real binary inside the project", async () => {
+    const { agent, project, dir } = await setup();
+    writeFileSync(join(dir, "figure.bin"), Buffer.from([0x00, 0x01, 0x02, 0x00]));
+    mock.queue = [
+      { kind: "tools", calls: [{ name: "read_file", args: { path: "figure.bin" } }] },
+      { kind: "text", text: "ok" },
+    ];
+    const { events, done } = runCollected(agent, project, "read it");
+    await done;
+    expect(events.find((e) => e.type === "tool_result")!.isError).toBe(true);
+  });
+
+  it("retries once without the images when the endpoint cannot take them", async () => {
+    const { agent, project } = await setup();
+    const images = await import("../src/chatimages.js");
+    const attachments = images.resolveAttachments(project.id, [
+      images.saveChatImage(project.id, pngBytes()).id,
+    ]);
+
+    mock.queue = [
+      // A text-only endpoint's typical refusal of an image part.
+      {
+        kind: "error",
+        status: 400,
+        body: JSON.stringify({ error: { message: "image_url is not supported by this model" } }),
+      },
+      { kind: "text", text: "I cannot see it, but here is what I can say." },
+    ];
+    const { events, done } = runCollected(agent, project, "describe this", { attachments });
+    await done;
+
+    // Two requests: the vision one, then the text-only retry.
+    expect(mock.requests).toHaveLength(2);
+    expect(Array.isArray(mock.requests[0].body.messages.at(-1).content)).toBe(true);
+    const retried = mock.requests[1].body.messages.at(-1);
+    expect(typeof retried.content).toBe("string");
+    expect(retried.content).toContain("describe this");
+    expect(retried.content).toMatch(/could not be sent to this endpoint/);
+    // …and NOT the attachment note's contradicting claim that the same
+    // pictures are "included above as image content".
+    expect(retried.content).not.toMatch(/included above as image content/);
+
+    // The user is told, and the turn still finishes normally.
+    const notice = events.find((e) => e.type === "notice")!;
+    expect(notice.tone).toBe("warn");
+    expect(String(notice.text)).toMatch(/could not accept the attached image/);
+    expect(events.find((e) => e.type === "error")).toBeUndefined();
+    const end = events.at(-1)!;
+    expect(end.type).toBe("turn_end");
+    expect(end.isError).toBe(false);
+    expect(end.result).toBe("I cannot see it, but here is what I can say.");
+  });
+
+  it("does not retry when the failure has nothing to do with images", async () => {
+    const { agent, project } = await setup();
+    const images = await import("../src/chatimages.js");
+    const attachments = images.resolveAttachments(project.id, [
+      images.saveChatImage(project.id, pngBytes()).id,
+    ]);
+    mock.queue = [{ kind: "error", status: 401, body: JSON.stringify({ error: { message: "bad key" } }) }];
+    const { events, done } = runCollected(agent, project, "describe this", { attachments });
+    await done;
+    expect(mock.requests).toHaveLength(1);
+    expect(events.find((e) => e.type === "notice")).toBeUndefined();
+    expect(String(events.find((e) => e.type === "error")!.message)).toMatch(/HTTP 401/);
   });
 });
 

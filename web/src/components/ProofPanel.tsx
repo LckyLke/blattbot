@@ -22,6 +22,8 @@ interface Props {
   onReject: () => void | Promise<void>;
   onRejectFile: (path: string) => void;
   onRejectHunk: (patch: string) => void;
+  /** Open a changed line in the Source editor for manual tweaks. */
+  onJump?: (file: string, line: number) => void;
   /** Drop the local edits to the conflicted paths (reject-file per path). */
   onDiscardConflicts: (paths: string[]) => void | Promise<void>;
 }
@@ -39,6 +41,7 @@ export default function ProofPanel({
   onReject,
   onRejectFile,
   onRejectHunk,
+  onJump,
   onDiscardConflicts,
 }: Props) {
   const files = useMemo(() => parseDiff(diff), [diff]);
@@ -207,6 +210,7 @@ export default function ProofPanel({
               busy={busy}
               onRejectFile={onRejectFile}
               onRejectHunk={onRejectHunk}
+              onJump={onJump}
             />
           ))}
         </div>
@@ -278,11 +282,13 @@ function FileDiff({
   busy,
   onRejectFile,
   onRejectHunk,
+  onJump,
 }: {
   file: DiffFile;
   busy: boolean;
   onRejectFile: (path: string) => void;
   onRejectHunk: (patch: string) => void;
+  onJump?: (file: string, line: number) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [confirmFile, setConfirmFile] = useState(false);
@@ -336,10 +342,40 @@ function FileDiff({
       </div>
       {!collapsed &&
         file.hunks.map((hunk, hi) => (
-          <HunkBlock key={hi} file={file} hunk={hunk} busy={busy} onRejectHunk={onRejectHunk} />
+          <HunkBlock key={hi} file={file} hunk={hunk} busy={busy} onRejectHunk={onRejectHunk} onJump={onJump} />
         ))}
     </section>
   );
+}
+
+/**
+ * The line to land on when jumping into the source: the hunk's first added
+ * line, else its first context line — i.e. where the change actually is.
+ * Deleted files have nothing to open.
+ */
+/**
+ * The hunk's location as a line range in the current file. Git's own hunk
+ * header carries the enclosing *function* name, which in LaTeX is whatever
+ * prose line happened to precede the change ("should let through.") — noise
+ * that reads like broken text. The line numbers are what a reviewer wants.
+ */
+export function hunkRange(hunk: DiffHunk): string {
+  const nums = hunk.lines.map((l) => l.newNo).filter((n): n is number => n != null);
+  if (nums.length === 0) {
+    const olds = hunk.lines.map((l) => l.oldNo).filter((n): n is number => n != null);
+    if (olds.length === 0) return "";
+    return olds.length === 1 ? `deleted line ${olds[0]}` : `deleted lines ${olds[0]}–${olds[olds.length - 1]}`;
+  }
+  const from = nums[0];
+  const to = nums[nums.length - 1];
+  return from === to ? `line ${from}` : `lines ${from}–${to}`;
+}
+
+export function hunkJumpLine(hunk: DiffHunk): number | null {
+  const added = hunk.lines.find((l) => l.kind === "add" && l.newNo != null);
+  if (added?.newNo != null) return added.newNo;
+  const ctx = hunk.lines.find((l) => l.newNo != null);
+  return ctx?.newNo ?? null;
 }
 
 function HunkBlock({
@@ -347,44 +383,63 @@ function HunkBlock({
   hunk,
   busy,
   onRejectHunk,
+  onJump,
 }: {
   file: DiffFile;
   hunk: DiffHunk;
   busy: boolean;
   onRejectHunk: (patch: string) => void;
+  onJump?: (file: string, line: number) => void;
 }) {
   const [confirm, setConfirm] = useState(false);
+  const jumpLine = hunkJumpLine(hunk);
+  const canJump = Boolean(onJump) && file.status !== "deleted" && jumpLine != null;
+  const range = hunkRange(hunk);
   return (
-    <div className="mt-1 overflow-x-auto rounded border border-rule bg-ink-2/60">
-      <div className="flex items-center gap-2 border-b border-rule px-3 py-0.5">
-        <span className="min-w-0 truncate font-mono text-[11.5px] italic text-graphite">
-          {hunk.header || hunk.rawHeader.replace(/^@@ | @@.*$/g, "")}
+    // The header stays OUTSIDE the horizontal scroll area: long LaTeX lines
+    // must not drag the hunk's actions off to the right with them.
+    <div className="mt-1 overflow-hidden rounded border border-rule bg-ink-2/60">
+      <div className="flex items-center gap-2 border-b border-rule px-3 py-1">
+        <span className="shrink-0 font-mono text-[11px] text-graphite/80">{range}</span>
+        <span className="ml-auto flex shrink-0 items-center gap-0.5">
+          {canJump && (
+            <button
+              onClick={() => onJump!(file.path, jumpLine!)}
+              aria-label={`Open ${file.path} line ${jumpLine} in the editor`}
+              title="Edit this in the source"
+              className="rounded px-2 py-1 text-[15px] leading-none text-paper-dim transition-colors hover:bg-ink-3 hover:text-leaf"
+            >
+              ↗
+            </button>
+          )}
+          {confirm ? (
+            <button
+              onClick={() => {
+                setConfirm(false);
+                onRejectHunk(buildHunkPatch(file, hunk));
+              }}
+              disabled={busy}
+              aria-label={`Really discard this change in ${file.path}?`}
+              className="rounded bg-pencil/90 px-2 py-1 text-[11.5px] font-medium leading-none text-ink transition-colors hover:bg-pencil disabled:opacity-50"
+            >
+              really?
+            </button>
+          ) : (
+            <button
+              onClick={() => setConfirm(true)}
+              disabled={busy}
+              aria-label={`Discard this change in ${file.path}`}
+              title="Discard this change"
+              className="rounded px-2 py-1 text-[17px] leading-none text-paper-dim transition-colors hover:bg-ink-3 hover:text-pencil disabled:opacity-50"
+            >
+              ×
+            </button>
+          )}
         </span>
-        {confirm ? (
-          <button
-            onClick={() => {
-              setConfirm(false);
-              onRejectHunk(buildHunkPatch(file, hunk));
-            }}
-            disabled={busy}
-            aria-label={`Really discard this change in ${file.path}?`}
-            className="ml-auto shrink-0 rounded bg-pencil/90 px-1.5 text-[11px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
-          >
-            really?
-          </button>
-        ) : (
-          <button
-            onClick={() => setConfirm(true)}
-            disabled={busy}
-            aria-label={`Discard this change in ${file.path}`}
-            title="discard this change"
-            className="ml-auto shrink-0 rounded px-1 font-mono text-[12px] leading-none text-graphite transition-colors hover:text-pencil disabled:opacity-50"
-          >
-            ×
-          </button>
-        )}
       </div>
-      <HunkLines hunk={hunk} />
+      <div className="overflow-x-auto">
+        <HunkLines hunk={hunk} />
+      </div>
     </div>
   );
 }

@@ -9,7 +9,7 @@
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,7 +98,17 @@ const MD_ECHO = [
  * answer, or the skip when the user declined. Purely local — no real
  * endpoint is ever contacted.
  */
-function startAskMock(port: number): Promise<{ close: () => Promise<void> }> {
+function startAskMock(
+  port: number,
+): Promise<{
+  close: () => Promise<void>;
+  prompts: string[];
+  images: { mime: string; bytes: number }[];
+}> {
+  /** Every user prompt the "model" received — lets checks assert what was sent. */
+  const prompts: string[] = [];
+  /** Every image part the "model" received (W10) — mime + decoded byte count. */
+  const images: { mime: string; bytes: number }[] = [];
   const server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on("data", (c) => chunks.push(c));
@@ -114,6 +124,38 @@ function startAskMock(port: number): Promise<{ close: () => Promise<void> }> {
       const msgs: any[] = body?.messages ?? [];
       const last = msgs.at(-1);
       const userCount = msgs.filter((m: any) => m.role === "user").length;
+      const lastUser = [...msgs].reverse().find((m: any) => m.role === "user");
+      if (typeof lastUser?.content === "string" && !prompts.includes(lastUser.content)) {
+        prompts.push(lastUser.content);
+      }
+      // W10: a vision-shaped user message — record the image parts and answer
+      // with plain text (no question card) so the check stays deterministic.
+      if (Array.isArray(lastUser?.content)) {
+        let seen = 0;
+        for (const part of lastUser.content) {
+          if (part?.type !== "image_url" || typeof part.image_url?.url !== "string") continue;
+          const m = /^data:([^;]+);base64,(.*)$/s.exec(part.image_url.url);
+          if (!m) continue;
+          seen++;
+          images.push({ mime: m[1], bytes: Buffer.from(m[2], "base64").length });
+        }
+        const text = lastUser.content.find((p: any) => p?.type === "text")?.text ?? "";
+        if (typeof text === "string" && !prompts.includes(text)) prompts.push(text);
+        sse({ choices: [{ delta: { content: `Received ${seen} attached image(s).` } }] });
+        sse({ choices: [{ delta: {}, finish_reason: "stop" }] });
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
+      // A Refs "fix" request is answered with plain text — the point of the
+      // check is that the composed repair prompt reached the model at all.
+      if (typeof lastUser?.content === "string" && lastUser.content.includes("citation audit flagged")) {
+        sse({ choices: [{ delta: { content: "Looking into that flagged reference now." } }] });
+        sse({ choices: [{ delta: {}, finish_reason: "stop" }] });
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
       if (last?.role !== "tool") {
         const args = JSON.stringify({
           questions: [
@@ -185,10 +227,19 @@ function startAskMock(port: number): Promise<{ close: () => Promise<void> }> {
   });
   return new Promise((resolveStart) =>
     server.listen(port, "127.0.0.1", () =>
-      resolveStart({ close: () => new Promise<void>((r) => server.close(() => r())) }),
+      resolveStart({ close: () => new Promise<void>((r) => server.close(() => r())), prompts, images }),
     ),
   );
 }
+
+/**
+ * A real 96×64 two-band PNG (240 bytes) — big enough that the composer
+ * thumbnail and the bubble render visibly in the screenshots, small enough to
+ * inline. Pasted into the composer through a synthetic DataTransfer.
+ */
+const PASTE_PNG_B64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAGAAAABACAIAAABqVuVZAAAAt0lEQVR4nO3YQQ3AIBQEUXxWRoUgowqqo5ZwQA/kZ//hJSiYzE6h43suZ0NgoLMnABBAZw1hEEAMKv3OmBhADDKx5F1fgwBikIlpUONfLiINEINMTIPSJRZpgBhkYvncuCgCxCATa3c8VgFiUO3E5ns7GwIA/fgBEEBnDWEQQAwq/QqbGEAMMrHkXV+DAGKQiWlQ418uIg0Qg0xMg9IlFmmAGGRi+dy4KALEIBNrdzxWAWLQrJzYAoofYneczCQZAAAAAElFTkSuQmCC";
+const PASTE_PNG_BYTES = 240;
 
 /** Local auth: script-side API calls carry the Bearer token from /api/bootstrap. */
 let authToken = "";
@@ -807,6 +858,77 @@ async function main() {
       (await getFile("main.tex")).includes("manual tweak from ui-verify");
     await shot("25c-proof-file-discarded");
 
+    // The hunk's ↗ opens that exact line in the Source editor for manual
+    // tweaks (the pending diff stays untouched).
+    const jumpBtn = page.getByRole("button", { name: /^Open main\.tex line \d+ in the editor$/ }).filter({ visible: true });
+    await jumpBtn.first().waitFor({ timeout: 10_000 });
+    await jumpBtn.first().click();
+    // Source opens with the changed line revealed and flashed.
+    const proofJumpOk = await page
+      .waitForFunction(
+        () => {
+          const flash = document.querySelector(".cm-flash-line");
+          const content = [...document.querySelectorAll(".cm-content")].find(
+            (c) => (c as HTMLElement).offsetParent !== null,
+          );
+          return Boolean(flash && content && content.textContent?.includes("manual tweak from ui-verify"));
+        },
+        { timeout: 10_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    await shot("25b2-proof-jump-to-source");
+    // Quoting from the SOURCE (not just the PDF): select text in the editor,
+    // the chip appears, and the draft names the file:line it came from.
+    await leftPane().getByRole("tab", { name: "Chat", exact: true }).click();
+    await aside().getByRole("tab", { name: "Source", exact: true }).click();
+    await aside().locator(".cm-content").first().waitFor({ state: "visible", timeout: 15_000 });
+    await page.evaluate(() => {
+      const content = [...document.querySelectorAll('aside[data-pane="right"] .cm-content')].find(
+        (c) => (c as HTMLElement).offsetParent !== null,
+      );
+      const line = content?.querySelector(".cm-line");
+      if (!line) return;
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(line);
+      sel.addRange(range);
+      line.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    });
+    const srcChip = page.getByRole("button", { name: "❝ quote in chat" }).filter({ visible: true });
+    const sourceQuoteChipOk = await srcChip
+      .first()
+      .waitFor({ timeout: 5_000 })
+      .then(() => true)
+      .catch(() => false);
+    let sourceQuoteDraftOk = false;
+    if (sourceQuoteChipOk) {
+      await srcChip.first().click();
+      await page
+        .waitForFunction(
+          () => {
+            const el = [...document.querySelectorAll("textarea")].find((t) =>
+              t.placeholder.includes("Ask BlattBot"),
+            );
+            return Boolean(el && /\(from .+\.tex:\d+\)/.test(el.value));
+          },
+          { timeout: 5_000 },
+        )
+        .catch(() => {});
+      const draft = await page.getByPlaceholder(/Ask BlattBot/).inputValue();
+      // Names the file and line, not "the PDF".
+      sourceQuoteDraftOk = /\(from .+\.tex:\d+\)/.test(draft) && !draft.includes("(from the PDF)");
+      await page.getByPlaceholder(/Ask BlattBot/).fill("");
+      await shot("42c-source-quote");
+    }
+
+    // Restore the layout the rest of the flow expects (chat left, proof right):
+    // the jump put Source into a pane, which displaced one of them.
+    await leftPane().getByRole("tab", { name: "Chat", exact: true }).click();
+    await aside().getByRole("tab", { name: "Proof", exact: true }).click();
+    await page.getByText("manual tweak from ui-verify").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+
     // Discard main.tex's remaining hunk via its × (server reverse-applies the
     // patch the client reconstructed from the diff) — the proof empties out.
     await page.getByRole("button", { name: "Discard this change in main.tex" }).click();
@@ -1275,6 +1397,307 @@ async function main() {
       (await skipQuestionText().count()) > 0;
     await shot("30f-question-skipped");
 
+    // ---- W10: images in chat — paste → thumbnail → send → bubble → reload ----
+    // The paste is simulated with a real DataTransfer so the composer's own
+    // onPaste path runs (screenshots are the common case).
+    const imgComposer = () => page.getByPlaceholder(/Ask BlattBot/).filter({ visible: true }).first();
+    await imgComposer().click();
+    await page.evaluate((b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const file = new File([bytes], "screenshot.png", { type: "image/png" });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      const areas = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].filter(
+        (t) => t.offsetParent !== null && (t.placeholder ?? "").includes("Ask BlattBot"),
+      );
+      areas[0].dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    }, PASTE_PNG_B64);
+
+    // The pending thumbnail (with its remove ×) appears above the input.
+    const pendingThumb = () => leftPane().getByAltText("screenshot.png").filter({ visible: true });
+    await pendingThumb().first().waitFor({ timeout: 10_000 });
+    const imgPasteThumbOk =
+      (await pendingThumb().count()) === 1 &&
+      (await leftPane().getByRole("button", { name: "Remove screenshot.png" }).filter({ visible: true }).count()) === 1 &&
+      (await leftPane().getByText("1 of 4 image").filter({ visible: true }).count()) === 1 &&
+      (await leftPane().getByRole("button", { name: "Attach images" }).filter({ visible: true }).count()) === 1;
+    await shot("30i-image-pending");
+
+    // Removing it clears the row; paste again to actually send one.
+    await leftPane().getByRole("button", { name: "Remove screenshot.png" }).first().click();
+    const imgRemoveOk = (await pendingThumb().count()) === 0;
+    await page.evaluate((b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "screenshot.png", { type: "image/png" }));
+      const areas = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].filter(
+        (t) => t.offsetParent !== null && (t.placeholder ?? "").includes("Ask BlattBot"),
+      );
+      areas[0].dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    }, PASTE_PNG_B64);
+    await pendingThumb().first().waitFor({ timeout: 10_000 });
+
+    const imagesBefore = askMock.images.length;
+    await imgComposer().fill("What is wrong with this figure?");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await leftPane()
+      .getByText(/Received 1 attached image/)
+      .filter({ visible: true })
+      .first()
+      .waitFor({ timeout: 20_000 });
+
+    // The model really received the bytes as an image part.
+    const sentImages = askMock.images.slice(imagesBefore);
+    const imgSentToModelOk =
+      sentImages.length === 1 &&
+      sentImages[0].mime === "image/png" &&
+      sentImages[0].bytes === PASTE_PNG_BYTES;
+    // …the composer cleared, and the user bubble renders the stored image.
+    const bubbleImg = () => leftPane().locator('img[src*="/chat-image/"]').filter({ visible: true });
+    await bubbleImg().first().waitFor({ timeout: 10_000 });
+    const imgComposerClearedOk = (await pendingThumb().count()) === 0;
+    const imgBubbleOk = await bubbleImg()
+      .first()
+      .evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth === 96 && el.naturalHeight === 64);
+    await shot("30j-image-sent");
+
+    // Clicking the thumbnail opens the full-size view in the app's own dialog.
+    await bubbleImg().first().click();
+    const viewer = page.getByRole("dialog", { name: /Attached image 1 of 1/ });
+    await viewer.waitFor({ timeout: 5_000 });
+    const imgDialogOk = (await viewer.locator('img[src*="/chat-image/"]').count()) === 1;
+    await shot("30k-image-fullsize");
+    await page.keyboard.press("Escape");
+    await viewer.waitFor({ state: "detached", timeout: 5_000 });
+
+    // The attachment survives a reload — it is persisted on the transcript.
+    await page.reload();
+    await page.getByRole("button", { name: "Back to dashboard" }).waitFor({ timeout: 10_000 });
+    await page
+      .locator('img[src*="/chat-image/"]')
+      .filter({ visible: true })
+      .first()
+      .waitFor({ timeout: 15_000 });
+    const imgRestoredOk =
+      (await page.locator('img[src*="/chat-image/"]').filter({ visible: true }).count()) === 1;
+    // …and it landed in DATA_DIR, never the working tree: nothing image-shaped
+    // may show up in the review diff that gets pushed to Overleaf.
+    const diffAfterImage = (await (
+      await afetch(`${apiBase}/projects/${mockProjectId}/diff`)
+    ).json()) as { diff: string };
+    const imgNoDiffOk =
+      existsSync(join(dataDir, "chat-uploads", mockProjectId)) &&
+      !diffAfterImage.diff.includes("chat-upload") &&
+      !/\.png/i.test(diffAfterImage.diff);
+    await shot("30l-image-restored");
+
+    // ---- W10 hardening: drops, image-only sends, a failed upload ----------
+    /**
+     * Drop a file on the composer form the way the OS does. Returns whether
+     * both handlers called preventDefault: if either does not, the browser
+     * falls back to its default action and NAVIGATES the tab to the file,
+     * unmounting the SPA (a streaming turn, its Stop button, the live diff).
+     */
+    const dropOnComposer = (f: { name: string; type: string; b64?: string }) =>
+      page.evaluate((file) => {
+        const area = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].find(
+          (t) => t.offsetParent !== null && /Ask BlattBot|BlattBot is working/.test(t.placeholder ?? ""),
+        );
+        const form = area?.closest("form");
+        if (!form) return { found: false, overPrevented: false, dropPrevented: false };
+        const bytes = file.b64
+          ? Uint8Array.from(atob(file.b64), (c) => c.charCodeAt(0))
+          : new Uint8Array([0x25, 0x50, 0x44, 0x46]); // "%PDF"
+        const dt = new DataTransfer();
+        dt.items.add(new File([bytes], file.name, { type: file.type }));
+        const over = new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true });
+        form.dispatchEvent(over);
+        const drop = new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true });
+        form.dispatchEvent(drop);
+        return { found: true, overPrevented: over.defaultPrevented, dropPrevented: drop.defaultPrevented };
+      }, f);
+
+    const attachNotice = (pattern: RegExp) => leftPane().getByText(pattern).filter({ visible: true });
+
+    // A dropped NON-image used to land silently: the hint appeared, the drop
+    // "took", and nothing happened at all.
+    const pdfDrop = await dropOnComposer({ name: "reviewer-notes.pdf", type: "application/pdf" });
+    await attachNotice(/reviewer-notes\.pdf is not a PNG/).first().waitFor({ timeout: 10_000 });
+    const dropRejectOk =
+      pdfDrop.found &&
+      pdfDrop.overPrevented &&
+      pdfDrop.dropPrevented &&
+      (await attachNotice(/reviewer-notes\.pdf is not a PNG/).count()) === 1;
+    await shot("30m-drop-non-image");
+
+    // A failed upload must not eat the message. The bytes are not a PNG, so
+    // the server's sniffing rejects them after the composer already cleared.
+    const failComposer = () => page.getByPlaceholder(/Ask BlattBot/).filter({ visible: true }).first();
+    await failComposer().click();
+    await dropOnComposer({ name: "renamed.png", type: "image/png" });
+    await leftPane().getByAltText("renamed.png").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+    await failComposer().fill("A long question I do not want to retype.");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await attachNotice(/Image upload failed/).first().waitFor({ timeout: 20_000 });
+    const uploadFailKeepsDraftOk =
+      (await failComposer().inputValue()) === "A long question I do not want to retype." &&
+      (await leftPane().getByAltText("renamed.png").filter({ visible: true }).count()) === 1;
+    await shot("30n-upload-failed-draft-kept");
+    // Clear the bad attachment and the draft before the next round.
+    await leftPane().getByRole("button", { name: "Remove renamed.png" }).first().click();
+    await failComposer().fill("");
+
+    // An image with no words is a complete message: Send must be enabled and
+    // the turn must actually run.
+    await page.evaluate((b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "solo.png", { type: "image/png" }));
+      const areas = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].filter(
+        (t) => t.offsetParent !== null && (t.placeholder ?? "").includes("Ask BlattBot"),
+      );
+      areas[0].dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    }, PASTE_PNG_B64);
+    await leftPane().getByAltText("solo.png").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+    const sendButton = () => page.getByRole("button", { name: "Send", exact: true });
+    const imageOnlyEnabledOk =
+      (await failComposer().inputValue()) === "" && (await sendButton().isEnabled());
+    const imagesBeforeSolo = askMock.images.length;
+    const replies = () => leftPane().getByText(/Received 1 attached image/).filter({ visible: true });
+    const repliesBefore = await replies().count();
+    await sendButton().click();
+    // The bubble appears optimistically — wait for the MODEL's answer instead.
+    await replies().nth(repliesBefore).waitFor({ timeout: 20_000 });
+    const imageOnlySentOk = askMock.images.length === imagesBeforeSolo + 1;
+    await shot("30o-image-only-sent");
+    // Idle again (Stop → Send) before the next round.
+    await sendButton().waitFor({ timeout: 20_000 });
+
+    // While a turn runs the drop must STILL be prevented (otherwise the tab
+    // navigates away mid-stream) and must say why nothing was attached. The
+    // pending question card is the stable "busy" state in this flow.
+    await page.getByPlaceholder(/Ask BlattBot/).filter({ visible: true }).first().fill("One more pass, please.");
+    await sendButton().click();
+    const busySkip = () => leftPane().getByRole("button", { name: "Skip these questions" }).filter({ visible: true });
+    await busySkip().first().waitFor({ timeout: 20_000 });
+    const busyDrop = await dropOnComposer({ name: "while-busy.png", type: "image/png", b64: PASTE_PNG_B64 });
+    await attachNotice(/Wait for the current turn/).first().waitFor({ timeout: 10_000 });
+    const busyDropOk =
+      busyDrop.found &&
+      busyDrop.overPrevented &&
+      busyDrop.dropPrevented &&
+      // …and the page is still the app: a navigation would have unmounted it.
+      (await busySkip().count()) === 1 &&
+      (await leftPane().getByAltText("while-busy.png").count()) === 0;
+    await shot("30p-drop-while-busy");
+    await busySkip().first().click();
+    await sendButton().waitFor({ timeout: 20_000 });
+
+    // A staged attachment belongs to the project it was staged in. Chat is
+    // never remounted on a switch (panes stay mounted so drafts and scroll
+    // survive), so without an explicit reset a figure pasted into project A
+    // would be uploaded into project B on the next send.
+    const switchTarget = (await (
+      await afetch(`${apiBase}/projects`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ local: true, name: "Switch Target" }),
+      })
+    ).json()) as { id: string };
+    await page.reload();
+    await page.getByRole("button", { name: "Back to dashboard" }).waitFor({ timeout: 15_000 });
+    await page.evaluate((b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const dt = new DataTransfer();
+      dt.items.add(new File([bytes], "stale.png", { type: "image/png" }));
+      const areas = [...document.querySelectorAll<HTMLTextAreaElement>("textarea")].filter(
+        (t) => t.offsetParent !== null && (t.placeholder ?? "").includes("Ask BlattBot"),
+      );
+      areas[0].dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    }, PASTE_PNG_B64);
+    await page.getByAltText("stale.png").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+    await page.getByLabel("Switch project").selectOption(switchTarget.id);
+    const switchDialog = page.getByRole("dialog", { name: "Unapproved changes" });
+    if (await switchDialog.count()) {
+      await switchDialog.getByRole("button", { name: "Switch project" }).click();
+    }
+    await page.getByAltText("stale.png").waitFor({ state: "detached", timeout: 10_000 }).catch(() => {});
+    const attachmentsClearedOnSwitchOk = (await page.getByAltText("stale.png").count()) === 0;
+    await shot("30q-attachments-cleared-on-switch");
+    // Back to the project the rest of the flow works in, and drop the extra.
+    await page.getByLabel("Switch project").selectOption(mockProjectId);
+    await page.getByRole("button", { name: "Back to dashboard" }).waitFor({ timeout: 15_000 });
+    await afetch(`${apiBase}/projects/${switchTarget.id}`, { method: "DELETE" });
+    await page.reload();
+    await page.getByRole("button", { name: "Back to dashboard" }).waitFor({ timeout: 15_000 });
+
+    // ---- Refs: a flagged citation offers an agentic repair ----
+    // The audit itself talks to Crossref/OpenAlex, so seed its stored verdict
+    // instead of reaching the network: the UI path under test is badge → fix
+    // button → composed repair prompt → agent turn (served by the ask mock).
+    const AUDIT_KEY = "vaswani2017attention";
+    const seedAudit = (result: Record<string, unknown>) => {
+      mkdirSync(join(dataDir, "papers"), { recursive: true });
+      writeFileSync(
+        join(dataDir, "papers", `${mockProjectId}.audit.json`),
+        JSON.stringify({ at: new Date().toISOString(), results: { [AUDIT_KEY]: result } }),
+      );
+    };
+    const anyFixButton = () =>
+      page.getByRole("button", { name: /^Fix .* with the agent$/ }).filter({ visible: true });
+    const openRefs = async () => {
+      await page.reload();
+      // Pane-agnostic: by this point the ask flow may have swapped the panes.
+      await page.getByRole("tab", { name: "References", exact: true }).filter({ visible: true }).first().click();
+      await page.getByRole("button", { name: AUDIT_KEY, exact: true }).filter({ visible: true }).waitFor({ timeout: 10_000 });
+    };
+
+    // A verified entry offers no repair…
+    seedAudit({ status: "verified", url: "https://doi.org/10.5555/3295222.3295349" });
+    await openRefs();
+    const fixOnlyOnFlaggedOk = (await anyFixButton().count()) === 0;
+
+    // …the same entry flagged as a mismatch does.
+    seedAudit({
+      status: "mismatch",
+      detail: 'entry title "Attention is All You Need" vs Crossref "A Different Paper"',
+      url: "https://doi.org/10.1093/comjnl/27.2.97",
+    });
+    await openRefs();
+    const fixButton = () =>
+      page.getByRole("button", { name: `Fix ${AUDIT_KEY} with the agent` }).filter({ visible: true });
+    await fixButton().waitFor({ timeout: 10_000 });
+    const auditBadgeOk =
+      (await page.getByLabel(`Audit: title mismatch — ${AUDIT_KEY}`).filter({ visible: true }).count()) > 0;
+    await shot("30g-refs-flagged");
+    await fixButton().click();
+    // The turn is served by the ask mock, which records the prompt it received.
+    await page
+      .getByText("Looking into that flagged reference now.")
+      .filter({ visible: true })
+      .first()
+      .waitFor({ timeout: 20_000 });
+    const fixPrompt = askMock.prompts.find((p) => p.includes("citation audit flagged")) ?? "";
+    const fixPromptOk =
+      fixPrompt.includes(`\\cite{${AUDIT_KEY}}`) &&
+      fixPrompt.includes("sections/refs.bib") &&
+      fixPrompt.includes("https://doi.org/10.1093/comjnl/27.2.97") &&
+      /do not change its cite key/i.test(fixPrompt) &&
+      /audit_citations/.test(fixPrompt);
+    // Chat must be on screen — the user should see the turn they triggered.
+    const fixChatVisibleOk =
+      (await page.locator('[data-pane] [data-panel="chat"]').filter({ visible: true }).count()) > 0 ||
+      (await page.getByText("Looking into that flagged reference now.").filter({ visible: true }).count()) > 0;
+    await shot("30h-refs-fix-turn");
+
     // Back to the stock Claude backend for the rest of the flow.
     await afetch(`${apiBase}/settings`, {
       method: "PUT",
@@ -1403,9 +1826,110 @@ async function main() {
       draftValue.startsWith("> \"") &&
       draftValue.includes(quotedWords);
     await shot("42-pdf-quote-draft");
-    // Clear the injected draft and restore the layout the rest of the flow
-    // expects (chat left, source right).
     await composer.fill("");
+
+    // Find-in-PDF: the panel searches the document's own text (the browser's
+    // find only sees lazily-rendered pages), reporting a match count.
+    await page.getByRole("button", { name: "Open find in PDF" }).filter({ visible: true }).first().click();
+    const findInput = page.getByRole("textbox", { name: "Find in PDF" }).filter({ visible: true });
+    await findInput.fill("Attention");
+    let pdfSearchCount = "";
+    await page
+      .waitForFunction(
+        () => {
+          const el = [...document.querySelectorAll('[role="status"]')].find((n) =>
+            /^\d+\/\d+$|^no hits$/.test((n.textContent ?? "").trim()),
+          );
+          return Boolean(el);
+        },
+        { timeout: 10_000 },
+      )
+      .catch(() => {});
+    pdfSearchCount = (
+      await page
+        .locator('[role="status"]')
+        .filter({ hasText: /^\d+\/\d+$|^no hits$/ })
+        .first()
+        .textContent()
+    )?.trim() ?? "";
+    const pdfSearchOk = /^\d+\/\d+$/.test(pdfSearchCount) && !pdfSearchCount.startsWith("0/");
+    // A nonsense query must report no hits rather than a stale count.
+    await findInput.fill("zzzqqxnotpresent");
+    const pdfSearchMissOk = await page
+      .locator('[role="status"]')
+      .filter({ hasText: "no hits" })
+      .first()
+      .waitFor({ timeout: 10_000 })
+      .then(() => true)
+      .catch(() => false);
+    await shot("42b-pdf-search");
+    await page.getByRole("button", { name: "Close find" }).filter({ visible: true }).first().click();
+
+    // A selection spanning TWO pages must offer the chip too: its common
+    // ancestor sits above both text layers, which used to fail the test.
+    // Text layers render lazily per visible page, so scroll to a page boundary
+    // until two of them coexist — otherwise the case cannot occur in the DOM.
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const layerCount = await page.locator('aside[data-pane="right"] .textLayer span').evaluateAll(
+        (spans) => new Set(spans.map((s) => s.closest(".textLayer"))).size,
+      );
+      if (layerCount >= 2) break;
+      await page.evaluate(() => {
+        const el = document.querySelector('aside[data-pane="right"] [data-pdf-scroll]');
+        if (el) el.scrollTop += el.clientHeight * 0.6;
+      });
+      await page.waitForTimeout(500);
+    }
+    const crossPageSelection = await page.evaluate(() => {
+      const layers = [...document.querySelectorAll('aside[data-pane="right"] .textLayer')];
+      if (layers.length < 2) return { spanned: false, text: "" };
+      // No inner named functions here: tsx/esbuild would inject a __name helper
+      // that does not exist in the page.
+      const first = [...layers[0].querySelectorAll("span")].filter((s) => (s.textContent ?? "").trim());
+      const second = [...layers[1].querySelectorAll("span")].filter((s) => (s.textContent ?? "").trim());
+      if (first.length === 0 || second.length === 0) return { spanned: false, text: "" };
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      const range = document.createRange();
+      range.setStartBefore(first[Math.max(0, first.length - 4)]);
+      range.setEndAfter(second[Math.min(2, second.length - 1)]);
+      sel.addRange(range);
+      layers[1].dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+      return { spanned: true, text: sel.toString() };
+    });
+    let crossPageQuoteOk = true;
+    let crossPageChipOk = true;
+    if (crossPageSelection.spanned) {
+      crossPageChipOk = await quoteChip
+        .waitFor({ timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false);
+      crossPageQuoteOk = crossPageChipOk;
+      if (crossPageQuoteOk) {
+        await shot("42a-pdf-quote-crosspage");
+        await quoteChip.click();
+        // The injection flows through React state — poll instead of racing it.
+        await page
+          .waitForFunction(
+            () => {
+              const el = [...document.querySelectorAll("textarea")].find((t) =>
+                t.placeholder.includes("Ask BlattBot"),
+              );
+              return Boolean(el && el.value.includes("(from the PDF)"));
+            },
+            { timeout: 5_000 },
+          )
+          .catch(() => {});
+        const draft = await composer.inputValue();
+        // Text from BOTH pages must survive into the draft.
+        const head = crossPageSelection.text.trim().split(/\s+/).slice(0, 2).join(" ");
+        const tail = crossPageSelection.text.trim().split(/\s+/).slice(-2).join(" ");
+        crossPageQuoteOk = draft.includes("(from the PDF)") && (draft.includes(head) || draft.includes(tail));
+        await composer.fill("");
+      }
+    }
+
+    // Restore the layout the rest of the flow expects (chat left, source right).
     await aside().getByRole("tab", { name: "Source", exact: true }).click();
     await aside().locator(".cm-content").first().waitFor({ state: "visible", timeout: 15_000 });
 
@@ -1550,6 +2074,24 @@ async function main() {
         askCollapsedOk,
         askSkipEchoOk,
         askSkippedCollapsedOk,
+        imgPasteThumbOk,
+        imgRemoveOk,
+        imgSentToModelOk,
+        imgComposerClearedOk,
+        imgBubbleOk,
+        imgDialogOk,
+        imgRestoredOk,
+        imgNoDiffOk,
+        dropRejectOk,
+        uploadFailKeepsDraftOk,
+        imageOnlyEnabledOk,
+        imageOnlySentOk,
+        busyDropOk,
+        attachmentsClearedOnSwitchOk,
+        auditBadgeOk,
+        fixOnlyOnFlaggedOk,
+        fixPromptOk,
+        fixChatVisibleOk,
         mdStrongOk,
         mdMath,
         mdInlineMathOk,
@@ -1584,6 +2126,7 @@ async function main() {
         scopeCleared,
         rejectFileUiOk,
         rejectFileContentOk,
+        proofJumpOk,
         rejectHunkContentOk,
         leaveWarnShownOk,
         leaveWarnStayOk,
@@ -1611,6 +2154,14 @@ async function main() {
         textLayerSelectable,
         dblclickJumpOk,
         quoteInDraftOk,
+        sourceQuoteChipOk,
+        sourceQuoteDraftOk,
+        pdfSearchCount,
+        pdfSearchOk,
+        pdfSearchMissOk,
+        crossPageSpanned: crossPageSelection.spanned,
+        crossPageChipOk,
+        crossPageQuoteOk,
         cardGridOk,
         wordmarkNavOk,
         customDialogOk,
@@ -1718,6 +2269,59 @@ async function main() {
     }
     if (!askSkipEchoOk) {
       throw new Error("skipping the question did not deliver the declined tool result to the model");
+    }
+    if (!imgPasteThumbOk) {
+      throw new Error("pasting an image into the composer did not show a labelled thumbnail with its remove ×");
+    }
+    if (!imgRemoveOk) throw new Error("removing a pending attachment did not clear the thumbnail row");
+    if (!imgSentToModelOk) {
+      throw new Error(`the model received no image_url part with the pasted bytes: ${JSON.stringify(sentImages)}`);
+    }
+    if (!imgComposerClearedOk) throw new Error("sending did not clear the composer's attachments");
+    if (!imgBubbleOk) throw new Error("the user bubble did not render the attached image at its real size");
+    if (!imgDialogOk) throw new Error("clicking a chat thumbnail did not open the full-size image dialog");
+    if (!imgRestoredOk) throw new Error("the attached image did not survive a reload of the transcript");
+    if (!imgNoDiffOk) throw new Error("a chat image leaked into the project's review diff");
+    if (!dropRejectOk) {
+      throw new Error("dropping a non-image did not preventDefault (tab would navigate) or showed no reason");
+    }
+    if (!uploadFailKeepsDraftOk) {
+      throw new Error("a failed image upload discarded the typed message and its attachments");
+    }
+    if (!imageOnlyEnabledOk) throw new Error("Send stayed disabled for an image-only message");
+    if (!imageOnlySentOk) throw new Error("an image-only message never reached the model");
+    if (!busyDropOk) {
+      throw new Error("dropping a file mid-turn did not preventDefault (tab would navigate) or said nothing");
+    }
+    if (!attachmentsClearedOnSwitchOk) {
+      throw new Error("composer attachments survived a project switch — they would upload into the wrong project");
+    }
+    if (!sourceQuoteChipOk || !sourceQuoteDraftOk) {
+      throw new Error("quoting a selection from the Source editor did not reach the chat draft with its file:line");
+    }
+    if (!pdfSearchOk) {
+      throw new Error(`find-in-PDF reported no usable match count: ${JSON.stringify(pdfSearchCount)}`);
+    }
+    if (!pdfSearchMissOk) {
+      throw new Error("find-in-PDF did not report 'no hits' for a query that does not occur");
+    }
+    if (!proofJumpOk) {
+      throw new Error("the Proof hunk's ↗ did not open the changed line in the Source editor");
+    }
+    if (!crossPageQuoteOk) {
+      throw new Error("a PDF selection spanning two pages did not offer the quote chip / reach the composer");
+    }
+    if (!auditBadgeOk) {
+      throw new Error("the flagged citation did not show its mismatch badge in Refs");
+    }
+    if (!fixOnlyOnFlaggedOk) {
+      throw new Error("a verified citation offered a 'fix' button — repairs must be offered only for flagged entries");
+    }
+    if (!fixPromptOk) {
+      throw new Error(`the Refs fix button sent an incomplete repair prompt: ${JSON.stringify(fixPrompt.slice(0, 300))}`);
+    }
+    if (!fixChatVisibleOk) {
+      throw new Error("the repair turn was started without bringing chat into view");
     }
     if (!askSkippedCollapsedOk) {
       throw new Error("the skipped question card did not collapse to its muted 'skipped' summary");

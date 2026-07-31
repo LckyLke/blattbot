@@ -202,6 +202,8 @@ export interface AuditResult {
   detail?: string;
   /** Evidence link (doi.org / OpenAlex / arXiv) when available. */
   url?: string;
+  /** The user judged this entry sound despite the audit's verdict. */
+  accepted?: boolean;
 }
 
 /** The persisted outcome of the last citation audit (deterministic, no LLM). */
@@ -234,6 +236,31 @@ export interface ProjectSettings {
   /** The model a turn on THIS project runs: override → global, aliases resolved. */
   resolvedModel: string;
 }
+
+/** An image attached to a chat message (stored outside the project tree). */
+export interface ChatImage {
+  id: string;
+  /** Server route the thumbnail/full view loads from. */
+  url: string;
+  mime: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+}
+
+/** The accepted attachment types and caps — mirrored from chatimages.ts. */
+export const CHAT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+export const MAX_CHAT_IMAGES = 4;
+/**
+ * Per-image cap, and it is NOT a round number by accident: both backends put
+ * the picture on the wire base64-encoded (~4/3 of the raw bytes) and the
+ * Anthropic API rejects an image block over 5 MiB encoded. 3.5 MB raw stays
+ * comfortably inside that. Bigger pictures are downscaled in the browser
+ * before upload (see downscaleImageFile) rather than simply refused.
+ */
+export const MAX_CHAT_IMAGE_BYTES = 3.5 * 1024 * 1024;
+/** The cap as the composer spells it ("3.5 MB"). */
+export const MAX_CHAT_IMAGE_LABEL = `${MAX_CHAT_IMAGE_BYTES / 1024 / 1024} MB`;
 
 /** A file both Overleaf and the local tree changed since the last sync. */
 export interface SyncConflict {
@@ -276,7 +303,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   await ensureAuth();
   const res = await fetch(path, {
     ...init,
-    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+    // Explicit headers win — raw uploads post bytes, not JSON.
+    headers: init?.headers ?? (init?.body ? { "Content-Type": "application/json" } : undefined),
   });
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
@@ -379,11 +407,20 @@ export const api = {
       body: JSON.stringify({ url }),
     }),
   deleteProject: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
-  chat: (id: string, message: string, mode?: string, files?: string[]) =>
+  chat: (id: string, message: string, mode?: string, files?: string[], images?: string[]) =>
     request<{ ok: boolean }>(`/api/projects/${id}/chat`, {
       method: "POST",
-      body: JSON.stringify({ message, mode, files }),
+      body: JSON.stringify({ message, mode, files, images }),
     }),
+  /** Post one image's raw bytes; the server sniffs the type and names the file. */
+  uploadChatImage: (id: string, file: Blob) =>
+    request<ChatImage>(`/api/projects/${id}/chat-image`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: file,
+    }),
+  chatImageUrl: (id: string, imageId: string) =>
+    `/api/projects/${id}/chat-image/${encodeURIComponent(imageId)}`,
   chats: (id: string) =>
     request<{ chats: ChatMeta[]; activeChatId: string }>(`/api/projects/${id}/chats`),
   createChat: (id: string) => request<ChatMeta>(`/api/projects/${id}/chats`, { method: "POST" }),
@@ -490,6 +527,11 @@ export const api = {
   refs: (id: string) => request<RefsResponse>(`/api/projects/${id}/refs`),
   auditRefs: (id: string) =>
     request<CitationAudit>(`/api/projects/${id}/refs/audit`, { method: "POST" }),
+  acceptAudit: (id: string, key: string) =>
+    request<{ key: string; audit: CitationAudit }>(`/api/projects/${id}/refs/audit/accept`, {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
   tldr: (id: string, key: string, force = false) =>
     request<{ summary: string; source: string }>(
       `/api/projects/${id}/refs/${encodeURIComponent(key)}/tldr`,

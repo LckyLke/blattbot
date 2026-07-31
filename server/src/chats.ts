@@ -186,13 +186,13 @@ export function appendEvent(projectId: string, chatId: string, event: ChatEvent)
   appendFileSync(transcriptPath(projectId, chatId), JSON.stringify(event) + "\n");
   const chat = chats[idx];
   chat.updatedAt = new Date().toISOString();
-  if (
-    event.type === "user_message" &&
-    chat.title === DEFAULT_TITLE &&
-    typeof event.text === "string" &&
-    event.text.trim()
-  ) {
-    chat.title = deriveTitle(event.text);
+  if (event.type === "user_message" && chat.title === DEFAULT_TITLE) {
+    const text = typeof event.text === "string" ? event.text.trim() : "";
+    const images = Array.isArray(event.attachments) ? event.attachments.length : 0;
+    // A picture with no words is a complete message — title it after the
+    // attachments rather than leaving the chat called "New chat" forever.
+    if (text) chat.title = deriveTitle(text);
+    else if (images > 0) chat.title = images === 1 ? "Attached image" : `${images} attached images`;
   }
   if (event.type === "turn_end") recordTurnEnd(projectId, chat, event);
   saveRegistry(projectId, chats);
@@ -213,6 +213,27 @@ export function readTranscript(projectId: string, chatId: string): ChatEvent[] {
     }
   }
   return events;
+}
+
+/**
+ * Every chat-image id any of the project's transcripts references — the set a
+ * chat-uploads sweep must keep. Cheap by construction: transcripts are already
+ * read line-by-line, and only `attachments` entries are inspected. Reading is
+ * best-effort, so a corrupt chat can never make the sweep delete live images.
+ */
+export function referencedImageIds(projectId: string): Set<string> {
+  const ids = new Set<string>();
+  for (const chat of listChats(projectId)) {
+    for (const event of readTranscript(projectId, chat.id)) {
+      const attachments = (event as { attachments?: unknown }).attachments;
+      if (!Array.isArray(attachments)) continue;
+      for (const a of attachments) {
+        const id = (a as { id?: unknown })?.id;
+        if (typeof id === "string") ids.add(id);
+      }
+    }
+  }
+  return ids;
 }
 
 export function deleteChat(projectId: string, chatId: string): boolean {

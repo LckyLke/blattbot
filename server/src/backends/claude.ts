@@ -5,11 +5,14 @@
  * an SDK MCP server, and maps the SDK's stream onto the shared event contract.
  */
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getProject, projectDir, updateProject } from "../config.js";
+import { attachmentBase64, chatUploadsDir, type TurnAttachment } from "../chatimages.js";
 import { compileProject } from "../compile.js";
 import { addCitation, formatAddCitationResult, readAllBibEntries, searchPapers } from "../citations.js";
+import { auditEntries, formatAuditReport, verifyEntry } from "../papers.js";
+import { checkToolPaths, projectReadRoots, secretDenyRules } from "./paths.js";
 import { loadSettings } from "../settings.js";
 import { askUserQuestions, validateQuestions, type AgentQuestion } from "../questions.js";
 import {
@@ -80,9 +83,33 @@ function buildMcpServer(projectId: string) {
     },
     async ({ ref, bibFile }) => {
       try {
-        return text(formatAddCitationResult(await addCitation(dir, ref, bibFile)));
+        const result = await addCitation(dir, ref, bibFile);
+        // Verify immediately: a bad reference must surface while the agent is
+        // still in the turn that added it, not at review time.
+        const verification =
+          result.status === "added" ? await verifyEntry(projectId, dir, result.key) : undefined;
+        return text(formatAddCitationResult(result, verification));
       } catch (err: any) {
         return text(`add_citation failed: ${err?.message ?? err}`);
+      }
+    },
+  );
+
+  const auditCitationsTool = tool(
+    "audit_citations",
+    AGENT_TOOL_INFO[4].description,
+    {
+      keys: z
+        .array(z.string())
+        .optional()
+        .describe("Cite keys to verify; omit to verify every entry in the bibliography"),
+    },
+    async ({ keys }) => {
+      try {
+        const { results, unknownKeys } = await auditEntries(projectId, dir, keys);
+        return text(formatAuditReport(results, unknownKeys));
+      } catch (err: any) {
+        return text(`audit_citations failed: ${err?.message ?? err}`);
       }
     },
   );
@@ -105,7 +132,7 @@ function buildMcpServer(projectId: string) {
   return createSdkMcpServer({
     name: "blattbot",
     version: "0.1.0",
-    tools: [compileTool, searchTool, addCitationTool, listCitationsTool],
+    tools: [compileTool, searchTool, addCitationTool, listCitationsTool, auditCitationsTool],
   });
 }
 
@@ -155,9 +182,24 @@ export function extractResultUsage(m: any): {
  * (→ deny with a "proceed anyway" note), or the turn aborts (→ deny).
  * Exported for unit tests.
  */
-export function makeCanUseTool(projectId: string, emit: EventSink, signal: AbortSignal): CanUseTool {
+export function makeCanUseTool(
+  projectId: string,
+  emit: EventSink,
+  signal: AbortSignal,
+  contextDirs: string[] = [],
+): CanUseTool {
+  const dir = projectDir(projectId);
+  // The project's own chat-image uploads are readable (never writable) — see
+  // projectReadRoots. Granted for every turn, not only turns with attachments,
+  // so an image referenced from earlier in the conversation stays openable.
+  const extraReadRoots = projectReadRoots(projectId);
   return async (toolName, input, options) => {
     if (toolName !== "AskUserQuestion") {
+      // Enforce the file fence before anything runs: the SDK's own tools can
+      // otherwise reach any path the OS allows, which would leave "stay in the
+      // project" as a mere instruction against untrusted file/web content.
+      const fence = checkToolPaths(toolName, input, dir, contextDirs, extraReadRoots);
+      if (!fence.ok) return { behavior: "deny", message: fence.message! };
       return { behavior: "allow", updatedInput: input };
     }
     let questions: AgentQuestion[];
@@ -213,6 +255,49 @@ export function toolResultText(content: unknown): string {
   return "";
 }
 
+/**
+ * The `prompt` the SDK's query() receives.
+ *
+ * Without attachments this stays the plain string it has always been — the
+ * lowest-risk path, and the one every existing turn takes. With attachments it
+ * becomes a single-message async iterable, the SDK's streaming-input form:
+ * `SDKUserMessage.message` is an Anthropic `MessageParam`, so its `content`
+ * may be a block array — the text block first, then one base64 image block per
+ * attachment. Resume/session behaviour is identical either way (the SDK's
+ * `resume` option is what carries it, not the prompt shape).
+ *
+ * Exported for unit tests, which assert the shape without touching the SDK.
+ */
+export function buildClaudePrompt(
+  prompt: string,
+  attachments: TurnAttachment[],
+): string | AsyncIterable<SDKUserMessage> {
+  if (attachments.length === 0) return prompt;
+  async function* once(): AsyncGenerator<SDKUserMessage> {
+    yield {
+      type: "user",
+      // The SDK fills the real session id in; the field is required by the type.
+      session_id: "",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: prompt },
+          ...attachments.map((a) => ({
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              media_type: a.mime,
+              data: attachmentBase64(a),
+            },
+          })),
+        ],
+      },
+    } as SDKUserMessage;
+  }
+  return once();
+}
+
 /** Extract a compact, UI-friendly summary of a tool input. */
 function summarizeInput(name: string, input: any, projectRoot?: string): string {
   if (input == null) return "";
@@ -242,17 +327,27 @@ export const claudeBackend: AgentBackend = {
 
   async runTurn(ctx: BackendTurnContext): Promise<void> {
     const { project, dir, settings, contextDirs } = ctx;
+    // Attached images live in DATA_DIR/chat-uploads/<projectId> — outside the
+    // working tree on purpose. The CLI must be told about that directory too,
+    // or a follow-up Read of the path named in the prompt is refused.
+    const extraDirs = ctx.attachments.length > 0 ? [chatUploadsDir(project.id)] : [];
+    const openDirs = [...contextDirs, ...extraDirs];
     const disallowed = [
       ...(ctx.readOnly
         ? [...DISALLOWED_TOOLS, "Edit", "Write", "MultiEdit", "NotebookEdit", "mcp__blattbot__add_citation"]
         : DISALLOWED_TOOLS),
-      // Hard-block edits inside context dirs (path-scoped permission rules).
-      ...contextDirs.flatMap((d) => [
+      // Hard-block edits inside every directory opened read-only (attached
+      // context and the chat-image uploads) — path-scoped permission rules.
+      ...openDirs.flatMap((d) => [
         `Edit(${d}/**)`,
         `Write(${d}/**)`,
         `MultiEdit(${d}/**)`,
         `NotebookEdit(${d}/**)`,
       ]),
+      // Credentials and BlattBot's own data (Overleaf cookies, API token) are
+      // never part of a writing task. Deny rules are evaluated BEFORE the
+      // bypassPermissions auto-allow, so these actually bite.
+      ...secretDenyRules(),
     ];
 
     // Session ids of the openai backend (oai-…) mean nothing to the SDK —
@@ -267,10 +362,10 @@ export const claudeBackend: AgentBackend = {
     else ctx.signal.addEventListener("abort", () => controller.abort(), { once: true });
 
     const q = query({
-      prompt: ctx.prompt,
+      prompt: buildClaudePrompt(ctx.prompt, ctx.attachments),
       options: {
         cwd: dir,
-        ...(contextDirs.length > 0 ? { additionalDirectories: contextDirs } : {}),
+        ...(openDirs.length > 0 ? { additionalDirectories: openDirs } : {}),
         ...(resumeId ? { resume: resumeId } : {}),
         model: ctx.model,
         env: {
@@ -282,7 +377,7 @@ export const claudeBackend: AgentBackend = {
         allowDangerouslySkipPermissions: true,
         // Surfaces AskUserQuestion (which always "ask"s, even in bypass mode)
         // as an interactive question card in the chat; allows everything else.
-        canUseTool: makeCanUseTool(project.id, ctx.emit, ctx.signal),
+        canUseTool: makeCanUseTool(project.id, ctx.emit, ctx.signal, ctx.contextDirs),
         includePartialMessages: true,
         abortController: controller,
         systemPrompt: { type: "preset", preset: "claude_code", append: ctx.systemAppend },

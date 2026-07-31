@@ -15,10 +15,12 @@ import { claudeBackend, runOneShot as runOneShotClaude } from "./backends/claude
 import { openaiBackend, runOneShotOpenai } from "./backends/openai.js";
 import {
   SYSTEM_APPEND,
+  attachmentNote,
   resolveModel,
   type AgentBackend,
   type BackendTurnContext,
   type EventSink,
+  type TurnAttachment,
 } from "./backends/types.js";
 
 // Shared constants live in backends/types.ts (a dependency leaf both the
@@ -135,7 +137,8 @@ export const AGENT_MODES: AgentModeInfo[] = [
 - Work through missing or TODO-marked citations systematically. Use search_papers (it queries Semantic Scholar, DBLP, and Crossref in parallel); if a first query misses, vary the phrasing or search by author and venue before giving up.
 - Add entries with add_citation using the cite-ref from the search results, then insert \\cite{...} at the marked spot and remove the TODO marker.
 - Prefer the canonical original publication over surveys or re-prints.
-- If a well-known paper still cannot be found by search, write the BibTeX entry yourself from your knowledge and flag it with a "% verify: written from model knowledge" comment.
+- If a well-known paper still cannot be found by search, write the BibTeX entry yourself from your knowledge, flag it with a "% verify: written from model knowledge" comment, and then run audit_citations on that key — a hand-written entry that does not resolve is very likely wrong.
+- Before finishing, run audit_citations on every key you added or edited. Report anything that comes back mismatch or unresolved instead of leaving it silently in the bibliography.
 - Do not rewrite prose beyond inserting citations. Finish the task; do not stop to ask which approach to take.`,
   },
   {
@@ -303,12 +306,17 @@ export interface TurnSessionOptions {
   onSessionId?: (sessionId: string) => void;
 }
 
+/** The prompt an attachments-only message stands in for. */
+export const IMAGE_ONLY_PROMPT =
+  "Look at the attached image(s) and respond to what they show.";
+
 /**
  * Run one agent turn over the project working tree, forwarding events to the
  * sink. Resolves when the turn completes (or is aborted). When `session` is
  * given it controls resumption (per-chat sessions); otherwise the legacy
  * per-project sessionId is used. The turn runs on the backend selected in
- * settings ("" = the Claude Agent SDK).
+ * settings ("" = the Claude Agent SDK). `attachments` are the images the user
+ * put on this message; each backend decides how to carry them.
  */
 export async function runTurn(
   project: Project,
@@ -317,6 +325,7 @@ export async function runTurn(
   mode: AgentMode = "edit",
   scope?: string[],
   session?: TurnSessionOptions,
+  attachments: TurnAttachment[] = [],
 ): Promise<void> {
   const controller = new AbortController();
   activeControllers.set(project.id, controller);
@@ -326,14 +335,22 @@ export async function runTurn(
   const contextDirs = contextDirectories(project);
   const backend = activeBackend(settings);
 
+  // A message may be pictures alone ("here's a screenshot" with no words) —
+  // give the model the obvious instruction rather than a bare bracket note.
+  const text =
+    prompt.trim() || (attachments.length > 0 ? IMAGE_ONLY_PROMPT : prompt);
+
   const ctx: BackendTurnContext = {
     project,
-    prompt,
+    // Both backends send the images as message content; the note names their
+    // on-disk paths so the agent can re-open one later in the turn.
+    prompt: text + attachmentNote(attachments),
     systemAppend: buildSystemAppend(project, modeInfo, scope, settings, contextDirs),
     model: resolveBackendModel(project, settings),
     dir,
     scope,
     contextDirs,
+    attachments,
     readOnly: Boolean(modeInfo.readOnly),
     session: {
       sessionId: session ? session.sessionId : project.sessionId,

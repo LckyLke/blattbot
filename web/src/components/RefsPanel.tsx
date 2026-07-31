@@ -12,6 +12,44 @@ interface Props {
   onJump: (file: string, line: number) => void;
   /** Manual .bib writes changed the working tree — pass the new diff up. */
   onDiff: (diff: string) => void;
+  /** Hand a composed repair request to the agent (starts a turn in Edit mode). */
+  onFixWithAgent: (prompt: string) => void;
+}
+
+/**
+ * The repair request handed to the agent for a flagged entry. Everything the
+ * agent needs is stated outright — the verdict, the evidence, and the entry's
+ * own fields — so it starts from the audit's finding instead of re-deriving it,
+ * and it is told to verify the result rather than declare success.
+ */
+export function buildFixPrompt(
+  e: RefEntry,
+  result: { status: string; detail?: string; url?: string },
+): string {
+  const facts = [
+    `key: ${e.key}`,
+    `file: ${e.file}`,
+    e.title ? `title: ${e.title}` : null,
+    e.author ? `author: ${e.author}` : null,
+    e.year ? `year: ${e.year}` : null,
+    e.doi ? `doi: ${e.doi}` : null,
+  ].filter(Boolean);
+  const verdict =
+    result.status === "mismatch"
+      ? "resolves to a DIFFERENT work than its title claims"
+      : "could not be found in Crossref or OpenAlex at all";
+  return [
+    `The citation audit flagged \\cite{${e.key}} in ${e.file}: it ${verdict}.`,
+    result.detail ? `Audit detail: ${result.detail}` : null,
+    result.url ? `Evidence: ${result.url}` : null,
+    "",
+    "Current entry:",
+    ...facts.map((f) => `- ${f}`),
+    "",
+    "Please fix it: search for the real publication (search_papers), then correct this entry in place so its fields match the actual record — do not add a second entry and do not change its cite key, since it is already cited in the text. If the work does not appear to exist at all, say so and propose removing the entry instead of inventing plausible fields. When you are done, run audit_citations on this key and report the new verdict.",
+  ]
+    .filter((l) => l !== null)
+    .join("\n");
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -25,11 +63,12 @@ const ADD_SKELETON = "@article{key,\n  title = {},\n  author = {},\n  year = {}\
 /** Badge per audit status; `skipped` (network failure) renders no badge at all. */
 const AUDIT_BADGE: Record<string, { glyph: string; cls: string; label: string }> = {
   verified: { glyph: "✓", cls: "text-leaf/80 hover:text-leaf", label: "Verified" },
+  accepted: { glyph: "✓", cls: "text-leaf/60 hover:text-leaf", label: "Accepted by you" },
   unresolved: { glyph: "?", cls: "text-gold hover:text-gold", label: "Unresolved" },
   mismatch: { glyph: "⚠", cls: "text-pencil hover:text-pencil", label: "Title mismatch" },
 };
 
-export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Props) {
+export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFixWithAgent }: Props) {
   const [data, setData] = useState<RefsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -284,7 +323,7 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
   /** ✓ / ? / ⚠ next to the key, linking to the evidence when known. */
   function auditBadge(e: RefEntry) {
     const r = audit?.results[e.key];
-    const badge = r && AUDIT_BADGE[r.status];
+    const badge = r && AUDIT_BADGE[r.accepted ? "accepted" : r.status];
     if (!r || !badge) return null; // never audited, or skipped (network failure)
     const title = r.detail ? `${badge.label} — ${r.detail}` : badge.label;
     const cls = `shrink-0 font-mono text-[11px] transition-colors ${badge.cls}`;
@@ -296,6 +335,49 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
       <span title={title} aria-label={`Audit: ${badge.label.toLowerCase()} — ${e.key}`} className={cls}>
         {badge.glyph}
       </span>
+    );
+  }
+
+  /** Record the user's judgement that a flagged entry is actually sound. */
+  async function acceptEntry(e: RefEntry) {
+    setEntryError(e, null);
+    try {
+      const r = await api.acceptAudit(projectId, e.key);
+      if (projectIdRef.current !== projectId) return;
+      setData((d) => (d ? { ...d, audit: r.audit } : d));
+    } catch (err: any) {
+      setEntryError(e, err.message);
+    }
+  }
+
+  /** "fix" / "ok" next to a flagged entry: repair it, or accept it as correct. */
+  function fixButton(e: RefEntry) {
+    const r = audit?.results[e.key];
+    if (!r || r.accepted || (r.status !== "mismatch" && r.status !== "unresolved")) return null;
+    return (
+      <>
+      <button
+        onClick={() => void acceptEntry(e)}
+        title="The audit is wrong — this reference is correct"
+        aria-label={`Accept ${e.key} as correct`}
+        className="shrink-0 rounded border border-rule px-1.5 py-0.5 font-mono text-[10px] text-graphite transition-colors hover:border-leaf hover:text-leaf"
+      >
+        ok
+      </button>
+      <button
+        onClick={() => onFixWithAgent(buildFixPrompt(e, r))}
+        disabled={busy}
+        title={
+          busy
+            ? "An agent turn is already running"
+            : `Ask the agent to investigate and correct ${e.key}`
+        }
+        aria-label={`Fix ${e.key} with the agent`}
+        className="shrink-0 rounded border border-gold/50 px-1.5 py-0.5 font-mono text-[10px] text-gold transition-colors hover:border-gold hover:bg-gold/10 disabled:opacity-40"
+      >
+        fix
+      </button>
+      </>
     );
   }
 
@@ -502,6 +584,7 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
                   {copied === e.key ? "copied" : e.key}
                 </button>
                 {auditBadge(e)}
+                {fixButton(e)}
                 {e.year && <span className="font-mono text-[11px] text-graphite">{e.year}</span>}
                 {total > 0 ? (
                   <button

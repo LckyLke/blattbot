@@ -33,6 +33,8 @@ export interface AlertOptions {
   title: string;
   body?: ReactNode;
   dismissLabel?: string;
+  /** Widen the card — for bodies that are a figure rather than a sentence. */
+  wide?: boolean;
 }
 
 interface DialogApi {
@@ -138,7 +140,9 @@ export function DialogProvider({ children }: { children: ReactNode }) {
             aria-modal="true"
             aria-labelledby={titleId}
             aria-describedby={current.opts.body ? bodyId : undefined}
-            className="dialog-card w-[400px] max-w-full rounded-lg border border-rule bg-ink-2 p-5 shadow-[0_24px_64px_rgba(0,0,0,0.5)]"
+            className={`dialog-card max-w-full rounded-lg border border-rule bg-ink-2 p-5 shadow-[0_24px_64px_rgba(0,0,0,0.5)] ${
+              current.kind === "alert" && current.opts.wide ? "w-[900px]" : "w-[400px]"
+            }`}
           >
             <h2 id={titleId} className="font-serif text-[17px] font-semibold text-paper">
               {current.opts.title}

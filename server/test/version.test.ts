@@ -78,9 +78,11 @@ describe("package hygiene", () => {
     expect(pkg.devDependencies?.blattbot).toBeUndefined();
   });
 
-  it("is version 0.2.0, and currentVersion() reads it", async () => {
-    expect(pkg.version).toBe("0.2.0");
+  it("carries a semver version that currentVersion() reads back", async () => {
+    // Deliberately not a literal: pinning the number here would fail every
+    // release. The invariant is that the runtime reports what package.json says.
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
     const { currentVersion } = await import("../src/version.js");
-    expect(currentVersion()).toBe("0.2.0");
+    expect(currentVersion()).toBe(pkg.version);
   });
 });

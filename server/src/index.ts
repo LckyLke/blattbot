@@ -35,6 +35,7 @@ import {
   NoPdfError,
   RateLimitError,
   arxivIdFromEntry,
+  acceptAuditEntry,
   auditCitations,
   ensurePaperPdf,
   getTldr,
@@ -88,6 +89,7 @@ import {
   listChats,
   publicChat,
   readTranscript,
+  referencedImageIds,
   setActiveChat,
   updateChat,
 } from "./chats.js";
@@ -118,6 +120,16 @@ import {
   uploadPath,
   validateLinkPath,
 } from "./context.js";
+import {
+  IMAGE_MIMES,
+  MAX_IMAGE_BYTES,
+  deleteChatUploads,
+  findChatImage,
+  pruneOrphanChatUploads,
+  resolveAttachments,
+  saveChatImage,
+  type TurnAttachment,
+} from "./chatimages.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.BLATTBOT_PORT ?? 4560);
@@ -128,6 +140,14 @@ const AUTH_TOKEN = getAuthToken();
 
 // bodyLimit covers base64-encoded context uploads (25 MB file ≈ 34 MB JSON).
 const app = Fastify({ logger: { level: "warn" }, bodyLimit: 40 * 1024 * 1024 });
+// Chat images are posted as raw bytes (no multipart parser, no new dependency).
+// The declared type is never trusted — chatimages.ts sniffs the magic bytes —
+// so this only decides which requests get a Buffer body at all.
+app.addContentTypeParser(
+  [...IMAGE_MIMES, "application/octet-stream"],
+  { parseAs: "buffer", bodyLimit: MAX_IMAGE_BYTES + 1024 },
+  (_req, body, done) => done(null, body),
+);
 // CORS allowlist: the app itself plus the Vite dev server — never reflect-any.
 await app.register(cors, {
   origin: [
@@ -174,13 +194,24 @@ const webDistCandidates = [
 ];
 const webDist = webDistCandidates.find((p) => existsSync(join(p, "index.html")));
 if (webDist) {
+  // @fastify/static serves everything with `cache-control: public, max-age=0`,
+  // so the browser revalidates index.html on every load and cannot keep naming
+  // asset hashes a newer build has replaced.
   await app.register(fastifyStatic, { root: webDist, prefix: "/" });
   app.setNotFoundHandler((req, reply) => {
-    if (req.raw.url?.startsWith("/api/")) {
+    const url = req.raw.url ?? "";
+    if (url.startsWith("/api/")) {
       reply.code(404).send({ error: "not found" });
-    } else {
-      reply.type("text/html").send(createReadStream(join(webDist, "index.html")));
+      return;
     }
+    // A missing ASSET must 404, not fall back to index.html: handing HTML to a
+    // script/module request produced the cryptic pdf.worker module-load error
+    // instead of an honest "this file is gone — reload".
+    if (url.startsWith("/assets/") || /\.[a-z0-9]{2,5}(\?|$)/i.test(url)) {
+      reply.code(404).type("text/plain").send("not found");
+      return;
+    }
+    reply.type("text/html").header("cache-control", "no-store").send(createReadStream(join(webDist, "index.html")));
   });
 }
 
@@ -618,6 +649,8 @@ app.delete<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) =
   rmSync(projectDir(id), { recursive: true, force: true });
   rmSync(buildDir(id), { recursive: true, force: true });
   rmSync(contextUploadsDir(id), { recursive: true, force: true });
+  // The chat transcripts that referenced them are going too.
+  deleteChatUploads(id);
   return { ok: true };
 });
 
@@ -770,6 +803,74 @@ app.get<{ Params: { id: string; name: string } }>(
         : "application/octet-stream";
     reply.header("Content-Disposition", "inline");
     return reply.type(type).send(createReadStream(path));
+  },
+);
+
+// ---- Chat image attachments -------------------------------------------------
+// Uploads land in DATA_DIR/chat-uploads/<projectId>, NEVER the working tree:
+// a file there would show up in the review diff and be pushed to Overleaf.
+// Body is the raw image bytes (any of the accepted types, or
+// application/octet-stream) or JSON {contentBase64}. Both are sniffed.
+
+/** Per project, when the last orphan sweep ran (see sweepChatUploads). */
+const lastUploadSweep = new Map<string, number>();
+const SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * Drop chat-image files no transcript references. Images are stored before the
+ * message is posted, so every send that never completes (409 "turn in
+ * progress", a closed tab, a rejected message, a failed sibling upload) leaves
+ * one behind that nothing can reach. Runs opportunistically when a project's
+ * chat list is fetched — that covers project open — and at most once every
+ * SWEEP_INTERVAL_MS per project, so the transcript scan stays off the hot path.
+ * Failures are swallowed: housekeeping must never break a request.
+ */
+function sweepChatUploads(projectId: string): void {
+  const now = Date.now();
+  const last = lastUploadSweep.get(projectId) ?? 0;
+  if (now - last < SWEEP_INTERVAL_MS) return;
+  lastUploadSweep.set(projectId, now);
+  try {
+    pruneOrphanChatUploads(projectId, referencedImageIds(projectId), now);
+  } catch {
+    /* never fatal */
+  }
+}
+
+app.post<{ Params: { id: string }; Body: Buffer | { contentBase64?: string } }>(
+  "/api/projects/:id/chat-image",
+  async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    let content: Buffer;
+    if (Buffer.isBuffer(req.body)) {
+      content = req.body;
+    } else if (typeof (req.body as { contentBase64?: string })?.contentBase64 === "string") {
+      content = Buffer.from((req.body as { contentBase64: string }).contentBase64, "base64");
+    } else {
+      return reply.code(400).send({ error: "the request body must be the image bytes or {contentBase64}" });
+    }
+    try {
+      return saveChatImage(project.id, content);
+    } catch (err: any) {
+      return reply.code(400).send({ error: err.message });
+    }
+  },
+);
+
+app.get<{ Params: { id: string; imageId: string } }>(
+  "/api/projects/:id/chat-image/:imageId",
+  async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    // findChatImage matches the id against the server-generated UUID shape
+    // before touching the filesystem — traversal never reaches a path join.
+    const found = findChatImage(project.id, req.params.imageId);
+    if (!found) return reply.code(404).send({ error: "no such chat image" });
+    reply.header("Content-Disposition", "inline");
+    // Ids are unique per upload, so the bytes behind one never change.
+    reply.header("Cache-Control", "private, max-age=31536000, immutable");
+    return reply.type(found.mime).send(createReadStream(found.path));
   },
 );
 
@@ -1196,6 +1297,24 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/refs/audit", async (req,
   }
 });
 
+// The audit's checks are heuristic — accepting an entry records the user's
+// judgement that a flagged reference is sound (until the entry itself changes).
+app.post<{ Params: { id: string }; Body: { key?: string } }>(
+  "/api/projects/:id/refs/audit/accept",
+  async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    const key = typeof req.body?.key === "string" ? req.body.key.trim() : "";
+    if (!key) return reply.code(400).send({ error: "key is required" });
+    try {
+      const result = acceptAuditEntry(project.id, projectDir(project.id), key);
+      return { key, result, audit: readAudit(project.id) };
+    } catch (err: any) {
+      return reply.code(404).send({ error: err?.message ?? String(err) });
+    }
+  },
+);
+
 // Manual reference edits are ordinary working-tree changes: every write below
 // recomputes the working diff and broadcasts it so the Proof view stays live.
 
@@ -1344,6 +1463,9 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/chats", async (req, reply
   const project = getProject(req.params.id);
   if (!project) return reply.code(404).send({ error: "unknown project" });
   const active = ensureActiveChat(project.id);
+  // Project open (and every chat-list refresh) is the cheap, natural moment to
+  // collect uploads whose send never happened.
+  sweepChatUploads(project.id);
   return { chats: listChats(project.id).map(publicChat), activeChatId: active.id };
 });
 
@@ -1417,14 +1539,30 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/disclosure", async (req,
   return { text, facts };
 });
 
-app.post<{ Params: { id: string }; Body: { message: string; mode?: string; files?: string[] } }>(
+app.post<{
+  Params: { id: string };
+  Body: { message: string; mode?: string; files?: string[]; images?: string[] };
+}>(
   "/api/projects/:id/chat",
   async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
-    const message = req.body?.message?.trim();
-    if (!message) return reply.code(400).send({ error: "message is required" });
+    const message = req.body?.message?.trim() ?? "";
     if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn already in progress" });
+    // Attached images: ids from POST …/chat-image, resolved back to the files
+    // stored outside the working tree.
+    let attachments: TurnAttachment[];
+    try {
+      attachments = resolveAttachments(project.id, req.body?.images);
+    } catch (err: any) {
+      return reply.code(400).send({ error: err.message });
+    }
+    // "Here's a screenshot" with no words is the most natural way to use a
+    // paste-an-image composer, so pictures alone are a complete message; the
+    // attachment note the prompt carries tells the agent what it is looking at.
+    if (!message && attachments.length === 0) {
+      return reply.code(400).send({ error: "message is required" });
+    }
     const mode: AgentMode = AGENT_MODES.some((m) => m.id === req.body?.mode)
       ? (req.body!.mode as AgentMode)
       : "edit";
@@ -1448,6 +1586,10 @@ app.post<{ Params: { id: string }; Body: { message: string; mode?: string; files
         text: message,
         mode,
         ...(scope ? { scope } : {}),
+        // id + mime is all the restored transcript needs to render a thumbnail.
+        ...(attachments.length > 0
+          ? { attachments: attachments.map((a) => ({ id: a.id, mime: a.mime })) }
+          : {}),
       });
     } catch {
       /* persistence must never block the turn */
@@ -1499,16 +1641,24 @@ app.post<{ Params: { id: string }; Body: { message: string; mode?: string; files
         broadcast(project.id, event);
         if (!event.live) persist(event);
       });
-      await runTurn(project, message, turnSink.sink, mode, scope, {
-        sessionId: activeChat.sessionId,
-        onSessionId: (sessionId) => {
-          try {
-            updateChat(project.id, chatId, { sessionId });
-          } catch {
-            /* best effort */
-          }
+      await runTurn(
+        project,
+        message,
+        turnSink.sink,
+        mode,
+        scope,
+        {
+          sessionId: activeChat.sessionId,
+          onSessionId: (sessionId) => {
+            try {
+              updateChat(project.id, chatId, { sessionId });
+            } catch {
+              /* best effort */
+            }
+          },
         },
-      });
+        attachments,
+      );
       // No live-diff timer may fire past this point; the broadcast below is authoritative.
       await turnSink.close();
       let turnDiff = "";

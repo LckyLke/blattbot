@@ -466,8 +466,30 @@ export interface AddCitationResult {
   upgradedDoi?: string;
 }
 
+/**
+ * The agent-facing line for a deterministic verification verdict. Written so
+ * an unverifiable reference reads as a problem the agent must surface rather
+ * than a detail it can skip past.
+ */
+export function formatVerification(v: { status: string; detail?: string; url?: string }): string {
+  const evidence = v.url ? ` (${v.url})` : "";
+  switch (v.status) {
+    case "verified":
+      return `Verified: the entry resolves and the titles agree${evidence}.`;
+    case "mismatch":
+      return `VERIFICATION FAILED — resolves to a DIFFERENT work: ${v.detail ?? "titles disagree"}${evidence}. Fix the entry or tell the user; do not cite it as-is.`;
+    case "unresolved":
+      return `NOT VERIFIED — no matching record found (${v.detail ?? "no match"}). The reference may be wrong or fabricated: tell the user before relying on it.`;
+    default:
+      return `Verification skipped (${v.detail ?? "lookup unavailable"}) — the entry is unchecked, say so if it matters.`;
+  }
+}
+
 /** The agent-facing tool-result text for an add_citation outcome (shared by both backends). */
-export function formatAddCitationResult(result: AddCitationResult): string {
+export function formatAddCitationResult(
+  result: AddCitationResult,
+  verification?: { status: string; detail?: string; url?: string },
+): string {
   if (result.status === "duplicate") {
     const matched = result.matched === "title" ? "matched by title" : "matched by DOI";
     return `Already in bibliography as \\cite{${result.key}} (${result.bibFile}; ${matched}). Do not add it again.`;
@@ -475,6 +497,7 @@ export function formatAddCitationResult(result: AddCitationResult): string {
   const lines = [`Added to ${result.bibFile} as \\cite{${result.key}}.`];
   if (result.upgradedDoi) lines.push(`Published version found: ${result.upgradedDoi} — using it.`);
   for (const w of result.warnings ?? []) lines.push(`Warning: ${w}.`);
+  if (verification) lines.push(formatVerification(verification));
   if (result.entryPreview) lines.push(result.entryPreview);
   return lines.join("\n");
 }

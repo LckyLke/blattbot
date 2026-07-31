@@ -48,6 +48,10 @@ interface Props {
   onSaved?: () => void;
   /** Jump request: select `file`, scroll to `line`, flash it. Fires on `nonce` change. */
   reveal?: { file: string; line: number; nonce: number };
+  /** True while a chat pane is on screen to receive a quote. */
+  chatVisible?: boolean;
+  /** Push a selected passage (with its file/line) into the chat composer. */
+  onQuoteToChat?: (text: string, source: string) => void;
 }
 
 interface DirNode {
@@ -649,7 +653,7 @@ const editableExt = (on: boolean, complete: CompletionSource): Extension =>
 
 const WRAP_KEY = "blattbot.sourceWrap";
 
-export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal }: Props) {
+export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat }: Props) {
   const dialog = useDialog();
   const tree = useMemo(() => buildTree(files), [files]);
   const [sel, setSel] = useState<string | null>(null);
@@ -997,6 +1001,56 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   const showEditor = file !== null && !file.binary && !error;
 
+  // A finished selection inside the editor offers a "quote in chat" chip —
+  // the Source twin of the PDF panel's chip (same wording and placement), and
+  // only while a chat pane is on screen to receive it.
+  const [quoteChip, setQuoteChip] = useState<{ x: number; y: number; text: string } | null>(null);
+  useEffect(() => {
+    if (!chatVisible || !onQuoteToChat) setQuoteChip(null);
+  }, [chatVisible, onQuoteToChat]);
+
+  const onEditorMouseUp = useCallback(() => {
+    if (!chatVisible || !onQuoteToChat) return;
+    setTimeout(() => {
+      const host = hostRef.current;
+      const sel = window.getSelection();
+      if (!host || !sel || sel.isCollapsed || sel.rangeCount === 0) return;
+      const text = sel.toString();
+      if (!text.trim()) return;
+      const range = sel.getRangeAt(sel.rangeCount - 1);
+      const anchorEl =
+        range.startContainer instanceof Element
+          ? range.startContainer
+          : range.startContainer.parentElement;
+      if (!anchorEl || !host.contains(anchorEl)) return;
+      const rects = range.getClientRects();
+      const r = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+      const wrap = host.parentElement!.getBoundingClientRect();
+      setQuoteChip({
+        x: Math.min(Math.max(r.right - wrap.left, 8), Math.max(8, wrap.width - 130)),
+        y: Math.min(Math.max(r.bottom - wrap.top + 8, 8), Math.max(8, wrap.height - 40)),
+        text,
+      });
+    }, 0);
+  }, [chatVisible, onQuoteToChat]);
+
+  useEffect(() => {
+    if (!quoteChip) return;
+    const onDown = (e: MouseEvent) => {
+      if (!(e.target instanceof Element) || !e.target.closest("[data-quote-chip]")) setQuoteChip(null);
+    };
+    const onSelChange = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) setQuoteChip(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("selectionchange", onSelChange);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("selectionchange", onSelChange);
+    };
+  }, [quoteChip]);
+
   return (
     <div className="flex h-full">
       <aside className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
@@ -1046,8 +1100,35 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
           </div>
         )}
 
-        <div className="relative min-h-0 flex-1 overflow-hidden bg-ink">
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-ink" onMouseUp={onEditorMouseUp}>
           <div ref={hostRef} data-editor="codemirror" className={showEditor ? "h-full" : "hidden"} />
+          {quoteChip && (
+            <button
+              type="button"
+              data-quote-chip
+              style={{ left: quoteChip.x, top: quoteChip.y }}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                const text = quoteChip.text;
+                setQuoteChip(null);
+                // Name the file so the agent can locate the passage exactly.
+                const line = sel && viewRef.current
+                  ? viewRef.current.state.doc.lineAt(
+                      Math.min(
+                        viewRef.current.state.selection.main.from,
+                        viewRef.current.state.doc.length,
+                      ),
+                    ).number
+                  : undefined;
+                const where = sel ? `${sel}${line ? `:${line}` : ""}` : "the source";
+                const trimmed = text.length > 600 ? `${text.slice(0, 600).trimEnd()}…` : text;
+                onQuoteToChat?.(trimmed, where);
+              }}
+              className="absolute z-20 rounded-full border border-rule bg-ink-2/95 px-2.5 py-1 text-[11.5px] text-paper-dim shadow-[0_2px_10px_rgba(0,0,0,0.45)] transition-colors hover:border-leaf hover:text-leaf"
+            >
+              ❝ quote in chat
+            </button>
+          )}
           {error && <p className="px-4 py-6 text-center text-sm text-pencil">{error}</p>}
           {file?.binary && (
             <p className="px-4 py-8 text-center font-serif text-sm text-graphite">

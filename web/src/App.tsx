@@ -108,10 +108,19 @@ function itemsFromEvents(
         const scope = Array.isArray(ev.scope)
           ? (ev.scope as unknown[]).filter((s): s is string => typeof s === "string")
           : [];
+        // Attachments persist as {id, mime}; the bubble reloads them by id.
+        const images = Array.isArray(ev.attachments)
+          ? (ev.attachments as unknown[]).flatMap((a) =>
+              a && typeof (a as { id?: unknown }).id === "string"
+                ? [{ id: String((a as { id: string }).id), mime: String((a as { mime?: string }).mime ?? "") }]
+                : [],
+            )
+          : [];
         items.push({
           kind: "user",
           text: String(ev.text ?? ""),
           ...(scope.length > 0 ? { scope } : {}),
+          ...(images.length > 0 ? { images } : {}),
         });
         break;
       }
@@ -276,7 +285,9 @@ function AppShell() {
   const [update, setUpdate] = useState<{ current: string; latest: string } | null>(null);
   const [sourceReveal, setSourceReveal] = useState<{ file: string; line: number; nonce: number }>();
   // A PDF selection quoted into the chat composer; each new nonce injects once.
-  const [chatQuote, setChatQuote] = useState<{ text: string; nonce: number } | null>(null);
+  const [chatQuote, setChatQuote] = useState<{ text: string; nonce: number; source?: string } | null>(
+    null,
+  );
 
   // Which pane each panel is mounted in. A panel stays in its last pane (as a
   // hidden wrapper) while not displayed, so tab switches within a pane never
@@ -572,6 +583,15 @@ function AppShell() {
         }
         case "sync_warning":
           pushChat({ kind: "notice", tone: "warn", text: `Sync: ${ev.message}` });
+          break;
+        // A backend-side notice (e.g. the images could not be sent to this
+        // endpoint). The route persists it too, so itemsFromEvents replays it.
+        case "notice":
+          pushChat({
+            kind: "notice",
+            tone: ["info", "warn", "error", "ok"].includes(ev.tone) ? ev.tone : "info",
+            text: String(ev.text ?? ""),
+          });
           break;
         case "error":
           pushChat({ kind: "notice", tone: "error", text: ev.message });
@@ -870,22 +890,74 @@ function AppShell() {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [warnBeforeUnload]);
 
+  /**
+   * Send one message. Resolves false when nothing was sent — the composer
+   * then restores the draft and its attachments instead of losing them.
+   *
+   * Uploading the images puts an await between the click and the transcript
+   * push, so every write after it is guarded on the project still being the
+   * one the user sent from (the same stale-async rule the selectedId effect
+   * follows): a bubble, a busy=true, or an upload must never land in the
+   * project the user switched to.
+   */
   const send = useCallback(
-    async (message: string, mode: string) => {
-      if (!selectedId) return;
+    async (message: string, mode: string, images: File[] = []): Promise<boolean> => {
+      const id = selectedId;
+      if (!id) return false;
+      const stale = () => selectedRef.current?.id !== id;
       const files = scope.length > 0 ? [...scope] : undefined;
-      pushChat({ kind: "user", text: message, scope: files });
+      // Attachments are stored first: the turn only ever carries their ids, so
+      // a failed upload must stop the send rather than silently drop pictures.
+      let attachments: { id: string; mime: string }[] = [];
+      if (images.length > 0) {
+        try {
+          attachments = await Promise.all(
+            images.map(async (file) => {
+              const stored = await api.uploadChatImage(id, file);
+              return { id: stored.id, mime: stored.mime };
+            }),
+          );
+        } catch (err: any) {
+          if (stale()) return false;
+          pushChat({
+            kind: "notice",
+            tone: "error",
+            text: `Image upload failed: ${err.message} — your message was kept in the composer.`,
+          });
+          return false;
+        }
+        // The user moved on while the upload ran: the turn belongs to the
+        // project they left. Uploaded-but-unsent files are collected by the
+        // server's chat-uploads sweep.
+        if (stale()) return false;
+      }
+      pushChat({
+        kind: "user",
+        text: message,
+        scope: files,
+        ...(attachments.length > 0 ? { images: attachments } : {}),
+      });
       try {
-        await api.chat(selectedId, message, mode, files);
+        await api.chat(
+          id,
+          message,
+          mode,
+          files,
+          attachments.length > 0 ? attachments.map((a) => a.id) : undefined,
+        );
+        if (stale()) return true;
         // The server accepted the turn — reflect it immediately instead of
         // waiting for the websocket's turn_start (which a dropped socket
         // would never deliver, leaving no Stop button and no activity).
         setBusy(true);
         setActivity("thinking");
         // The first message titles a fresh chat server-side.
-        void refreshChats(selectedId);
+        void refreshChats(id);
+        return true;
       } catch (err: any) {
+        if (stale()) return false;
         pushChat({ kind: "notice", tone: "error", text: err.message });
+        return false;
       }
     },
     [selectedId, scope, pushChat, refreshChats],
@@ -1164,8 +1236,8 @@ function AppShell() {
   }, []);
 
   // "Quote in chat" from the PDF: bump the nonce so Chat appends exactly once.
-  const quoteToChat = useCallback((text: string) => {
-    setChatQuote((prev) => ({ text, nonce: (prev?.nonce ?? 0) + 1 }));
+  const quoteToChat = useCallback((text: string, source = "the PDF") => {
+    setChatQuote((prev) => ({ text, source, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
 
   // Jump to a file/line in the Source view (cite-jump, chat file links, quote
@@ -1179,6 +1251,23 @@ function AppShell() {
     });
     setSourceReveal((r) => ({ file, line, nonce: (r?.nonce ?? 0) + 1 }));
   }, []);
+
+  /**
+   * Refs "fix" → an agent turn that repairs the flagged entry. Always Edit
+   * mode (the .bib has to change) and always with chat visible, so the turn
+   * the user just triggered is not running out of sight.
+   */
+  const fixWithAgent = useCallback(
+    (prompt: string) => {
+      if (busy) return; // the button is disabled too — this guards a stale click
+      setPanes((prev) => {
+        if (prev.left === "chat" || prev.right === "chat") return prev;
+        return prev.left === "refs" ? { ...prev, right: "chat" } : { ...prev, left: "chat" };
+      });
+      void send(prompt, "edit");
+    },
+    [busy, send],
+  );
 
   // Chat blockquote → source: locate the quoted passage in the .tex sources
   // (the same n-gram endpoint the PDF double-click uses) and reveal the hit.
@@ -1386,6 +1475,7 @@ function AppShell() {
             onReject={reject}
             onRejectFile={rejectFile}
             onRejectHunk={rejectHunk}
+            onJump={revealInSource}
             onDiscardConflicts={discardConflicts}
           />
         );
@@ -1398,6 +1488,8 @@ function AppShell() {
             stamp={sourceStamp}
             busy={busy}
             onDiff={handleManualSaveDiff}
+            chatVisible={panes.left === "chat" || panes.right === "chat"}
+            onQuoteToChat={quoteToChat}
             onSaved={handleSourceSaved}
             reveal={sourceReveal}
           />
@@ -1426,6 +1518,7 @@ function AppShell() {
             busy={busy}
             onJump={revealInSource}
             onDiff={handleManualSaveDiff}
+            onFixWithAgent={fixWithAgent}
           />
         );
     }

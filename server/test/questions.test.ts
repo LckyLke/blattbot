@@ -231,15 +231,29 @@ describe("askUserQuestions flow", () => {
 describe("claude canUseTool", () => {
   const OPTIONS = { signal: new AbortController().signal, toolUseID: "tu-1" };
 
-  it("passes every non-AskUserQuestion tool through as an unmodified allow", async () => {
+  it("passes an in-project tool call through as an unmodified allow", async () => {
     const { makeCanUseTool } = await import("../src/backends/claude.js");
+    const { projectDir } = await import("../src/config.js");
     const events: Ev[] = [];
     const canUseTool = makeCanUseTool("proj-1", (e) => events.push(e), new AbortController().signal);
-    const input = { file_path: "/tmp/x", content: "y" };
+    const input = { file_path: join(projectDir("proj-1"), "main.tex"), content: "y" };
     await expect(canUseTool("Write", input, OPTIONS)).resolves.toEqual({
       behavior: "allow",
       updatedInput: input,
     });
+    expect(events).toEqual([]);
+  });
+
+  it("denies a tool call that reaches outside the project (the file fence)", async () => {
+    const { makeCanUseTool } = await import("../src/backends/claude.js");
+    const events: Ev[] = [];
+    const canUseTool = makeCanUseTool("proj-1", (e) => events.push(e), new AbortController().signal);
+    const result = (await canUseTool("Write", { file_path: "/tmp/x", content: "y" }, OPTIONS)) as {
+      behavior: string;
+      message: string;
+    };
+    expect(result.behavior).toBe("deny");
+    expect(result.message).toMatch(/inside the project working tree/);
     expect(events).toEqual([]);
   });
 

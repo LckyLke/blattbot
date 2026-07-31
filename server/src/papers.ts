@@ -319,6 +319,19 @@ export interface AuditResult {
   detail?: string;
   /** Evidence link (doi.org / OpenAlex / arXiv) when available. */
   url?: string;
+  /** The user judged this entry sound despite the audit — see `fingerprint`. */
+  accepted?: boolean;
+  /** Entry state when it was accepted; editing the entry retires the acceptance. */
+  fingerprint?: string;
+}
+
+/**
+ * Identity of an entry's checkable content. An acceptance is tied to this, so
+ * changing the title or DOI silently re-opens the entry to auditing instead of
+ * carrying a stale "you said this was fine" forever.
+ */
+export function entryFingerprint(entry: BibEntry): string {
+  return `${normTitle(entry.fields.title ?? "")}|${(entryDoi(entry.fields) ?? "").toLowerCase()}`;
 }
 
 /** The persisted outcome of the last audit run for a project. */
@@ -354,8 +367,88 @@ function auditHitUrl(hit: PaperHit): string | undefined {
   return undefined;
 }
 
+/**
+ * Every way a record may render its title. Crossref splits many titles across
+ * `title` and `subtitle` ("AMIE" + "association rule mining under incomplete
+ * evidence…"), so comparing against `title[0]` alone flags correct entries as
+ * mismatches.
+ */
+export function titleCandidates(msg: any): string[] {
+  const list = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "") : [];
+  const titles = list(msg?.title);
+  const subtitles = list(msg?.subtitle);
+  const out = new Set<string>();
+  for (const t of [...titles, ...list(msg?.["original-title"])]) {
+    out.add(t);
+    for (const s of subtitles) out.add(`${t}: ${s}`);
+  }
+  if (titles.length > 1) out.add(titles.join(" "));
+  return [...out];
+}
+
+/** Normalized word-boundary containment — a short official title inside a fuller one. */
+function titleContains(a: string, b: string): boolean {
+  const na = normTitle(a);
+  const nb = normTitle(b);
+  if (!na || !nb || na.length < 4 || nb.length < 4) return false;
+  const [short, long] = na.length <= nb.length ? [na, nb] : [nb, na];
+  return long === short || long.startsWith(`${short} `) || long.endsWith(` ${short}`) || long.includes(` ${short} `);
+}
+
+/** First author's surname as written in a BibTeX author field ("Last, First and …"). */
+function firstAuthorSurname(author: string | undefined): string | undefined {
+  const first = author?.split(/\s+and\s+/i)[0]?.trim();
+  if (!first) return undefined;
+  const surname = first.includes(",") ? first.split(",")[0] : first.split(/\s+/).at(-1);
+  return surname?.replace(/[{}]/g, "").trim().toLowerCase() || undefined;
+}
+
+/** The publication year a Crossref record reports, from whichever date it carries. */
+function crossrefYear(msg: any): string | undefined {
+  for (const field of ["issued", "published-print", "published-online", "published"]) {
+    const y = msg?.[field]?.["date-parts"]?.[0]?.[0];
+    if (typeof y === "number") return String(y);
+  }
+  return undefined;
+}
+
+export interface EntryFacts {
+  title?: string;
+  author?: string;
+  year?: string;
+}
+
+/**
+ * Decide whether a resolved record is the work the entry describes. A DOI that
+ * resolves is already strong evidence — the title check only guards against a
+ * mistyped identifier pointing at a *different* paper, so it accepts the many
+ * legitimate ways the same title is recorded (split subtitles, short forms) and
+ * falls back to author+year corroboration before crying mismatch.
+ */
+export function matchesRecord(
+  entry: EntryFacts,
+  candidates: string[],
+  record: { author?: string; year?: string } = {},
+): { ok: boolean; note?: string } {
+  const title = entry.title?.trim();
+  if (!title || candidates.length === 0) return { ok: true, note: "no title to compare" };
+  if (candidates.some((c) => titlesSimilar(title, c))) return { ok: true };
+  if (candidates.some((c) => titleContains(title, c))) {
+    return { ok: true, note: "the record splits or shortens the title" };
+  }
+  const surname = firstAuthorSurname(entry.author);
+  const sameAuthor = Boolean(surname && record.author && record.author.toLowerCase().includes(surname));
+  const sameYear = Boolean(entry.year && record.year && entry.year.trim() === record.year);
+  if (sameAuthor && sameYear) {
+    return { ok: true, note: "the record's title is written differently, but author and year match" };
+  }
+  return { ok: false };
+}
+
 /** Check a DOI against Crossref and compare titles. */
-async function auditByDoi(doi: string, title: string | undefined): Promise<AuditResult> {
+async function auditByDoi(doi: string, entry: EntryFacts): Promise<AuditResult> {
+  const title = entry.title;
   const evidence = `https://doi.org/${doi}`;
   let data: any;
   try {
@@ -368,29 +461,41 @@ async function auditByDoi(doi: string, title: string | undefined): Promise<Audit
   } catch (err: any) {
     return { status: "skipped", detail: `Crossref unreachable: ${err?.message ?? err}` };
   }
-  const remoteTitle = data?.message?.title?.[0];
-  if (!remoteTitle || !title) {
+  const msg = data?.message;
+  const candidates = titleCandidates(msg);
+  if (candidates.length === 0 || !title) {
     return { status: "verified", detail: "DOI resolves (no title to compare)", url: evidence };
   }
-  if (titlesSimilar(title, String(remoteTitle))) return { status: "verified", url: evidence };
+  const authors = Array.isArray(msg?.author)
+    ? msg.author.map((a: any) => `${a?.family ?? ""} ${a?.given ?? ""}`).join(" ")
+    : undefined;
+  const match = matchesRecord(entry, candidates, { author: authors, year: crossrefYear(msg) });
+  if (match.ok) {
+    return { status: "verified", detail: match.note, url: evidence };
+  }
+  // The fullest candidate is the most informative thing to show the user.
+  const shown = candidates.reduce((a, b) => (b.length > a.length ? b : a));
   return {
     status: "mismatch",
-    detail: `entry title "${title}" vs Crossref "${remoteTitle}"`,
+    detail: `entry title "${title}" vs Crossref "${shown}"`,
     url: evidence,
   };
 }
 
-/** Look a title up on OpenAlex, then Crossref. */
-async function auditByTitle(title: string): Promise<AuditResult> {
+/** Look a title up on OpenAlex, then Crossref (same tolerant comparison). */
+async function auditByTitle(entry: EntryFacts): Promise<AuditResult> {
+  const title = entry.title!;
+  const accepts = (hit: PaperHit) =>
+    matchesRecord(entry, [hit.title], { author: hit.authors, year: hit.year ? String(hit.year) : undefined }).ok;
   let failures = 0;
   try {
-    const hit = (await searchOpenAlex(title, 3)).find((h) => titlesSimilar(h.title, title));
+    const hit = (await searchOpenAlex(title, 3)).find(accepts);
     if (hit) return { status: "verified", url: auditHitUrl(hit) };
   } catch {
     failures++;
   }
   try {
-    const hit = (await searchCrossref(title, 3)).find((h) => titlesSimilar(h.title, title));
+    const hit = (await searchCrossref(title, 3)).find(accepts);
     if (hit) return { status: "verified", url: auditHitUrl(hit) };
   } catch {
     failures++;
@@ -399,12 +504,147 @@ async function auditByTitle(title: string): Promise<AuditResult> {
   return { status: "unresolved", detail: "no record with a matching title on OpenAlex or Crossref" };
 }
 
-async function auditEntry(entry: BibEntry): Promise<AuditResult> {
+export async function auditEntry(entry: BibEntry): Promise<AuditResult> {
   const doi = entryDoi(entry.fields);
-  const title = entry.fields.title?.trim();
-  if (doi) return auditByDoi(doi, title);
-  if (title) return auditByTitle(title);
+  const facts: EntryFacts = {
+    title: entry.fields.title?.trim(),
+    author: entry.fields.author,
+    year: entry.fields.year,
+  };
+  if (doi) return auditByDoi(doi, facts);
+  if (facts.title) return auditByTitle(facts);
   return { status: "unresolved", detail: "entry has no DOI or title to check" };
+}
+
+/**
+ * Merge fresh results into the stored audit, keeping every other entry's
+ * verdict. Lets a single added/repaired reference update its badge without
+ * re-checking (and re-hammering the public APIs for) the whole bibliography.
+ */
+export function recordAuditResults(projectId: string, results: Record<string, AuditResult>): CitationAudit {
+  const prev = readAudit(projectId);
+  const merged: CitationAudit = {
+    at: new Date().toISOString(),
+    results: { ...(prev?.results ?? {}), ...results },
+  };
+  writeAudit(projectId, merged);
+  return merged;
+}
+
+/**
+ * Check specific bib entries (all of them when `keys` is omitted) and persist
+ * the verdicts. Unknown keys are reported so a caller — the agent verifying a
+ * reference it just wrote by hand — learns the entry is not in the .bib at all.
+ */
+export async function auditEntries(
+  projectId: string,
+  projectPath: string,
+  keys?: string[],
+  opts: { delayMs?: number } = {},
+): Promise<{ results: Record<string, AuditResult>; unknownKeys: string[] }> {
+  const delayMs = opts.delayMs ?? 200;
+  const all = readAllBibEntries(projectPath);
+  const wanted = keys && keys.length > 0 ? keys : all.map((x) => x.entry.key);
+  const byKey = new Map(all.map((x) => [x.entry.key, x.entry]));
+  const results: Record<string, AuditResult> = {};
+  const unknownKeys: string[] = [];
+  let checked = 0;
+  for (const key of wanted) {
+    const entry = byKey.get(key);
+    if (!entry) {
+      unknownKeys.push(key);
+      continue;
+    }
+    // An entry the user accepted stays accepted while it is unchanged — no
+    // lookup, and no re-flagging of a verdict they already judged wrong.
+    const prior = readAudit(projectId)?.results[key];
+    if (prior?.accepted && prior.fingerprint === entryFingerprint(entry)) {
+      results[key] = prior;
+      continue;
+    }
+    if (checked > 0 && delayMs > 0) await sleep(delayMs);
+    checked++;
+    try {
+      results[key] = await auditEntry(entry);
+    } catch (err: any) {
+      results[key] = { status: "skipped", detail: String(err?.message ?? err) };
+    }
+  }
+  if (Object.keys(results).length > 0) recordAuditResults(projectId, results);
+  return { results, unknownKeys };
+}
+
+/** Agent-facing report for an audit_citations run. */
+export function formatAuditReport(
+  results: Record<string, AuditResult>,
+  unknownKeys: string[] = [],
+): string {
+  const lines: string[] = [];
+  const order: AuditStatus[] = ["mismatch", "unresolved", "skipped", "verified"];
+  const counts = { verified: 0, mismatch: 0, unresolved: 0, skipped: 0 };
+  for (const r of Object.values(results)) counts[r.status]++;
+  lines.push(
+    `Checked ${Object.keys(results).length} entr${Object.keys(results).length === 1 ? "y" : "ies"}: ` +
+      `${counts.verified} verified, ${counts.mismatch} mismatch, ${counts.unresolved} unresolved, ${counts.skipped} skipped.`,
+  );
+  for (const status of order) {
+    for (const [key, r] of Object.entries(results)) {
+      if (r.status !== status) continue;
+      const detail = r.detail ? ` — ${r.detail}` : "";
+      const url = r.url ? ` (${r.url})` : "";
+      lines.push(`  ${status.toUpperCase()} \\cite{${key}}${detail}${url}`);
+    }
+  }
+  if (unknownKeys.length > 0) {
+    lines.push(`Not found in any .bib file: ${unknownKeys.join(", ")} — check the key spelling.`);
+  }
+  if (counts.mismatch > 0 || counts.unresolved > 0) {
+    lines.push(
+      "Fix or remove the flagged entries, or tell the user they could not be verified — never leave an unverified reference unmentioned.",
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Record the user's judgement that a flagged entry is sound (the audit's
+ * checks are heuristic — a correct reference can still fail them). Tied to the
+ * entry's current content, so a later edit puts it back under scrutiny.
+ */
+export function acceptAuditEntry(projectId: string, projectPath: string, key: string): AuditResult {
+  const entry = readAllBibEntries(projectPath).find((x) => x.entry.key === key)?.entry;
+  if (!entry) throw new Error(`unknown citation key: ${key}`);
+  const prior = readAudit(projectId)?.results[key];
+  const result: AuditResult = {
+    status: "verified",
+    detail: `accepted by you${prior && prior.status !== "verified" ? ` (audit said: ${prior.status})` : ""}`,
+    url: prior?.url,
+    accepted: true,
+    fingerprint: entryFingerprint(entry),
+  };
+  recordAuditResults(projectId, { [key]: result });
+  return result;
+}
+
+/**
+ * Verify a single entry right after it was written, so a bad reference is
+ * caught while the agent can still act on it. Never throws: a verification
+ * failure must not undo a citation that was added successfully.
+ */
+export async function verifyEntry(
+  projectId: string | undefined,
+  projectPath: string,
+  key: string,
+): Promise<AuditResult | undefined> {
+  try {
+    const entry = readAllBibEntries(projectPath).find((x) => x.entry.key === key)?.entry;
+    if (!entry) return undefined;
+    const result = await auditEntry(entry);
+    if (projectId) recordAuditResults(projectId, { [key]: result });
+    return result;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

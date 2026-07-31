@@ -36,6 +36,23 @@ To revoke access: log out of Overleaf in your browser (invalidates the session s
 
 File contents, PDFs, and attached context are treated as data, not instructions: the system prompt directs the agent to ignore directives embedded in them, to flag text taken from untrusted sources, and to add citations only via the citation tools from resolvable identifiers (DOI, dblp key, arXiv id) — never from memory. The agent is also blocked from running `git commit`, `push`, `checkout`, `reset`, and `rebase` at the tool-permission level. The structural defense is the approval gate: every change, however produced, is a diff a human reviews before it can be committed or pushed.
 
+## What the agent can reach on your machine
+
+Both backends are fenced, but by different mechanisms, and the difference is worth stating plainly.
+
+The **OpenAI-compatible backend** implements its own file tools, so the boundary is absolute: reads resolve inside the project, an attached read-only context directory, or that project's own chat-image uploads; writes only inside the project working tree, and `.git` is excluded. Traversal (`../`) is rejected.
+
+The **Claude backend** runs the Agent SDK's own tools, which can address any path the OS permits. Two layers narrow that:
+
+- **Deny rules** (the SDK's `disallowedTools`) block every file tool from your credential stores — `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.netrc`, `~/.git-credentials`, `~/.claude` — and from BlattBot's own data directory, which holds your Overleaf session cookies, the local API token, and chat transcripts. These are evaluated *before* any permission-mode auto-allow, so they hold. Edits inside attached context directories are denied the same way.
+- **A permission-callback fence** additionally checks that file paths stay inside the project or its attached context, and rejects shell commands that reach into protected or out-of-project home paths. Shell arguments are resolved against the project directory first, so a relative escape (`cat ../../accounts.json`) is judged exactly like the absolute path it denotes.
+
+One deliberate read-only carve-out: images you attach to a chat message are stored at `<data dir>/chat-uploads/<project id>/` — outside the working tree, so they can never end up in a diff or on Overleaf — and the agent may read that one directory for the project it is working on. Another project's uploads, the chat transcripts, and the credential files stay blocked. The images are also sent to the model as message content; if you would not send a picture to your model provider, do not attach it.
+
+The honest limitation: this is a blocklist plus a callback check, not an operating-system jail. Permission rules cannot express "everything except this project", and the callback only sees tool calls the SDK routes to it. A determined prompt injection could still ask the agent to read an unlisted path elsewhere on the machine. If you need a hard boundary, run BlattBot in a container or under a sandbox that limits the process itself — that, not the agent's own rules, is what makes confinement absolute.
+
+What this does *not* affect: nothing reaches Overleaf without your approval of the diff, and read-only modes (Review, Understand) have the editing tools removed entirely rather than merely discouraged.
+
 ## Data-safety mechanisms
 
 - Approving a change checks Overleaf for remote drift first. A push that would overwrite remote edits is blocked and the conflicting files are listed; nothing is committed or pushed.
