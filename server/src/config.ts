@@ -11,6 +11,13 @@ export const BIN_DIR = join(DATA_DIR, "bin");
 
 const REGISTRY_PATH = join(DATA_DIR, "projects.json");
 
+/** Cumulative agent usage of a project — bumped by chats.ts at every turn end.
+ *  Cost is only known on the Claude backend; turns count regardless. */
+export interface ProjectStats {
+  totalCostUsd: number;
+  totalTurns: number;
+}
+
 /** Per-project settings — edited via the /api/projects/:id/settings endpoints.
  *  updateProject merges top-level keys only, so writers always persist the
  *  whole settings object, never a partial one. */
@@ -51,6 +58,8 @@ export interface Project {
   contextPaths?: string[];
   /** Per-project settings (style append, model override, default mode). */
   settings?: ProjectSettings;
+  /** Cumulative agent cost/turn totals — see chats.ts (updated at turn end). */
+  stats?: ProjectStats;
   createdAt: string;
 }
 

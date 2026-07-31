@@ -1,36 +1,80 @@
 import { useMemo, useState } from "react";
+import { tabStripKeyDown } from "../a11y";
 import { buildHunkPatch, parseDiff, type DiffFile, type DiffHunk } from "../diff";
+import type { CompileInfo, SyncConflict } from "../api";
+import { useDialog } from "./Dialog";
 import { HunkLines } from "./DiffView";
+import RenderedDiff from "./RenderedDiff";
 
 interface Props {
   diff: string;
   busy: boolean;
-  onApprove: (message: string) => void | Promise<void>;
+  /** Approve was blocked: Overleaf changed these files while they also carry local edits. */
+  conflicts: SyncConflict[] | null;
+  projectId: string;
+  /** Local build state (App-owned) — the rendered diff's "current" side. */
+  compile: CompileInfo | null;
+  compiling: boolean;
+  pdfStamp: number;
+  /** Ask App to recompile the working state when the preview is missing/stale. */
+  onEnsureCurrentPdf: () => void;
+  onApprove: (message: string, force?: boolean) => void | Promise<void>;
   onReject: () => void | Promise<void>;
   onRejectFile: (path: string) => void;
   onRejectHunk: (patch: string) => void;
+  /** Drop the local edits to the conflicted paths (reject-file per path). */
+  onDiscardConflicts: (paths: string[]) => void | Promise<void>;
 }
 
-export default function ProofPanel({ diff, busy, onApprove, onReject, onRejectFile, onRejectHunk }: Props) {
+export default function ProofPanel({
+  diff,
+  busy,
+  conflicts,
+  projectId,
+  compile,
+  compiling,
+  pdfStamp,
+  onEnsureCurrentPdf,
+  onApprove,
+  onReject,
+  onRejectFile,
+  onRejectHunk,
+  onDiscardConflicts,
+}: Props) {
   const files = useMemo(() => parseDiff(diff), [diff]);
   const [message, setMessage] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  /** Source-level diff vs the compiled-output comparison. */
+  const [mode, setMode] = useState<"text" | "rendered">("text");
   /** In-flight approve/discard — buttons lock and the footer shows a sweep. */
   const [acting, setActing] = useState<"push" | "discard" | null>(null);
+  const dialog = useDialog();
 
   const totals = files.reduce(
     (acc, f) => ({ add: acc.add + f.additions, del: acc.del + f.deletions }),
     { add: 0, del: 0 },
   );
 
-  async function approve() {
+  async function approve(force = false) {
     if (acting) return;
     setActing("push");
     try {
-      await onApprove(message.trim() || "BlattBot edit");
+      await onApprove(message.trim() || "BlattBot edit", force);
     } finally {
       setActing(null);
     }
+  }
+
+  /** Conflict banner: replace Overleaf's versions with ours, after a warning. */
+  async function overwriteRemote() {
+    if (acting) return;
+    const ok = await dialog.confirm({
+      title: "Overwrite Overleaf?",
+      body: "Your versions of the conflicting files will replace the ones on Overleaf. Overleaf's current versions are backed up locally first.",
+      confirmLabel: "Overwrite Overleaf",
+      danger: true,
+    });
+    if (ok) await approve(true);
   }
 
   async function discard() {
@@ -39,6 +83,17 @@ export default function ProofPanel({ diff, busy, onApprove, onReject, onRejectFi
     setActing("discard");
     try {
       await onReject();
+    } finally {
+      setActing(null);
+    }
+  }
+
+  /** Conflict banner: keep Overleaf's versions by dropping the local edits. */
+  async function discardMine() {
+    if (acting || !conflicts) return;
+    setActing("discard");
+    try {
+      await onDiscardConflicts(conflicts.map((c) => c.path));
     } finally {
       setActing(null);
     }
@@ -57,17 +112,105 @@ export default function ProofPanel({ diff, busy, onApprove, onReject, onRejectFi
 
   return (
     <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        {files.map((file) => (
-          <FileDiff
-            key={file.path}
-            file={file}
-            busy={busy}
-            onRejectFile={onRejectFile}
-            onRejectHunk={onRejectHunk}
-          />
-        ))}
+      {conflicts && conflicts.length > 0 && (
+        <div className="shrink-0 border-b border-gold/40 bg-gold/10 px-4 py-3">
+          <p role="status" className="text-[12.5px] font-medium text-gold">
+            Overleaf changed {conflicts.length} file{conflicts.length === 1 ? "" : "s"} you also
+            edited — nothing was pushed
+          </p>
+          <ul className="mt-1 space-y-0.5 font-mono text-[11.5px] text-paper-dim">
+            {conflicts.map((c) => (
+              <li key={c.path}>
+                {c.path}
+                {c.kind === "deleted-remote" && (
+                  <span className="ml-1.5 text-pencil">deleted on Overleaf</span>
+                )}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              onClick={() => void discardMine()}
+              disabled={busy || acting !== null}
+              className="rounded border border-rule px-2.5 py-1 text-[11.5px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
+            >
+              Discard my changes to these files
+            </button>
+            <button
+              onClick={() => void overwriteRemote()}
+              disabled={busy || acting !== null}
+              className="rounded bg-pencil/90 px-2.5 py-1 text-[11.5px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
+            >
+              Overwrite Overleaf
+            </button>
+          </div>
+        </div>
+      )}
+      {/* Text diff (source lines) vs rendered diff (compiled-output pixels). */}
+      <div
+        role="tablist"
+        aria-label="Proof view"
+        className="flex shrink-0 items-center gap-1.5 border-b border-rule px-4 py-1.5 text-xs"
+      >
+        <button
+          role="tab"
+          aria-selected={mode === "text"}
+          tabIndex={mode === "text" ? 0 : -1}
+          onKeyDown={tabStripKeyDown}
+          onClick={() => setMode("text")}
+          title="Line-by-line source diff of the pending changes"
+          className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+            mode === "text"
+              ? "border-gold bg-gold/10 text-gold"
+              : "border-rule text-paper-dim hover:border-graphite hover:text-paper"
+          }`}
+        >
+          Text diff
+        </button>
+        <button
+          role="tab"
+          aria-selected={mode === "rendered"}
+          tabIndex={mode === "rendered" ? 0 : -1}
+          onKeyDown={tabStripKeyDown}
+          onClick={() => setMode("rendered")}
+          title="Compare the compiled PDF of the approval base (HEAD) against the current working state — what actually changed in the output"
+          className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+            mode === "rendered"
+              ? "border-gold bg-gold/10 text-gold"
+              : "border-rule text-paper-dim hover:border-graphite hover:text-paper"
+          }`}
+        >
+          Rendered diff
+        </button>
       </div>
+
+      {mode === "rendered" ? (
+        <div role="tabpanel" aria-label="Rendered diff" className="min-h-0 flex-1">
+          <RenderedDiff
+            projectId={projectId}
+            compile={compile}
+            compiling={compiling}
+            pdfStamp={pdfStamp}
+            onEnsureCurrent={onEnsureCurrentPdf}
+          />
+        </div>
+      ) : (
+        <div
+          role="tabpanel"
+          aria-label="Text diff"
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
+        >
+          {files.map((file) => (
+            <FileDiff
+              key={file.path}
+              file={file}
+              busy={busy}
+              onRejectFile={onRejectFile}
+              onRejectHunk={onRejectHunk}
+            />
+          ))}
+        </div>
+      )}
 
       <div className="booktabs relative shrink-0 bg-ink-2 px-4 py-3">
         {/* Pushing/discarding feedback: a slim gold sweep over the footer's rule. */}

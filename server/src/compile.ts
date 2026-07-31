@@ -1,8 +1,20 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { delimiter, dirname, join } from "node:path";
+import { unzipSync } from "fflate";
 import { BIN_DIR, buildDir } from "./config.js";
+import { archiveZip } from "./git.js";
 import { findMainTex } from "./latex.js";
 import { loadSettings } from "./settings.js";
 
@@ -86,8 +98,13 @@ export function parseErrors(log: string): string[] {
 }
 
 export async function compileProject(projectId: string, projectPath: string, mainTex?: string): Promise<CompileResult> {
+  return compileTree(projectPath, buildDir(projectId), mainTex);
+}
+
+/** Run the detected engine on a source tree, PDF and logs into outDir. */
+async function compileTree(sourceDir: string, outDir: string, mainTex?: string): Promise<CompileResult> {
   const started = Date.now();
-  const main = mainTex ?? findMainTex(projectPath);
+  const main = mainTex ?? findMainTex(sourceDir);
   if (!main) {
     return {
       ok: false, engine: "none", mainTex: "", errors: ["No .tex file with \\documentclass found in the project."],
@@ -103,7 +120,6 @@ export async function compileProject(projectId: string, projectPath: string, mai
     };
   }
 
-  const outDir = buildDir(projectId);
   mkdirSync(outDir, { recursive: true });
 
   let args: string[];
@@ -119,7 +135,7 @@ export async function compileProject(projectId: string, projectPath: string, mai
   let ok = true;
   try {
     const { stdout, stderr } = await execFileP(engine.path, args, {
-      cwd: projectPath,
+      cwd: sourceDir,
       maxBuffer: 64 * 1024 * 1024,
       timeout: 180_000,
       env: { ...process.env, PATH: `${BIN_DIR}${delimiter}${process.env.PATH ?? ""}` },
@@ -153,4 +169,103 @@ export async function compileProject(projectId: string, projectPath: string, mai
     logTail: combined.split("\n").slice(-60).join("\n"),
     durationMs: Date.now() - started,
   };
+}
+
+/** Fixed names inside a rev-<sha> build cache dir. */
+const REV_PDF = "output.pdf";
+const REV_RESULT = "result.json";
+/** How many per-revision build caches to keep per project. */
+const REV_CACHE_KEEP = 3;
+
+/** Where compileRev leaves the PDF of a committed revision (may not exist yet). */
+export function revPdfPath(projectId: string, sha: string): string {
+  return join(buildDir(projectId), `rev-${sha}`, REV_PDF);
+}
+
+/**
+ * Compile the project's tree AS COMMITTED at a sha (never the working copy):
+ * `git archive` the revision into a per-sha cache dir under the build area and
+ * run the engine there. A commit's tree is immutable, so an existing cached
+ * PDF short-circuits the whole thing; failed builds are never cached.
+ */
+export async function compileRev(
+  projectId: string,
+  projectPath: string,
+  sha: string,
+  mainTex?: string,
+): Promise<CompileResult> {
+  const revDir = join(buildDir(projectId), `rev-${sha}`);
+  const pdfPath = join(revDir, REV_PDF);
+  if (existsSync(pdfPath)) {
+    // Freshen the cache dir so eviction keeps recently USED revisions.
+    const now = new Date();
+    try {
+      utimesSync(revDir, now, now);
+    } catch {
+      /* best effort */
+    }
+    let cached: Partial<CompileResult> = {};
+    try {
+      cached = JSON.parse(readFileSync(join(revDir, REV_RESULT), "utf8"));
+    } catch {
+      /* stale/corrupt sidecar — the PDF alone is enough */
+    }
+    return {
+      ok: true,
+      engine: typeof cached.engine === "string" ? cached.engine : "cached",
+      mainTex: typeof cached.mainTex === "string" ? cached.mainTex : "",
+      pdfPath,
+      errors: [],
+      logTail: typeof cached.logTail === "string" ? cached.logTail : "",
+      durationMs: 0,
+    };
+  }
+
+  // Materialize the committed tree next to where the PDF will land.
+  const treeDir = join(revDir, "tree");
+  rmSync(revDir, { recursive: true, force: true });
+  mkdirSync(treeDir, { recursive: true });
+  const entries = unzipSync(new Uint8Array(await archiveZip(projectPath, sha)));
+  for (const [name, data] of Object.entries(entries)) {
+    if (name.endsWith("/") || name.split("/").includes("..")) continue;
+    const dest = join(treeDir, name);
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, Buffer.from(data));
+  }
+
+  // The registered main may not exist at this revision — fall back to detection.
+  const main = mainTex && existsSync(join(treeDir, mainTex)) ? mainTex : undefined;
+  const result = await compileTree(treeDir, revDir, main);
+  if (result.pdfPath) {
+    renameSync(result.pdfPath, pdfPath);
+    result.pdfPath = pdfPath;
+    const { pdfPath: _omit, ...rest } = result;
+    writeFileSync(join(revDir, REV_RESULT), JSON.stringify(rest));
+  }
+  evictRevCaches(projectId);
+  return result;
+}
+
+/** Drop all but the REV_CACHE_KEEP most recently touched rev caches of a project. */
+function evictRevCaches(projectId: string): void {
+  const dir = buildDir(projectId);
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((f) => f.startsWith("rev-"));
+  } catch {
+    return;
+  }
+  const dated = names
+    .map((name) => {
+      try {
+        return { name, mtime: statSync(join(dir, name)).mtimeMs };
+      } catch {
+        return null;
+      }
+    })
+    .filter((e): e is { name: string; mtime: number } => e !== null)
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const e of dated.slice(REV_CACHE_KEEP)) {
+    rmSync(join(dir, e.name), { recursive: true, force: true });
+  }
 }

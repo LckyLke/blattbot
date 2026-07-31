@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { GlobalWorkerOptions, TextLayer, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { tabStripKeyDown } from "../a11y";
 import type { CompileInfo } from "../api";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -11,6 +12,11 @@ interface Props {
   stamp: number;
   /** True while a compile runs (server- or UI-initiated). */
   compiling: boolean;
+  /** Bumps after each successful "Verify on Overleaf" build (0 = none yet). */
+  remoteStamp: number;
+  /** Which build the viewer shows; "remote" only exists after a verify. */
+  source: "local" | "remote";
+  onSelectSource: (source: "local" | "remote") => void;
   /** Jump to a file/line in the Source view (App wires this to revealInSource). */
   onJumpToSource: (file: string, line: number) => void;
   /** True while the other pane shows the chat — enables the quote chip. */
@@ -46,6 +52,9 @@ export default function PdfPanel({
   compile,
   stamp,
   compiling,
+  remoteStamp,
+  source,
+  onSelectSource,
   onJumpToSource,
   chatVisible,
   onQuoteToChat,
@@ -75,8 +84,13 @@ export default function PdfPanel({
   const savedScroll = useRef(0);
   const prevProject = useRef(projectId);
 
-  const pdfUrl = `/api/projects/${projectId}/pdf?v=${stamp}`;
-  const hasPdf = Boolean(compile?.hasPdf);
+  // "remote" shows the last "Verify on Overleaf" build — Overleaf's own
+  // compiler output for the project as it currently is on Overleaf.
+  const showingRemote = source === "remote" && remoteStamp > 0;
+  const pdfUrl = showingRemote
+    ? `/api/projects/${projectId}/pdf?source=remote&v=${remoteStamp}`
+    : `/api/projects/${projectId}/pdf?v=${stamp}`;
+  const hasPdf = showingRemote || Boolean(compile?.hasPdf);
 
   useEffect(() => {
     if (!hasPdf) return;
@@ -206,21 +220,65 @@ export default function PdfPanel({
 
   return (
     <div className="flex h-full flex-col">
-      {compile && (
+      {remoteStamp > 0 && (
         <div
+          role="tablist"
+          aria-label="PDF build source"
+          className="flex shrink-0 items-center gap-1.5 border-b border-rule px-4 py-1.5 text-xs"
+        >
+          <button
+            role="tab"
+            aria-selected={!showingRemote}
+            tabIndex={!showingRemote ? 0 : -1}
+            onKeyDown={tabStripKeyDown}
+            onClick={() => onSelectSource("local")}
+            title="The local preflight build — checks your edits compile locally; Overleaf's own TeX Live may differ"
+            className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+              !showingRemote
+                ? "border-gold bg-gold/10 text-gold"
+                : "border-rule text-paper-dim hover:border-graphite hover:text-paper"
+            }`}
+          >
+            Local preflight
+          </button>
+          <button
+            role="tab"
+            aria-selected={showingRemote}
+            tabIndex={showingRemote ? 0 : -1}
+            onKeyDown={tabStripKeyDown}
+            onClick={() => onSelectSource("remote")}
+            title="Overleaf's own build — compiles the project as it currently is on Overleaf (approved & pushed changes, not unpushed local edits)"
+            className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
+              showingRemote
+                ? "border-gold bg-gold/10 text-gold"
+                : "border-rule text-paper-dim hover:border-graphite hover:text-paper"
+            }`}
+          >
+            Overleaf build
+          </button>
+          {showingRemote && (
+            <span className="ml-auto font-mono text-[11px] text-graphite">compiled on Overleaf</span>
+          )}
+        </div>
+      )}
+
+      {!showingRemote && compile && (
+        <div
+          role="status"
+          title="Local preflight: checks your edits compile locally; Overleaf's own TeX Live may differ"
           className={`flex shrink-0 items-center gap-2 border-b border-rule px-4 py-1.5 text-xs ${
             compile.ok ? "text-leaf" : "text-pencil"
           }`}
         >
           <span className={`inline-block h-1.5 w-1.5 rounded-full ${compile.ok ? "bg-leaf" : "bg-pencil"}`} />
           {compile.ok
-            ? `Compiled with ${compile.engine} in ${(compile.durationMs / 1000).toFixed(1)}s`
-            : `Compilation failed (${compile.engine})`}
+            ? `Local preflight (${compile.engine}) passed in ${(compile.durationMs / 1000).toFixed(1)}s`
+            : `Local preflight failed (${compile.engine})`}
           <span className="ml-auto font-mono text-graphite">{compile.mainTex}</span>
         </div>
       )}
 
-      {compile && !compile.ok && (
+      {!showingRemote && compile && !compile.ok && (
         <div className="max-h-56 shrink-0 overflow-y-auto border-b border-rule bg-ink-2 px-4 py-3">
           {compile.errors.map((err, i) => (
             <pre key={i} className="mb-2 whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed text-pencil">
@@ -262,6 +320,7 @@ export default function PdfPanel({
             href={pdfUrl}
             target="_blank"
             rel="noreferrer"
+            aria-label="Open the PDF in a new tab"
             className="ml-2 rounded px-1.5 py-0.5 text-[11px] transition-colors hover:bg-ink-3 hover:text-paper"
             title="Open in a new tab"
           >
@@ -272,13 +331,16 @@ export default function PdfPanel({
 
       <div ref={overlayRef} onMouseUp={handleMouseUp} className="relative min-h-0 flex-1">
         {/* Compile progress: a thin indeterminate bar plus a ticking status
-            chip, floated over the (still visible) last PDF. */}
-        {compiling && (
+            chip, floated over the (still visible) last PDF. Local builds only —
+            the Overleaf build is unaffected by a local recompile. */}
+        {compiling && !showingRemote && (
           <div className="pointer-events-none absolute inset-x-0 top-0 z-10">
             <div className="compile-bar h-0.5 w-full" />
             <div className="mt-3 flex justify-center">
               <span className="rounded-full border border-rule bg-ink-2/95 px-3 py-1 font-mono text-[11px] text-gold shadow-[0_2px_10px_rgba(0,0,0,0.45)]">
-                Compiling… {elapsed}s
+                {/* Only the stable part is live — the ticking seconds would
+                    re-announce every half second. */}
+                <span role="status">Compiling…</span> {elapsed}s
               </span>
             </div>
           </div>
@@ -302,7 +364,10 @@ export default function PdfPanel({
         )}
 
         {toast && (
-          <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full border border-rule bg-ink-2/95 px-3 py-1 text-xs text-pencil shadow-[0_2px_10px_rgba(0,0,0,0.45)]">
+          <div
+            role="status"
+            className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full border border-rule bg-ink-2/95 px-3 py-1 text-xs text-pencil shadow-[0_2px_10px_rgba(0,0,0,0.45)]"
+          >
             {toast}
           </div>
         )}

@@ -5,17 +5,20 @@
  * an SDK MCP server, and maps the SDK's stream onto the shared event contract.
  */
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getProject, projectDir, updateProject } from "../config.js";
 import { compileProject } from "../compile.js";
-import { addCitation, readAllBibEntries, searchPapers } from "../citations.js";
+import { addCitation, formatAddCitationResult, readAllBibEntries, searchPapers } from "../citations.js";
 import { loadSettings } from "../settings.js";
+import { askUserQuestions, validateQuestions, type AgentQuestion } from "../questions.js";
 import {
   AGENT_TOOL_INFO,
   DISALLOWED_TOOLS,
   resolveModel,
   type AgentBackend,
   type BackendTurnContext,
+  type EventSink,
 } from "./types.js";
 
 function text(s: string) {
@@ -76,11 +79,7 @@ function buildMcpServer(projectId: string) {
     },
     async ({ ref, bibFile }) => {
       try {
-        const result = await addCitation(dir, ref, bibFile);
-        if (result.status === "duplicate") {
-          return text(`Already in bibliography as \\cite{${result.key}} (${result.bibFile}). Do not add it again.`);
-        }
-        return text(`Added to ${result.bibFile} as \\cite{${result.key}}.\n${result.entryPreview ?? ""}`);
+        return text(formatAddCitationResult(await addCitation(dir, ref, bibFile)));
       } catch (err: any) {
         return text(`add_citation failed: ${err?.message ?? err}`);
       }
@@ -107,6 +106,94 @@ function buildMcpServer(projectId: string) {
     version: "0.1.0",
     tools: [compileTool, searchTool, addCitationTool, listCitationsTool],
   });
+}
+
+/**
+ * Cost/token usage from the SDK's final result message. total_cost_usd is the
+ * turn's dollar cost; usage carries the token counts — input tokens are the
+ * sum of fresh input plus cache creation/reads, so the number reflects what
+ * the model actually consumed. Absent/malformed fields simply stay undefined.
+ */
+export function extractResultUsage(m: any): {
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+} {
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  const usage = m?.usage ?? {};
+  const input = num(usage.input_tokens);
+  const cacheCreate = num(usage.cache_creation_input_tokens);
+  const cacheRead = num(usage.cache_read_input_tokens);
+  const inputTokens =
+    input === undefined && cacheCreate === undefined && cacheRead === undefined
+      ? undefined
+      : (input ?? 0) + (cacheCreate ?? 0) + (cacheRead ?? 0);
+  return {
+    costUsd: num(m?.total_cost_usd),
+    inputTokens,
+    outputTokens: num(usage.output_tokens),
+  };
+}
+
+/**
+ * The SDK's permission callback, wired for AskUserQuestion. Everything else is
+ * a pure passthrough allow: the query runs with permissionMode
+ * "bypassPermissions", under which the CLI auto-allows every ordinary tool
+ * internally and never consults this callback for them — verified against the
+ * bundled cli.js, whose permission pipeline returns AskUserQuestion's "ask"
+ * (checkPermissions always asks + requiresUserInteraction) BEFORE the
+ * bypass-mode auto-allow, so the ask reaches this callback even in bypass
+ * mode. The passthrough arm is belt-and-braces for any other tool a future
+ * SDK routes here; it preserves bypass-equivalent permissiveness
+ * (review-mode/edit blocking stays enforced via disallowedTools).
+ *
+ * On AskUserQuestion: validate the questions, register them as the project's
+ * pending question, stream a `question` event to the UI, and block until the
+ * user answers (→ allow with the answers echoed into updatedInput), dismisses
+ * (→ deny with a "proceed anyway" note), or the turn aborts (→ deny).
+ * Exported for unit tests.
+ */
+export function makeCanUseTool(projectId: string, emit: EventSink, signal: AbortSignal): CanUseTool {
+  return async (toolName, input, options) => {
+    if (toolName !== "AskUserQuestion") {
+      return { behavior: "allow", updatedInput: input };
+    }
+    let questions: AgentQuestion[];
+    try {
+      questions = validateQuestions((input as { questions?: unknown }).questions);
+    } catch (err: any) {
+      return {
+        behavior: "deny",
+        message: `The questions were malformed (${err?.message ?? err}) — proceed with your best judgment.`,
+      };
+    }
+    let resolution;
+    try {
+      resolution = await askUserQuestions(projectId, emit, questions, [signal, options.signal]);
+    } catch (err: any) {
+      // A second concurrent question — the SDK serializes tool calls, so this
+      // is unexpected; fail fast instead of queueing.
+      console.warn(`AskUserQuestion denied for ${projectId}: ${err?.message ?? err}`);
+      return {
+        behavior: "deny",
+        message: "Another question is already pending — proceed with your best judgment.",
+      };
+    }
+    if (resolution.kind === "answered") {
+      return {
+        behavior: "allow",
+        updatedInput: { questions: input.questions, answers: resolution.answers },
+      };
+    }
+    if (resolution.kind === "dismissed") {
+      return {
+        behavior: "deny",
+        message: "User declined to answer; proceed with your best judgment.",
+      };
+    }
+    return { behavior: "deny", message: "The turn was interrupted before the questions were answered." };
+  };
 }
 
 /** Extract a compact, UI-friendly summary of a tool input. */
@@ -176,6 +263,9 @@ export const claudeBackend: AgentBackend = {
         },
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        // Surfaces AskUserQuestion (which always "ask"s, even in bypass mode)
+        // as an interactive question card in the chat; allows everything else.
+        canUseTool: makeCanUseTool(project.id, ctx.emit, ctx.signal),
         includePartialMessages: true,
         abortController: controller,
         systemPrompt: { type: "preset", preset: "claude_code", append: ctx.systemAppend },
@@ -251,7 +341,8 @@ export const claudeBackend: AgentBackend = {
           ctx.emit({
             type: "turn_end",
             isError: Boolean(m.is_error),
-            costUsd: m.total_cost_usd,
+            ...extractResultUsage(m),
+            model: ctx.model,
             durationMs: m.duration_ms,
             result: typeof m.result === "string" ? m.result : undefined,
           });
@@ -268,7 +359,8 @@ export const claudeBackend: AgentBackend = {
  * One-shot, tool-less model call → the final text. Used for tiny generation
  * tasks like condensing a paper abstract into a TL;DR. Shares the agent's
  * model/key/base-URL settings but never touches files or sessions.
- * (Always runs on the Claude SDK, regardless of the configured turn backend.)
+ * (The Claude SDK path — agent.ts's runOneShot dispatches here unless the
+ * openai backend is active AND fully configured.)
  */
 export async function runOneShot(prompt: string): Promise<string> {
   const settings = loadSettings();

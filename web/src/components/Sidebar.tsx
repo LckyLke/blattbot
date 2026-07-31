@@ -18,6 +18,8 @@ interface Props {
   /** Pull incoming remote changes now. Absent for local-only projects. */
   onSync?: () => void;
   syncing?: boolean;
+  /** A newer published version exists — the footer links the releases page. */
+  update?: { current: string; latest: string } | null;
 }
 
 interface DirNode {
@@ -63,6 +65,7 @@ export default function Sidebar({
   onOpenProjectSettings,
   onSync,
   syncing = false,
+  update = null,
 }: Props) {
   const tree = useMemo(() => buildTree(files), [files]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -253,7 +256,8 @@ export default function Sidebar({
           {ctxCount > 0 && <span className="font-mono text-[10.5px] text-graphite/80">{ctxCount}</span>}
           <button
             onClick={() => setCtxOpen((s) => !s)}
-            aria-label="Add external context"
+            aria-label={ctxOpen ? "Close the external-context form" : "Add external context"}
+            aria-expanded={ctxOpen}
             className="ml-auto rounded border border-rule px-1.5 text-[11px] leading-[1.4] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
           >
             {ctxOpen ? "×" : "+"}
@@ -366,6 +370,17 @@ export default function Sidebar({
         >
           ⚙ Settings
         </button>
+        {update && (
+          <a
+            href="https://github.com/LckyLke/blattbot/releases"
+            target="_blank"
+            rel="noreferrer"
+            title="A newer BlattBot is published — open the release notes"
+            className="block truncate rounded px-2.5 pb-1 pt-0.5 font-mono text-[10px] text-gold/70 transition-colors hover:text-gold"
+          >
+            v{update.current} → {update.latest} available
+          </a>
+        )}
       </div>
     </nav>
   );

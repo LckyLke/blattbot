@@ -11,10 +11,20 @@
  * we silently try to revive it from the user's browser cookies; only if that
  * fails does the account flip to "disconnected" (it is never removed).
  */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { projectDir, updateProject, type Project } from "./config.js";
 import * as git from "./git.js";
-import { OverleafAuthError, OverleafClient } from "./overleaf/olclient.js";
-import { pushAll, pushChanges, syncIn as olSyncIn, type PushResult } from "./overleaf/olsync.js";
+import { OverleafAuthError, OverleafClient, type RemoteCompileResult } from "./overleaf/olclient.js";
+import {
+  mergeRemotePaths,
+  pushAll,
+  pushChanges,
+  scanRemoteDrift,
+  syncIn as olSyncIn,
+  unpackZip,
+  type PushResult,
+} from "./overleaf/olsync.js";
 import { cookieForProject, getAccount, refreshFromBrowsers, updateAccount, type OlAccount } from "./accounts.js";
 
 export function overleafClient(project: Project): OverleafClient {
@@ -46,6 +56,12 @@ async function withSession<T>(project: Project, fn: (client: OverleafClient) => 
 export interface SyncResult {
   ok: boolean;
   detail?: string;
+  /** overleaf kind: whether a sync commit was made. */
+  changed?: boolean;
+  /** Remote-changed paths merged in while local edits were pending. */
+  merged?: string[];
+  /** Remote-changed paths left alone because they also have local edits. */
+  drift?: string[];
 }
 
 /** Bring the working tree up to date with the remote before an agent turn. */
@@ -56,13 +72,39 @@ export async function syncIn(project: Project): Promise<SyncResult> {
     const result = await withSession(project, (client) =>
       olSyncIn(client, project.overleafProjectId!, dir),
     );
-    if (result.skipped === "dirty") {
-      return { ok: true, detail: "working tree has pending changes — skipped refresh from Overleaf" };
+    const parts: string[] = [];
+    if (result.merged?.length) parts.push(`merged remote changes to: ${result.merged.join(", ")}`);
+    else if (result.changed) parts.push("picked up remote changes");
+    if (result.drift?.length) {
+      parts.push(
+        `Overleaf has newer versions of: ${result.drift.join(", ")} — they'll be merged once your local edits to them are resolved`,
+      );
     }
-    return { ok: true, detail: result.changed ? "picked up remote changes" : undefined };
+    return {
+      ok: true,
+      detail: parts.length > 0 ? parts.join("; ") : undefined,
+      changed: result.changed,
+      merged: result.merged,
+      drift: result.drift,
+    };
   }
   await git.pull(dir);
   return { ok: true };
+}
+
+export interface RemoteConflict {
+  path: string;
+  kind: "modified" | "deleted-remote";
+}
+
+/** Approval refused: the remote changed files that also have local edits. */
+export class ApproveConflictError extends Error {
+  constructor(public readonly conflicts: RemoteConflict[]) {
+    super(
+      `Overleaf changed ${conflicts.length} file${conflicts.length === 1 ? "" : "s"} you also edited — resolve or force-approve`,
+    );
+    this.name = "ApproveConflictError";
+  }
 }
 
 export interface ApproveResult {
@@ -70,10 +112,49 @@ export interface ApproveResult {
   uploaded?: string[];
   deleted?: string[];
   warnings?: string[];
+  /** Remote-only changes absorbed into the mirror after the push. */
+  absorbedRemote?: string[];
+}
+
+export interface ApproveOptions {
+  /** Overwrite conflicting remote edits (their versions are backed up first). */
+  force?: boolean;
+}
+
+/**
+ * Conflicts = paths both sides changed relative to HEAD — unless the remote
+ * already holds exactly the local bytes (or both sides deleted the path).
+ */
+function findConflicts(
+  dir: string,
+  snapshot: Map<string, Buffer>,
+  localPaths: string[],
+  remote: Map<string, "modified" | "added" | "deleted">,
+): RemoteConflict[] {
+  const conflicts: RemoteConflict[] = [];
+  for (const path of localPaths) {
+    const kind = remote.get(path);
+    if (!kind) continue;
+    const remoteContent = snapshot.get(path);
+    let localContent: Buffer | null = null;
+    try {
+      localContent = readFileSync(join(dir, path));
+    } catch {
+      /* locally deleted */
+    }
+    if (remoteContent && localContent && remoteContent.equals(localContent)) continue;
+    if (!remoteContent && !localContent) continue;
+    conflicts.push({ path, kind: kind === "deleted" ? "deleted-remote" : "modified" });
+  }
+  return conflicts;
 }
 
 /** Commit the reviewed changes and propagate them to the remote. */
-export async function approve(project: Project, message: string): Promise<ApproveResult> {
+export async function approve(
+  project: Project,
+  message: string,
+  opts: ApproveOptions = {},
+): Promise<ApproveResult> {
   const dir = projectDir(project.id);
   if (project.kind === "local") {
     // No remote — approval is just the local commit.
@@ -81,16 +162,81 @@ export async function approve(project: Project, message: string): Promise<Approv
     return { pushed: false };
   }
   if (project.kind === "overleaf") {
+    // Drift check: a collaborator may have edited on Overleaf since our last
+    // sync — never silently clobber those edits with a whole-file upload.
+    const zip = await withSession(project, (client) => client.downloadZip(project.overleafProjectId!));
+    const snapshot = unpackZip(zip);
+    const local = await git.changedPaths(dir);
+    const remote = await scanRemoteDrift(dir, snapshot);
+    const conflicts = findConflicts(dir, snapshot, local, remote);
+    if (conflicts.length > 0 && !opts.force) throw new ApproveConflictError(conflicts);
+    const warnings: string[] = [];
+    if (conflicts.length > 0) {
+      // Forced: keep the remote's versions recoverable before overwriting them.
+      // Living under .git keeps the backups out of the worktree and the diff.
+      const stamp = new Date().toISOString().replace(/:/g, "-");
+      const backupDir = join(dir, ".git", "blattbot", "remote-backup", stamp);
+      for (const c of conflicts) {
+        const content = snapshot.get(c.path);
+        if (!content) continue; // deleted remotely — nothing to back up
+        mkdirSync(dirname(join(backupDir, c.path)), { recursive: true });
+        writeFileSync(join(backupDir, c.path), content);
+      }
+      warnings.push(`Overleaf's versions of the overwritten files were backed up to ${backupDir}`);
+    }
+    // Remote changes to paths we did NOT touch are absorbed after the push.
+    const localSet = new Set(local);
+    const absorbed = [...remote.keys()].filter((p) => !localSet.has(p));
+    // Reconcile: the remote-only changes become a normal sync commit. The
+    // snapshot predates our push, so only those untouched paths may come
+    // from it — applying it whole would revert what was just pushed. NEVER
+    // fatal: it runs after the commit (and push), which have already landed,
+    // so a failure here degrades to a warning instead of failing the approve.
+    const absorb = async (): Promise<string | null> => {
+      if (absorbed.length === 0) return null;
+      try {
+        await mergeRemotePaths(dir, snapshot, absorbed);
+        return null;
+      } catch (err: any) {
+        return `could not pick up Overleaf's changes to ${absorbed.join(", ")} (${err?.message ?? err}) — run Sync to retry`;
+      }
+    };
     const base = await git.revParse(dir, "HEAD");
     const committed = await git.commitAll(dir, message);
-    if (!committed) return { pushed: false };
+    if (!committed) {
+      const absorbWarn = await absorb();
+      const allWarnings = [...warnings, ...(absorbWarn ? [absorbWarn] : [])];
+      return {
+        pushed: false,
+        ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
+        ...(absorbed.length > 0 ? { absorbedRemote: absorbed } : {}),
+      };
+    }
     const head = await git.revParse(dir, "HEAD");
     const result = await withSession(project, (client) =>
       pushChanges(client, project.overleafProjectId!, dir, base, head),
     );
-    return { pushed: true, ...result };
+    const absorbWarn = await absorb();
+    return {
+      pushed: true,
+      ...result,
+      warnings: [...warnings, ...result.warnings, ...(absorbWarn ? [absorbWarn] : [])],
+      ...(absorbed.length > 0 ? { absorbedRemote: absorbed } : {}),
+    };
   }
   return git.commitAndPush(dir, message);
+}
+
+/**
+ * "Verify on Overleaf": run the remote instance's own compiler on the
+ * project's CURRENT REMOTE state (what has been approved & pushed — never
+ * unpushed local edits) and return its PDF or log tail.
+ */
+export async function remoteCompile(project: Project): Promise<RemoteCompileResult> {
+  if (project.kind !== "overleaf") {
+    throw new Error("remote compile is only available for Overleaf cookie-mode projects");
+  }
+  return withSession(project, (client) => client.compileProject(project.overleafProjectId!));
 }
 
 export interface PublishTreeResult extends PushResult {

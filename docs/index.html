@@ -62,7 +62,7 @@
     <div class="feature-text">
       <p class="eyebrow">\section{proof}</p>
       <h2 id="f-proof">Agent edits land as diffs you approve</h2>
-      <p>The agent works in a local git checkout and compiles after editing to check its own work. You can watch the diff grow during the turn. Keep what you want and discard the rest. On a connected project, approved changes are pushed to Overleaf with a normal history entry.</p>
+      <p>The agent works in a local git checkout and compiles after editing to check its own work. You can watch the diff grow during the turn. Keep what you want and discard the rest — as a text diff or as a rendered PDF diff that highlights the pages that visually changed. On a connected project, approved changes are pushed to Overleaf with a normal history entry; if Overleaf changed in the meantime, a conflicting push is blocked until you resolve it.</p>
     </div>
     <figure class="shot">
       <button class="figure-zoom" type="button" aria-label="Enlarge figure 2">
@@ -92,7 +92,7 @@
     <div class="feature-text">
       <p class="eyebrow">\section{citations}</p>
       <h2 id="f-citations">Paper search, built in</h2>
-      <p>Search OpenAlex, Semantic Scholar, DBLP, and Crossref from inside the app. Each paper comes with a one-line summary so you can judge relevance quickly. The References tab shows where every entry is cited and flags the ones that never get used. BibTeX import and export are there too.</p>
+      <p>Search OpenAlex, Semantic Scholar, DBLP, and Crossref from inside the app. Each paper comes with a one-line summary so you can judge relevance quickly. New entries are deduped and normalized on the way in, and a citation audit checks each one against Crossref and OpenAlex, badging it verified, unresolved, or mismatched. The References tab shows where every entry is cited and flags the ones that never get used. BibTeX import and export are there too.</p>
     </div>
     <figure class="shot">
       <button class="figure-zoom" type="button" aria-label="Enlarge figure 4">
@@ -107,7 +107,7 @@
     <div class="feature-text">
       <p class="eyebrow">\section{overleaf}</p>
       <h2 id="f-overleaf">Syncs with any Overleaf</h2>
-      <p>Overleaf.com works, and so does a self-hosted server. Connect over the git bridge or through your existing browser session. You can keep several accounts side by side. When a local project is ready to share, publish it to Overleaf.</p>
+      <p>Overleaf.com works, and so does a self-hosted server — even without a git bridge, through your existing browser session. Pushes update documents in place, so comments, tracked changes, and history survive, and a Verify button runs Overleaf's own compiler on the pushed state. You can keep several accounts side by side. When a local project is ready to share, publish it to Overleaf.</p>
     </div>
     <figure class="shot">
       <button class="figure-zoom" type="button" aria-label="Enlarge figure 5">
@@ -122,7 +122,7 @@
     <div class="feature-text">
       <p class="eyebrow">\section{trust}</p>
       <h2 id="f-trust">You can read the whole system prompt</h2>
-      <p>The server listens on loopback only and requires a token on every request. Secrets live in your data dir with <code>0600</code> permissions.</p>
+      <p>The server listens on loopback only and requires a token on every request. Secrets live in your data dir with <code>0600</code> permissions. Every turn shows what it cost, and a disclosure generator writes an AI-use statement from your actual usage logs. Source-available under PolyForm Noncommercial.</p>
     </div>
     <figure class="shot">
       <button class="figure-zoom" type="button" aria-label="Enlarge figure 6">
@@ -148,7 +148,7 @@
       </li>
       <li>
         <h3>Create or connect a project</h3>
-        <p>Start with a blank local project, or paste an Overleaf link. BlattBot imports the session from your browser./p>
+        <p>Start with a blank local project, or paste an Overleaf link. BlattBot imports the session from your browser.</p>
       </li>
       <li>
         <h3>Ask, then approve</h3>

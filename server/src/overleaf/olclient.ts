@@ -8,9 +8,12 @@
  *   POST   /project/:id/upload                 multipart qqfile + name + relativePath
  *   POST   /project/:id/folder                 {name, parent_folder_id}
  *   DELETE /project/:id/{doc|file|folder}/:entityId
+ *   POST   /project/:id/compile                run the instance's own compiler
  *   socket.io 0.9 joinProject                  full file tree WITH entity ids
+ *   socket.io 0.9 joinDoc/applyOtUpdate/leaveDoc  in-place text-doc edits
  */
 import WebSocket from "ws";
+import { type TextOpComponent } from "./ot.js";
 
 export class OverleafAuthError extends Error {
   constructor(message = "Overleaf session rejected — the cookie has probably expired. Paste a fresh one.") {
@@ -100,6 +103,15 @@ export interface ProjectTree {
   entities: Map<string, TreeEntity>;
   /** folder path (no leading slash, "" = root) → folder id */
   folders: Map<string, string>;
+}
+
+export interface RemoteCompileResult {
+  /** Overleaf's compile status, e.g. "success" or "failure". */
+  status: string;
+  /** The compiled output.pdf — present only on a successful build. */
+  pdf?: Buffer;
+  /** Tail of Overleaf's compile log when there is no PDF to show. */
+  logTail?: string;
 }
 
 function looksLikeLoginRedirect(res: Response): boolean {
@@ -230,6 +242,20 @@ export class OverleafClient {
    * the newer auto-join (joinProjectResponse) flow.
    */
   async joinProjectTree(projectId: string): Promise<ProjectTree> {
+    const session = await this.connectRealtime(projectId);
+    try {
+      return buildTree(session.project);
+    } finally {
+      session.close();
+    }
+  }
+
+  /**
+   * Open a realtime session already joined to the project, for in-place doc
+   * edits (joinDoc/applyOtUpdate/leaveDoc). The caller owns the session and
+   * must close() it.
+   */
+  async connectRealtime(projectId: string): Promise<OlRealtimeSession> {
     const hs = await this.fetchChecked(
       `/socket.io/1/?projectId=${projectId}&t=${Date.now()}`,
       { headers: { Accept: "*/*" } },
@@ -242,64 +268,7 @@ export class OverleafClient {
     const ws = new WebSocket(wsUrl, {
       headers: { Cookie: this.cookie, Origin: this.baseUrl },
     });
-
-    const project = await new Promise<any>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        ws.close();
-        reject(new Error("timed out waiting for project tree over websocket"));
-      }, 15_000);
-      const done = (p: any) => {
-        clearTimeout(timer);
-        ws.close();
-        resolve(p);
-      };
-      ws.on("error", (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
-      ws.on("message", (raw) => {
-        const frame = raw.toString();
-        const sep1 = frame.indexOf(":");
-        const type = frame.slice(0, sep1 === -1 ? undefined : sep1);
-        if (type === "2") {
-          ws.send("2::"); // heartbeat
-          return;
-        }
-        if (type === "1") {
-          // connected — request the join explicitly (classic flow; newer
-          // servers auto-join from the handshake's projectId and ignore this)
-          ws.send(`5:1+::${JSON.stringify({ name: "joinProject", args: [{ project_id: projectId }] })}`);
-          return;
-        }
-        if (type === "5") {
-          // event frame: 5:::{json}
-          const body = frame.slice(frame.indexOf(":::") + 3);
-          try {
-            const ev = JSON.parse(body);
-            if (ev.name === "joinProjectResponse" && ev.args?.[0]?.project) {
-              done(ev.args[0].project);
-            }
-          } catch {
-            /* not json — ignore */
-          }
-          return;
-        }
-        if (type === "6") {
-          // ack frame: 6:::1+[null, project, ...]
-          const m = /^6:::\d+\+(.*)$/s.exec(frame);
-          if (!m) return;
-          try {
-            const args = JSON.parse(m[1]);
-            if (args?.[0]) reject(new Error(`joinProject error: ${JSON.stringify(args[0])}`));
-            else if (args?.[1]) done(args[1]);
-          } catch {
-            /* ignore */
-          }
-        }
-      });
-    });
-
-    return buildTree(project);
+    return OlRealtimeSession.open(ws, projectId);
   }
 
   /**
@@ -397,6 +366,291 @@ export class OverleafClient {
     });
     if (!res.ok && res.status !== 204) {
       throw new Error(`delete ${type} ${entityId} failed: HTTP ${res.status}`);
+    }
+  }
+
+  /**
+   * Run Overleaf's own compiler on the project's CURRENT REMOTE state.
+   * A successful build yields the output.pdf bytes; anything else yields the
+   * tail of the remote compile log instead (a failure is a result, not an
+   * error — only unexpected response shapes throw).
+   */
+  async compileProject(projectId: string): Promise<RemoteCompileResult> {
+    const token = await this.csrf();
+    const res = await this.fetchChecked(`/project/${projectId}/compile?auto_compile=false`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Csrf-Token": token },
+      body: JSON.stringify({
+        check: "silent",
+        draft: false,
+        incrementalCompilesEnabled: false,
+        stopOnFirstError: false,
+      }),
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok || typeof data?.status !== "string") {
+      throw new Error(`remote compile failed: HTTP ${res.status} ${JSON.stringify(data)}`);
+    }
+    const outputFiles: any[] = Array.isArray(data.outputFiles) ? data.outputFiles : [];
+    // Output urls are server-relative and already carry the build/compileGroup/
+    // clsiserverid query params — fetch them exactly as given.
+    const urlOf = (path: string): string | undefined => {
+      const u = outputFiles.find((f) => f?.path === path)?.url;
+      return typeof u === "string" ? u : undefined;
+    };
+    const pdfUrl = urlOf("output.pdf");
+    if (data.status === "success" && pdfUrl) {
+      const pdfRes = await this.fetchChecked(pdfUrl, { headers: { Accept: "application/pdf, */*" } });
+      if (!pdfRes.ok) throw new Error(`compiled PDF download failed: HTTP ${pdfRes.status}`);
+      const buf = Buffer.from(await pdfRes.arrayBuffer());
+      // A login page instead of a PDF means the cookie died between checks.
+      if (buf.length < 4 || buf.toString("latin1", 0, 4) !== "%PDF") throw new OverleafAuthError();
+      return { status: data.status, pdf: buf };
+    }
+    // No PDF — surface the remote compiler's log so the user sees WHY.
+    const logUrl = urlOf("output.log");
+    let logTail: string | undefined;
+    if (logUrl) {
+      try {
+        const logRes = await this.fetchChecked(logUrl, { headers: { Accept: "text/plain, */*" } });
+        if (logRes.ok) logTail = (await logRes.text()).slice(-4000);
+      } catch {
+        /* best-effort — the status alone still tells the story */
+      }
+    }
+    return { status: data.status, logTail };
+  }
+}
+
+type SessionEventListener = (name: string, args: any[]) => void;
+
+/**
+ * Overleaf's realtime service transports doc lines UTF-8-encoded per line
+ * (`unescape(encodeURIComponent(line))` server-side, applied unconditionally
+ * in WebsocketController.joinDoc); the client restores the real text with
+ * `decodeURIComponent(escape(line))`. Plain ASCII round-trips unchanged; a
+ * line that fails to decode (raw bytes that are not valid UTF-8) is passed
+ * through as-is.
+ */
+function decodeSocketLine(line: string): string {
+  try {
+    return decodeURIComponent(escape(line));
+  } catch {
+    return line;
+  }
+}
+
+/**
+ * One live socket.io 0.9 connection, joined to a project. Heartbeat frames
+ * (`2::`) are echoed for the session's lifetime; events go out as
+ * `5:<msgId>+::{"name",…}` frames and acks are correlated back by message id.
+ * Acks follow the Overleaf node-callback convention: args[0] is the error
+ * (null on success).
+ */
+export class OlRealtimeSession {
+  /** Raw project object from the join — joinProjectTree builds the tree from it. */
+  project: any = null;
+  /**
+   * First otUpdateError the server pushed. Real Overleaf acks applyOtUpdate
+   * when the op is merely ENQUEUED; genuine apply failures arrive later as
+   * this event (followed by a disconnect), so callers must check it when
+   * verifying an edit actually landed.
+   */
+  otUpdateError: Error | null = null;
+  private nextMsgId = 1;
+  private dead: Error | null = null;
+  private onConnected: (() => void) | null = null;
+  private onDeath: ((err: Error) => void) | null = null;
+  private readonly pending = new Map<number, { resolve: (args: any[]) => void; reject: (err: Error) => void }>();
+  private readonly listeners = new Set<SessionEventListener>();
+
+  private constructor(private readonly ws: WebSocket) {
+    ws.on("error", (err) => this.destroy(err instanceof Error ? err : new Error(String(err))));
+    ws.on("close", () => this.destroy(new Error("realtime connection closed")));
+    ws.on("message", (raw) => this.onFrame(raw.toString()));
+    this.listeners.add((name, args) => {
+      if (name === "otUpdateError" && !this.otUpdateError) {
+        this.otUpdateError = new Error(`otUpdateError: ${JSON.stringify(args?.[0] ?? "unknown")}`);
+      }
+    });
+  }
+
+  /**
+   * Connect and join the project. Handles both the classic explicit-join flow
+   * and the newer auto-join (joinProjectResponse) flow; the websocket is
+   * closed again if the join fails.
+   */
+  static async open(ws: WebSocket, projectId: string): Promise<OlRealtimeSession> {
+    const session = new OlRealtimeSession(ws);
+    try {
+      session.project = await new Promise<any>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error("timed out waiting for project tree over websocket"));
+        }, 15_000);
+        const done = (p: any) => {
+          clearTimeout(timer);
+          resolve(p);
+        };
+        const fail = (err: Error) => {
+          clearTimeout(timer);
+          reject(err);
+        };
+        session.onDeath = fail;
+        session.listeners.add((name, args) => {
+          if (name === "joinProjectResponse" && args?.[0]?.project) done(args[0].project);
+          // Modern real-time never acks a failed auto-join — it emits
+          // connectionRejected with the reason and disconnects. Fail fast
+          // with that reason instead of hanging into the timeout.
+          if (name === "connectionRejected") {
+            const reason = args?.[0]?.message ?? JSON.stringify(args?.[0] ?? "unknown");
+            fail(new Error(`Overleaf rejected the connection: ${reason}`));
+          }
+        });
+        session.onConnected = () => {
+          // connected — request the join explicitly (classic flow; newer
+          // servers auto-join from the handshake's projectId and ignore this,
+          // so its ack may never come — the overall timer decides then)
+          session.emit("joinProject", [{ project_id: projectId }], 20_000).then((args) => {
+            if (args?.[1]) done(args[1]);
+          }, fail);
+        };
+      });
+    } catch (err) {
+      session.close();
+      throw err;
+    }
+    session.onDeath = null;
+    return session;
+  }
+
+  /** Send an event and await its ack; rejects on error ack, loss, or timeout. */
+  emit(name: string, args: unknown[], timeoutMs = 10_000): Promise<any[]> {
+    if (this.dead) return Promise.reject(this.dead);
+    const id = this.nextMsgId++;
+    return new Promise<any[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${name}: no ack within ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (ackArgs) => {
+          clearTimeout(timer);
+          if (ackArgs?.[0]) reject(new Error(`${name} error: ${JSON.stringify(ackArgs[0])}`));
+          else resolve(ackArgs);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+      this.ws.send(`5:${id}+::${JSON.stringify({ name, args })}`);
+    });
+  }
+
+  /** Join a doc for editing; returns its current (decoded) text lines and OT version. */
+  async joinDoc(docId: string): Promise<{ lines: string[]; version: number }> {
+    const args = await this.emit("joinDoc", [docId, { encodeRanges: true }]);
+    const lines = args?.[1];
+    const version = args?.[2];
+    if (!Array.isArray(lines) || typeof version !== "number") {
+      throw new Error(`joinDoc ${docId}: unexpected ack ${JSON.stringify(args)}`);
+    }
+    return { lines: lines.map((l) => decodeSocketLine(String(l))), version };
+  }
+
+  /**
+   * Apply a sharejs text op at the given doc version. Overleaf reports
+   * failures either as an error ack or as a separate otUpdateError event —
+   * either one within the wait window rejects. NB: on real servers a success
+   * ack only means the op was ENQUEUED (document-updater applies it
+   * asynchronously) — callers must verify via a fresh joinDoc and the
+   * session's otUpdateError field.
+   */
+  async applyOtUpdate(docId: string, op: TextOpComponent[], version: number): Promise<void> {
+    let onEvent: SessionEventListener = () => {};
+    const otError = new Promise<never>((_, reject) => {
+      onEvent = (name, args) => {
+        if (name === "otUpdateError") {
+          reject(new Error(`applyOtUpdate error: ${JSON.stringify(args?.[0] ?? "otUpdateError")}`));
+        }
+      };
+    });
+    this.listeners.add(onEvent);
+    try {
+      // race() attaches handlers to both, so neither rejection goes unhandled.
+      await Promise.race([this.emit("applyOtUpdate", [docId, { doc: docId, op, v: version }]), otError]);
+    } finally {
+      this.listeners.delete(onEvent);
+    }
+  }
+
+  async leaveDoc(docId: string): Promise<void> {
+    await this.emit("leaveDoc", [docId]);
+  }
+
+  /** Whether the connection is still usable. */
+  get alive(): boolean {
+    return this.dead === null;
+  }
+
+  /** Close the connection; in-flight emits are rejected. */
+  close(): void {
+    this.destroy(new Error("realtime session closed"));
+    this.ws.close();
+  }
+
+  private destroy(err: Error): void {
+    if (this.dead) return;
+    this.dead = err;
+    for (const waiter of [...this.pending.values()]) waiter.reject(err);
+    this.pending.clear();
+    this.onDeath?.(err);
+  }
+
+  private onFrame(frame: string): void {
+    const sep1 = frame.indexOf(":");
+    const type = frame.slice(0, sep1 === -1 ? undefined : sep1);
+    if (type === "2") {
+      this.ws.send("2::"); // heartbeat — echo it or the server drops us
+      return;
+    }
+    if (type === "1") {
+      this.onConnected?.();
+      this.onConnected = null;
+      return;
+    }
+    if (type === "5") {
+      // event frame: 5:::{json}
+      const body = frame.slice(frame.indexOf(":::") + 3);
+      try {
+        const ev = JSON.parse(body);
+        for (const listener of [...this.listeners]) {
+          listener(String(ev?.name), Array.isArray(ev?.args) ? ev.args : []);
+        }
+      } catch {
+        /* not json — ignore */
+      }
+      return;
+    }
+    if (type === "6") {
+      // ack frame: `6:::<msgId>+[err, ...results]`, or bare `6:::<msgId>` for
+      // a zero-argument callback() — socket.io 0.9 omits the '+JSON' part
+      // entirely then. Real Overleaf acks applyOtUpdate success exactly that
+      // way, so the argless form MUST resolve (as success with no payload).
+      const m = /^6:::(\d+)(?:\+(.*))?$/s.exec(frame);
+      if (!m) return;
+      const waiter = this.pending.get(Number(m[1]));
+      if (!waiter) return;
+      this.pending.delete(Number(m[1]));
+      if (m[2] === undefined) {
+        waiter.resolve([]);
+        return;
+      }
+      try {
+        waiter.resolve(JSON.parse(m[2]));
+      } catch {
+        /* unparseable ack — the emit's timeout surfaces it */
+      }
     }
   }
 }

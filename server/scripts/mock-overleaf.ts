@@ -7,7 +7,9 @@
  *   GET  /project/:id/entities
  *   POST /project/:id/upload               multipart qqfile; rejects duplicates
  *   DELETE /project/:id/{doc|file|folder}/:entityId
+ *   POST /project/:id/compile              {status, outputFiles} + served outputs
  *   socket.io 0.9 handshake + joinProject  file tree with entity ids
+ *   socket.io 0.9 joinDoc/applyOtUpdate/leaveDoc  per-doc OT versions, in-place edits
  *
  * Supports multiple projects: the primary one passed to startMockOverleaf
  * (exposed via the legacy top-level files/uploads/deletes fields) plus any
@@ -26,6 +28,8 @@ export interface MockProject {
   deletes: string[];
   /** path (or "__folder__/<path>") → entity id */
   entityIds: Map<string, string>;
+  /** path → OT version (0 until the first applyOtUpdate lands). */
+  docVersions: Map<string, number>;
 }
 
 export interface MockOverleaf {
@@ -35,9 +39,29 @@ export interface MockOverleaf {
   files: Map<string, Buffer>;
   uploads: { path: string; size: number }[];
   deletes: string[];
+  /** The primary project's per-doc OT versions (path → version). */
+  docVersions: Map<string, number>;
   /** Projects created via POST /project/new, in creation order. */
   created: MockProject[];
   authOk: boolean;
+  /** Test hook: when set, applyOtUpdate replies with this error message. */
+  failOtUpdate: string | null;
+  /** Test hook: when set, applyOtUpdate ACKS success (argless, like real CE's
+   *  enqueue ack) but never applies the op — an otUpdateError event with this
+   *  message follows asynchronously, then the socket closes (like real CE). */
+  asyncFailOtUpdate: string | null;
+  /** Test hook: when set, realtime connections are rejected right after the
+   *  handshake via a connectionRejected event with this message (what real
+   *  servers do for revoked access), then the socket closes. */
+  rejectRealtime: string | null;
+  /** Test hook: when true, POST /project/:id/compile reports a failed build
+   *  (status "failure" with only an output.log to fetch). */
+  failCompile: boolean;
+  /** Test hook: bump the doc's version right before the next applyOtUpdate
+   *  (simulates a collaborator op racing ours — forces a version conflict). */
+  conflictNextOtUpdate: boolean;
+  /** Total websocket connections accepted (tree joins + realtime sessions). */
+  wsConnections: number;
   close: () => Promise<void>;
 }
 
@@ -60,6 +84,40 @@ const TEMPLATE_BIB = `@article{template2020,
 }
 `;
 
+/** LaTeX-flavoured compile log the mock serves as output.log. */
+const COMPILE_LOG = `This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024)
+entering extended mode
+(./main.tex
+LaTeX2e <2024-06-01>
+! Undefined control sequence.
+l.3 \\badmacro
+The control sequence at the end of the top line of your error message was
+never \\def'ed.
+No pages of output.
+`;
+
+/** A minimal but structurally valid single-page PDF (real xref offsets). */
+function minimalPdf(): Buffer {
+  const objects = [
+    "1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n",
+    "2 0 obj\n<</Type/Pages/Kids[3 0 R]/Count 1>>\nendobj\n",
+    "3 0 obj\n<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]>>\nendobj\n",
+  ];
+  let body = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  for (const obj of objects) {
+    offsets.push(body.length);
+    body += obj;
+  }
+  const xref = body.length;
+  body += "xref\n0 4\n0000000000 65535 f \n";
+  for (const off of offsets) body += `${String(off).padStart(10, "0")} 00000 n \n`;
+  body += `trailer\n<</Size 4/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(body, "latin1");
+}
+
+const MOCK_PDF = minimalPdf();
+
 export async function startMockOverleaf(
   port: number,
   projectId: string,
@@ -78,6 +136,7 @@ export async function startMockOverleaf(
     uploads: [],
     deletes: [],
     entityIds: new Map(),
+    docVersions: new Map(),
   });
 
   const primary = newProject(projectId, projectName, "rootfolder0");
@@ -95,8 +154,15 @@ export async function startMockOverleaf(
     files: primary.files,
     uploads: primary.uploads,
     deletes: primary.deletes,
+    docVersions: primary.docVersions,
     created: [],
     authOk: true,
+    failOtUpdate: null,
+    asyncFailOtUpdate: null,
+    rejectRealtime: null,
+    failCompile: false,
+    conflictNextOtUpdate: false,
+    wsConnections: 0,
     close: async () => {},
   };
 
@@ -114,6 +180,18 @@ export async function startMockOverleaf(
     return hit?.[0].slice("__folder__/".length);
   };
   const isDoc = (path: string) => /\.(tex|bib|md|txt|cls|sty)$/.test(path);
+  /** Real real-time escapes EVERY joinDoc line for the socket (WebsocketController's
+   *  encodeForWebsockets): UTF-8 bytes spread out as single chars. Clients decode
+   *  with decodeURIComponent(escape(line)). Ops arrive as real text — no decoding. */
+  const encodeForWebsockets = (line: string) => unescape(encodeURIComponent(line));
+  /** Reverse-lookup a doc entity id across all projects (folders excluded). */
+  const docByEntityId = (docId: string): { proj: MockProject; path: string } | undefined => {
+    for (const p of projects.values()) {
+      const hit = [...p.entityIds.entries()].find(([path, id]) => id === docId && !path.startsWith("__folder__/"));
+      if (hit) return { proj: p, path: hit[0] };
+    }
+    return undefined;
+  };
 
   const authorized = (req: IncomingMessage) =>
     state.authOk && (req.headers.cookie ?? "").includes(COOKIE);
@@ -291,6 +369,51 @@ export async function startMockOverleaf(
       return;
     }
 
+    // Run the "remote compiler": success lists an output.pdf to fetch, a
+    // forced failure (state.failCompile) only the log — like a real failed build.
+    if (proj && req.method === "POST" && sub === "/compile") {
+      if (!csrfOk()) {
+        respond(403, JSON.stringify({ message: "invalid csrf token" }));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer); // options ignored
+      const out = (path: string, type: string) => ({
+        path,
+        url: `/project/${proj.id}/output/${path}?compileGroup=standard&build=mockbuild123&clsiserverid=mock-clsi`,
+        build: "mockbuild123",
+        type,
+      });
+      respond(
+        200,
+        JSON.stringify(
+          state.failCompile
+            ? { status: "failure", outputFiles: [out("output.log", "log")] }
+            : {
+                status: "success",
+                outputFiles: [out("output.pdf", "pdf"), out("output.log", "log")],
+                clsiServerId: "mock-clsi",
+              },
+        ),
+      );
+      return;
+    }
+
+    // Compile outputs, at the urls the compile response handed out.
+    if (proj && req.method === "GET" && sub.startsWith("/output/")) {
+      const file = sub.slice("/output/".length);
+      if (file === "output.pdf" && !state.failCompile) {
+        respond(200, MOCK_PDF, "application/pdf");
+        return;
+      }
+      if (file === "output.log") {
+        respond(200, COMPILE_LOG, "text/plain");
+        return;
+      }
+      respond(404, JSON.stringify({ error: "not found", path: url.pathname }));
+      return;
+    }
+
     // socket.io 0.9 handshake
     if (req.method === "GET" && url.pathname === "/socket.io/1/") {
       respond(200, "mocksid123:60:60:websocket", "text/plain");
@@ -307,7 +430,15 @@ export async function startMockOverleaf(
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
+      state.wsConnections++;
       ws.send("1::");
+      if (state.rejectRealtime) {
+        // Like real real-time on a failed auto-join: no joinProject ack ever —
+        // just connectionRejected with the reason, then a disconnect.
+        ws.send(`5:::${JSON.stringify({ name: "connectionRejected", args: [{ message: state.rejectRealtime }] })}`);
+        setTimeout(() => ws.close(), 20);
+        return;
+      }
       ws.on("message", (raw) => {
         const frame = raw.toString();
         if (frame.startsWith("2::")) return; // heartbeat echo
@@ -349,6 +480,77 @@ export async function startMockOverleaf(
           }
           const project = { _id: proj.id, name: proj.name, rootFolder: [root] };
           ws.send(`6:::${msgId}+${JSON.stringify([null, project, "owner", 2])}`);
+          return;
+        }
+        const err = (message: string) => ws.send(`6:::${msgId}+${JSON.stringify([{ message }])}`);
+        if (ev.name === "joinDoc") {
+          const hit = docByEntityId(String(ev.args?.[0] ?? ""));
+          if (!hit) {
+            err("doc not found");
+            return;
+          }
+          const lines = (hit.proj.files.get(hit.path) ?? Buffer.alloc(0))
+            .toString("utf8")
+            .split("\n")
+            .map(encodeForWebsockets);
+          const version = hit.proj.docVersions.get(hit.path) ?? 0;
+          ws.send(`6:::${msgId}+${JSON.stringify([null, lines, version, []])}`);
+          return;
+        }
+        if (ev.name === "applyOtUpdate") {
+          const hit = docByEntityId(String(ev.args?.[0] ?? ""));
+          if (!hit) {
+            err("doc not found");
+            return;
+          }
+          if (state.failOtUpdate) {
+            err(state.failOtUpdate);
+            return;
+          }
+          if (state.asyncFailOtUpdate) {
+            // Real CE acks the ENQUEUE, then document-updater rejects the op
+            // asynchronously: otUpdateError is pushed and the socket dropped.
+            const message = state.asyncFailOtUpdate;
+            ws.send(`6:::${msgId}`);
+            setTimeout(() => {
+              ws.send(`5:::${JSON.stringify({ name: "otUpdateError", args: [{ message }] })}`);
+              ws.close();
+            }, 20);
+            return;
+          }
+          const { proj, path } = hit;
+          if (state.conflictNextOtUpdate) {
+            // One-shot: a collaborator op "lands" first, invalidating the client's version.
+            state.conflictNextOtUpdate = false;
+            proj.docVersions.set(path, (proj.docVersions.get(path) ?? 0) + 1);
+          }
+          const update = ev.args?.[1] ?? {};
+          const version = proj.docVersions.get(path) ?? 0;
+          if (update.v !== version) {
+            err("Op at wrong version");
+            return;
+          }
+          let text = (proj.files.get(path) ?? Buffer.alloc(0)).toString("utf8");
+          for (const comp of Array.isArray(update.op) ? update.op : []) {
+            if (typeof comp?.d === "string") {
+              if (text.slice(comp.p, comp.p + comp.d.length) !== comp.d) {
+                err("Delete component does not match");
+                return;
+              }
+              text = text.slice(0, comp.p) + text.slice(comp.p + comp.d.length);
+            } else if (typeof comp?.i === "string") {
+              text = text.slice(0, comp.p) + comp.i + text.slice(comp.p);
+            }
+          }
+          proj.files.set(path, Buffer.from(text));
+          proj.docVersions.set(path, version + 1);
+          // Real Overleaf acks applyOtUpdate success with callback() — ZERO
+          // args, which socket.io 0.9 serializes as a bare `6:::<id>` frame.
+          ws.send(`6:::${msgId}`);
+          return;
+        }
+        if (ev.name === "leaveDoc") {
+          ws.send(`6:::${msgId}+${JSON.stringify([null])}`);
         }
       });
     });

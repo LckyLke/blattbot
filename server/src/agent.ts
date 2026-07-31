@@ -10,8 +10,9 @@ import { resolve, sep } from "node:path";
 import { projectDir, type Project, type ProjectSettings } from "./config.js";
 import { loadSettings, type Settings } from "./settings.js";
 import { contextDirectories } from "./context.js";
-import { claudeBackend } from "./backends/claude.js";
-import { openaiBackend } from "./backends/openai.js";
+import { abortQuestion } from "./questions.js";
+import { claudeBackend, runOneShot as runOneShotClaude } from "./backends/claude.js";
+import { openaiBackend, runOneShotOpenai } from "./backends/openai.js";
 import {
   SYSTEM_APPEND,
   resolveModel,
@@ -31,7 +32,6 @@ export {
 } from "./backends/types.js";
 export { SYSTEM_APPEND, resolveModel };
 export type { AgentEvent } from "./backends/types.js";
-export { runOneShot } from "./backends/claude.js";
 
 const activeControllers = new Map<string, AbortController>();
 
@@ -60,6 +60,30 @@ export function activeBackendId(settings: Settings = loadSettings()): "claude" |
 
 export function activeBackend(settings: Settings = loadSettings()): AgentBackend {
   return BACKENDS[activeBackendId(settings)];
+}
+
+/**
+ * Which backend a one-shot call (paper TL;DRs, disclosure polish, …) runs on:
+ * the openai backend only when it is active AND fully configured; otherwise
+ * the Claude SDK — the default and the fallback for half-configured setups.
+ */
+export function oneShotBackendId(settings: Settings = loadSettings()): "claude" | "openai" {
+  return activeBackendId(settings) === "openai" &&
+    settings.openaiBaseUrl.trim() &&
+    settings.openaiModel.trim()
+    ? "openai"
+    : "claude";
+}
+
+/**
+ * One-shot, tool-less model call → the final text, routed through the
+ * configured backend (see oneShotBackendId). Same prompt either way; the
+ * openai path is a single non-streaming /chat/completions request.
+ */
+export async function runOneShot(prompt: string): Promise<string> {
+  const settings = loadSettings();
+  if (oneShotBackendId(settings) === "openai") return runOneShotOpenai(prompt, settings);
+  return runOneShotClaude(prompt);
 }
 
 /** The model a turn on this project runs: project override → global setting → default. */
@@ -125,10 +149,18 @@ export const AGENT_MODES: AgentModeInfo[] = [
   {
     id: "review",
     label: "Review",
-    description: "Read-only feedback — file edits are blocked.",
-    prompt: `Mode: Review — feedback only.
-- Read the relevant files and reply with concrete, prioritized feedback: argument structure, clarity, missing citations, notation and LaTeX issues.
-- You must not modify any files in this mode; file-editing tools are disabled.`,
+    description: "Structured referee report — file edits are blocked.",
+    prompt: `Mode: Review — write a structured, venue-style referee report.
+Read the relevant files, then structure the report exactly as follows:
+1. Summary (3–5 sentences): what the paper does, its main claims, and its contribution.
+2. Strengths: bulleted.
+3. Weaknesses: bulleted; label each with a severity — major, moderate, or minor.
+4. Section-by-section comments: concrete issues per section, in document order.
+5. Minor issues: typos, notation inconsistencies, grammar, and LaTeX problems.
+6. Rubric — score each dimension /10 with a one-line justification: clarity; technical soundness; support for claims; presentation.
+7. Prioritized revision recommendations: what to fix first and why, most important first.
+Ground every comment in the actual text; point to the section, equation, or line it concerns.
+You must not modify any files in this mode; file-editing tools are disabled.`,
     readOnly: true,
   },
 ];
@@ -307,6 +339,9 @@ export async function runTurn(
       onEvent({ type: "turn_end", isError: true });
     }
   } finally {
+    // No pending question may outlive its turn — normally the abort signal or
+    // the user resolved it already; this covers backend crashes mid-question.
+    abortQuestion(project.id);
     activeControllers.delete(project.id);
   }
 }

@@ -13,8 +13,14 @@ import { join } from "node:path";
 // ---- Mock OpenAI-compatible server -----------------------------------------
 
 type Fixture =
-  | { kind: "text"; text: string; malformed?: boolean }
-  | { kind: "tools"; text?: string; malformed?: boolean; calls: { name: string; args: unknown }[] }
+  | { kind: "text"; text: string; malformed?: boolean; usage?: { prompt: number; completion: number } }
+  | {
+      kind: "tools";
+      text?: string;
+      malformed?: boolean;
+      calls: { name: string; args: unknown }[];
+      usage?: { prompt: number; completion: number };
+    }
   | { kind: "error"; status: number; body?: string }
   | { kind: "hang" };
 
@@ -110,6 +116,13 @@ class MockOpenAI {
       this.sse(res, { choices: [{ delta: {}, finish_reason: "tool_calls" }] });
     } else {
       this.sse(res, { choices: [{ delta: {}, finish_reason: "stop" }] });
+    }
+    if (fixture.usage) {
+      // The final usage chunk of stream_options.include_usage: empty choices.
+      this.sse(res, {
+        choices: [],
+        usage: { prompt_tokens: fixture.usage.prompt, completion_tokens: fixture.usage.completion },
+      });
     }
     res.write("data: [DONE]\n\n");
     res.end();
@@ -378,6 +391,98 @@ describe("openai backend turn loop", () => {
     expect(events.at(-1)).toMatchObject({ type: "turn_end", isError: true });
   });
 
+  it("ask_user blocks on the pending question and feeds the answers back", async () => {
+    const { agent, project } = await setup();
+    const question = {
+      question: "Which section should I improve?",
+      header: "Section",
+      options: [
+        { label: "Introduction", description: "Rework the opening" },
+        { label: "Conclusion", description: "Strengthen the ending" },
+      ],
+      multiSelect: false,
+    };
+    mock.queue = [
+      { kind: "tools", calls: [{ name: "ask_user", args: { questions: [question] } }] },
+      { kind: "text", text: "Focusing on the Introduction." },
+    ];
+    const { events, done } = runCollected(agent, project, "improve one section");
+    const questions = await import("../src/questions.js");
+    await vi.waitFor(() => {
+      if (!questions.pendingQuestion(project.id)) throw new Error("no pending question yet");
+    });
+    // The question event streamed through the sink with the validated payload.
+    const qEv = events.find((e) => e.type === "question")!;
+    const pending = questions.pendingQuestion(project.id)!;
+    expect(qEv).toEqual({
+      type: "question",
+      projectId: project.id,
+      questionId: pending.questionId,
+      questions: [question],
+    });
+    // The tool chip contract: SDK-side display name + first question as detail.
+    expect(events.find((e) => e.type === "tool_use")).toMatchObject({
+      name: "AskUserQuestion",
+      detail: "Which section should I improve?",
+    });
+
+    const answers = { [question.question]: "Introduction" };
+    expect(questions.answerQuestion(project.id, pending.questionId, answers)).toBe("ok");
+    await done;
+
+    expect(events.find((e) => e.type === "question_answered")).toEqual({
+      type: "question_answered",
+      questionId: pending.questionId,
+      answers,
+    });
+    // The SECOND request carried the tool result with the answers JSON.
+    const toolMsg = mock.requests[1].body.messages.filter((m: any) => m.role === "tool").at(-1);
+    expect(JSON.parse(toolMsg.content)).toEqual({ answers });
+    expect(events.at(-1)).toMatchObject({ type: "turn_end", isError: false });
+    expect(questions.pendingQuestion(project.id)).toBeUndefined();
+    // ask_user is offered to the model (and stays available in review mode).
+    expect(mock.requests[0].body.tools.map((t: any) => t.function.name)).toContain("ask_user");
+  });
+
+  it("dismissing ask_user tells the model the user declined", async () => {
+    const { agent, project } = await setup();
+    const question = {
+      question: "Which tone should the abstract take?",
+      header: "Tone",
+      options: [
+        { label: "Formal", description: "" },
+        { label: "Accessible", description: "" },
+      ],
+      multiSelect: false,
+    };
+    mock.queue = [
+      { kind: "tools", calls: [{ name: "ask_user", args: { questions: [question] } }] },
+      { kind: "text", text: "Proceeding with my best judgment." },
+    ];
+    const { events, done } = runCollected(agent, project, "rewrite the abstract", { mode: "review" });
+    const questions = await import("../src/questions.js");
+    await vi.waitFor(() => {
+      if (!questions.pendingQuestion(project.id)) throw new Error("no pending question yet");
+    });
+    const pending = questions.pendingQuestion(project.id)!;
+    expect(questions.dismissQuestion(project.id, pending.questionId)).toBe("ok");
+    await done;
+
+    expect(events.find((e) => e.type === "question_dismissed")).toEqual({
+      type: "question_dismissed",
+      questionId: pending.questionId,
+    });
+    const toolMsg = mock.requests[1].body.messages.filter((m: any) => m.role === "tool").at(-1);
+    const parsed = JSON.parse(toolMsg.content);
+    expect(parsed.declined).toBe(true);
+    expect(parsed.note).toMatch(/best judgment/);
+    // The dismissal is not an error; the turn simply continues.
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ isError: false });
+    expect(events.at(-1)).toMatchObject({ type: "turn_end", isError: false });
+    // Read-only review mode still offers ask_user (it only talks to the user).
+    expect(mock.requests[0].body.tools.map((t: any) => t.function.name)).toContain("ask_user");
+  });
+
   it("fails fast with a clear message when base URL or model is missing", async () => {
     const { agent, project, settings } = await setup();
     settings.saveSettings({ openaiBaseUrl: "" });
@@ -390,6 +495,39 @@ describe("openai backend turn loop", () => {
     await run.done;
     expect(String(run.events.find((e) => e.type === "error")!.message)).toMatch(/model/);
     expect(mock.requests).toHaveLength(0);
+  });
+
+  it("accumulates token usage across the turn's requests onto turn_end", async () => {
+    const { agent, project } = await setup();
+    mock.queue = [
+      { kind: "tools", calls: [{ name: "list_files", args: {} }], usage: { prompt: 100, completion: 20 } },
+      { kind: "text", text: "Done.", usage: { prompt: 150, completion: 30 } },
+    ];
+    const { events, done } = runCollected(agent, project, "count tokens");
+    await done;
+    const end = events.at(-1)!;
+    expect(end).toMatchObject({
+      type: "turn_end",
+      isError: false,
+      inputTokens: 250,
+      outputTokens: 50,
+      model: "test-model",
+    });
+    // Pricing stays unknown on this backend.
+    expect(end.costUsd).toBeUndefined();
+    // The requests asked the server for the usage chunk.
+    expect(mock.requests[0].body.stream_options).toEqual({ include_usage: true });
+  });
+
+  it("omits token fields when the server reports no usage", async () => {
+    const { agent, project } = await setup();
+    mock.queue = [{ kind: "text", text: "No usage here." }];
+    const { events, done } = runCollected(agent, project, "hi");
+    await done;
+    const end = events.at(-1)!;
+    expect(end.type).toBe("turn_end");
+    expect(end.inputTokens).toBeUndefined();
+    expect(end.outputTokens).toBeUndefined();
   });
 
   it("uses the per-project model override verbatim", async () => {

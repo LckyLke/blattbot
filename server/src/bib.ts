@@ -76,6 +76,74 @@ export function findEntrySpan(content: string, key: string): { start: number; en
   return null;
 }
 
+export interface RawEntryField {
+  name: string;
+  /** The field's source value: inner braces preserved, whitespace runs collapsed. */
+  value: string;
+}
+
+export interface RawEntry {
+  type: string;
+  key: string;
+  fields: RawEntryField[];
+}
+
+/**
+ * Parse one entry keeping field values verbatim (inner braces intact, only
+ * whitespace collapsed) — the lossless counterpart of parseBib, for
+ * normalizing and re-serializing a fetched entry.
+ */
+export function parseEntrySource(raw: string): RawEntry | null {
+  const m = /^\s*@([a-zA-Z]+)\s*\{/.exec(raw);
+  if (!m) return null;
+  const bodyStart = m.index + m[0].length;
+  let depth = 1;
+  let i = bodyStart;
+  while (i < raw.length && depth > 0) {
+    const ch = raw[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") depth--;
+    i++;
+  }
+  const body = raw.slice(bodyStart, i - 1);
+  const commaIdx = body.indexOf(",");
+  const key = (commaIdx === -1 ? body : body.slice(0, commaIdx)).trim();
+  const fieldsSrc = commaIdx === -1 ? "" : body.slice(commaIdx + 1);
+  const fields: RawEntryField[] = [];
+  const re = /([a-zA-Z][a-zA-Z0-9_-]*)\s*=\s*/g;
+  let fm: RegExpExecArray | null;
+  while ((fm = re.exec(fieldsSrc)) !== null) {
+    const name = fm[1].toLowerCase();
+    let j = re.lastIndex;
+    let value = "";
+    const ch = fieldsSrc[j];
+    if (ch === "{") {
+      let d = 1;
+      j++;
+      const start = j;
+      while (j < fieldsSrc.length && d > 0) {
+        if (fieldsSrc[j] === "{") d++;
+        else if (fieldsSrc[j] === "}") d--;
+        j++;
+      }
+      value = fieldsSrc.slice(start, j - 1);
+    } else if (ch === '"') {
+      j++;
+      const start = j;
+      while (j < fieldsSrc.length && fieldsSrc[j] !== '"') j++;
+      value = fieldsSrc.slice(start, j);
+      j++;
+    } else {
+      const start = j;
+      while (j < fieldsSrc.length && !/[,}]/.test(fieldsSrc[j])) j++;
+      value = fieldsSrc.slice(start, j);
+    }
+    fields.push({ name, value: value.replace(/\s+/g, " ").trim() });
+    re.lastIndex = j;
+  }
+  return { type: m[1].toLowerCase(), key, fields };
+}
+
 function parseFields(src: string): Record<string, string> {
   const fields: Record<string, string> = {};
   const re = /([a-zA-Z][a-zA-Z0-9_-]*)\s*=\s*/g;
@@ -145,14 +213,14 @@ export function normalizeKey(author: string | undefined, year: string | undefine
   return `${cleanLast}${year ?? ""}${titleWord}`;
 }
 
-/** Make `key` unique against `existing` by appending a, b, c… */
+/** Make `key` unique against `existing` by appending -2, -3, … */
 export function ensureUniqueKey(key: string, existing: Set<string>): string {
   if (!existing.has(key)) return key;
-  for (let i = 0; i < 26; i++) {
-    const candidate = key + String.fromCharCode(97 + i);
+  for (let i = 2; i < 100; i++) {
+    const candidate = `${key}-${i}`;
     if (!existing.has(candidate)) return candidate;
   }
-  return `${key}${Date.now() % 10000}`;
+  return `${key}-${Date.now() % 10000}`;
 }
 
 /** Replace the key of a raw BibTeX entry string. */
@@ -165,13 +233,32 @@ export interface DedupeHit {
   reason: "doi" | "title";
 }
 
+/** Lowercase a DOI and strip `doi:` / doi.org-URL prefixes. */
+function normalizeDoi(s: string | undefined): string | undefined {
+  if (!s) return undefined;
+  const norm = s
+    .trim()
+    .toLowerCase()
+    .replace(/^doi:\s*/, "")
+    .replace(/^https?:\/\/(dx\.)?doi\.org\//, "");
+  return norm || undefined;
+}
+
+/** An entry's normalized DOI: the `doi` field, else a doi-shaped `url` field. */
+export function entryDoi(fields: Record<string, string>): string | undefined {
+  const direct = normalizeDoi(fields.doi);
+  if (direct) return direct;
+  const url = fields.url?.trim();
+  if (url && /^https?:\/\/(dx\.)?doi\.org\//i.test(url)) return normalizeDoi(url);
+  return undefined;
+}
+
 /** Find an existing entry matching by DOI (preferred) or normalized title. */
 export function findDuplicate(entries: BibEntry[], doi?: string, title?: string): DedupeHit | undefined {
-  const normDoi = doi?.toLowerCase().replace(/^https?:\/\/(dx\.)?doi\.org\//, "");
+  const normDoi = normalizeDoi(doi);
   if (normDoi) {
     for (const e of entries) {
-      const eDoi = e.fields.doi?.toLowerCase().replace(/^https?:\/\/(dx\.)?doi\.org\//, "");
-      if (eDoi && eDoi === normDoi) return { key: e.key, reason: "doi" };
+      if (entryDoi(e.fields) === normDoi) return { key: e.key, reason: "doi" };
     }
   }
   if (title) {

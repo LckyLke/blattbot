@@ -15,6 +15,14 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { DATA_DIR, getProject, updateProject } from "./config.js";
 
+/** Cumulative cost/token totals of one chat — bumped as turn_end events land. */
+export interface ChatStats {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  turns: number;
+}
+
 export interface ChatMeta {
   id: string;
   title: string;
@@ -22,6 +30,8 @@ export interface ChatMeta {
   updatedAt: string;
   /** Agent SDK session id — conversation continuity is per chat. */
   sessionId?: string;
+  /** Running cost/token totals (absent until the first completed turn). */
+  stats?: ChatStats;
 }
 
 export interface ChatEvent {
@@ -138,8 +148,34 @@ export function deriveTitle(text: string): string {
 }
 
 /**
+ * Fold a turn_end event into the chat's running totals and the project's
+ * cumulative stats. Interrupted turns are skipped (aborted, cost unknown);
+ * cost/token fields add only when the backend reported them.
+ */
+function recordTurnEnd(projectId: string, chat: ChatMeta, event: ChatEvent): void {
+  if (event.interrupted) return;
+  const stats: ChatStats = chat.stats ?? { costUsd: 0, inputTokens: 0, outputTokens: 0, turns: 0 };
+  stats.turns += 1;
+  if (typeof event.costUsd === "number") stats.costUsd += event.costUsd;
+  if (typeof event.inputTokens === "number") stats.inputTokens += event.inputTokens;
+  if (typeof event.outputTokens === "number") stats.outputTokens += event.outputTokens;
+  chat.stats = stats;
+  const project = getProject(projectId);
+  if (project) {
+    const prev = project.stats ?? { totalCostUsd: 0, totalTurns: 0 };
+    updateProject(projectId, {
+      stats: {
+        totalCostUsd: prev.totalCostUsd + (typeof event.costUsd === "number" ? event.costUsd : 0),
+        totalTurns: prev.totalTurns + 1,
+      },
+    });
+  }
+}
+
+/**
  * Append one event to a chat's transcript and bump its updatedAt. The first
- * user message a fresh chat receives becomes its title.
+ * user message a fresh chat receives becomes its title; turn_end events also
+ * feed the chat's and the project's cumulative cost totals.
  */
 export function appendEvent(projectId: string, chatId: string, event: ChatEvent): void {
   const chats = loadRegistry(projectId);
@@ -157,6 +193,7 @@ export function appendEvent(projectId: string, chatId: string, event: ChatEvent)
   ) {
     chat.title = deriveTitle(event.text);
   }
+  if (event.type === "turn_end") recordTurnEnd(projectId, chat, event);
   saveRegistry(projectId, chats);
 }
 

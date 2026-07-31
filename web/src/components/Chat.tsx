@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { parseDiff } from "../diff";
-import type { ChatMeta } from "../api";
+import type { AgentQuestion, ChatMeta, ProjectStats } from "../api";
 import DiffView from "./DiffView";
 
 export type ChatItem =
@@ -16,7 +16,25 @@ export type ChatItem =
       fileDiff?: string;
     }
   | { kind: "notice"; tone: "info" | "warn" | "error" | "ok"; text: string }
-  | { kind: "turn_end"; costUsd?: number; durationMs?: number };
+  | {
+      /** A mid-turn agent question — actionable while pending, collapsed after.
+       *  "stale": restored from a transcript with no resolution but not the
+       *  turn-state's pending question either — likely still waiting server-side
+       *  (reload to answer), so it must not claim the user skipped it. */
+      kind: "question";
+      questionId: string;
+      questions: AgentQuestion[];
+      status: "pending" | "answered" | "dismissed" | "stale";
+      /** Question text → chosen answer (present once answered). */
+      answers?: Record<string, string>;
+    }
+  | {
+      kind: "turn_end";
+      costUsd?: number;
+      durationMs?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+    };
 
 interface Props {
   items: ChatItem[];
@@ -32,6 +50,10 @@ interface Props {
   onClearScope: () => void;
   onSend: (message: string, mode: string) => void;
   onInterrupt: () => void;
+  /** Submit the answers of a pending mid-turn question (question text → answer). */
+  onAnswerQuestion: (questionId: string, answers: Record<string, string>) => void;
+  /** Skip a pending mid-turn question — the agent proceeds without answers. */
+  onDismissQuestion: (questionId: string) => void;
   /** All chats of the project (newest-updated first) and the active one. */
   chats: ChatMeta[];
   activeChatId: string | null;
@@ -45,6 +67,8 @@ interface Props {
   onChangeModel: (model: string) => void;
   /** Write the project's model override ("" clears it). */
   onSetProjectModel: (model: string) => void;
+  /** Cumulative cost/turn totals of the project (null until loaded). */
+  projectStats?: ProjectStats | null;
   /** A PDF selection to quote into the draft; each new nonce injects once. */
   quote?: { text: string; nonce: number } | null;
 }
@@ -76,6 +100,11 @@ export function relTime(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+/** Compact token count: 1234 → "1.2k". */
+export function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
 /** Compact scope label: "intro.tex +2". */
 export function scopeLabel(scope: string[]): string {
   if (scope.length === 0) return "";
@@ -88,7 +117,7 @@ const MODES = [
   { id: "edit", label: "Edit", hint: "General writing and editing — the default." },
   { id: "research", label: "Research", hint: "Find literature and fill missing citations." },
   { id: "polish", label: "Polish", hint: "Grammar, style, and LaTeX consistency only." },
-  { id: "review", label: "Review", hint: "Read-only feedback — file edits are blocked." },
+  { id: "review", label: "Review", hint: "Structured referee report — file edits are blocked." },
 ];
 
 const isModeId = (v: string | null | undefined): v is string => MODES.some((m) => m.id === v);
@@ -120,6 +149,7 @@ const TOOL_LABELS: Record<string, string> = {
   WebFetch: "Fetching",
   TodoWrite: "Planning",
   Task: "Delegating",
+  AskUserQuestion: "Asking you",
   mcp__blattbot__compile_latex: "Compiling LaTeX",
   mcp__blattbot__search_papers: "Searching literature",
   mcp__blattbot__add_citation: "Adding citation",
@@ -179,6 +209,8 @@ export default function Chat({
   onClearScope,
   onSend,
   onInterrupt,
+  onAnswerQuestion,
+  onDismissQuestion,
   chats,
   activeChatId,
   onSelectChat,
@@ -188,6 +220,7 @@ export default function Chat({
   projectModel,
   onChangeModel,
   onSetProjectModel,
+  projectStats,
   quote,
 }: Props) {
   const [draft, setDraft] = useState("");
@@ -267,7 +300,16 @@ export default function Chat({
         {chatMenuOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={closeChatMenu} />
-            <div className="absolute left-3 top-full z-20 mt-1 w-80 rounded-lg border border-rule bg-ink-2 py-1 shadow-xl">
+            <div
+              className="absolute left-3 top-full z-20 mt-1 w-80 rounded-lg border border-rule bg-ink-2 py-1 shadow-xl"
+              onKeyDown={(e) => {
+                // Keyboard escape hatch — the backdrop is mouse-only.
+                if (e.key === "Escape") {
+                  e.stopPropagation();
+                  closeChatMenu();
+                }
+              }}
+            >
               <button
                 type="button"
                 disabled={busy}
@@ -354,7 +396,12 @@ export default function Chat({
         )}
         <div className="mx-auto flex max-w-2xl flex-col gap-3">
           {items.map((item, i) => (
-            <ChatBubble key={i} item={item} />
+            <ChatBubble
+              key={i}
+              item={item}
+              onAnswerQuestion={onAnswerQuestion}
+              onDismissQuestion={onDismissQuestion}
+            />
           ))}
           {busy && activity === "thinking" && (
             <div className="flex items-center gap-2 self-start px-1 font-serif text-[13.5px] italic text-graphite">
@@ -409,6 +456,18 @@ export default function Chat({
             onChange={onChangeModel}
             onSetProject={onSetProjectModel}
           />
+          {projectStats && projectStats.totalTurns > 0 && (
+            <span
+              title={`Project total across ${projectStats.totalTurns} turn${
+                projectStats.totalTurns === 1 ? "" : "s"
+              }`}
+              className="shrink-0 rounded-full border border-rule px-2.5 py-0.5 font-mono text-[11px] text-graphite"
+            >
+              {projectStats.totalCostUsd > 0
+                ? `Σ $${projectStats.totalCostUsd.toFixed(2)}`
+                : `Σ ${projectStats.totalTurns} turn${projectStats.totalTurns === 1 ? "" : "s"}`}
+            </span>
+          )}
         </div>
         <div className="mx-auto flex max-w-2xl items-end gap-2">
           <textarea
@@ -499,7 +558,16 @@ function ModelChip({
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-lg border border-rule bg-ink-2 py-1 shadow-xl">
+          <div
+            className="absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-lg border border-rule bg-ink-2 py-1 shadow-xl"
+            onKeyDown={(e) => {
+              // Keyboard escape hatch — the backdrop is mouse-only.
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                setOpen(false);
+              }
+            }}
+          >
             <p className="px-3 pb-1 pt-1.5 text-[10.5px] uppercase tracking-wide text-graphite">
               Model — applies from the next turn
             </p>
@@ -585,7 +653,15 @@ function ModelChip({
   );
 }
 
-function ChatBubble({ item }: { item: ChatItem }) {
+function ChatBubble({
+  item,
+  onAnswerQuestion,
+  onDismissQuestion,
+}: {
+  item: ChatItem;
+  onAnswerQuestion: (questionId: string, answers: Record<string, string>) => void;
+  onDismissQuestion: (questionId: string) => void;
+}) {
   switch (item.kind) {
     case "user":
       return (
@@ -609,6 +685,8 @@ function ChatBubble({ item }: { item: ChatItem }) {
       );
     case "tool":
       return <ToolChip item={item} />;
+    case "question":
+      return <QuestionCard item={item} onAnswer={onAnswerQuestion} onDismiss={onDismissQuestion} />;
     case "notice": {
       const tone =
         item.tone === "error"
@@ -619,19 +697,28 @@ function ChatBubble({ item }: { item: ChatItem }) {
               ? "text-leaf border-leaf/40"
               : "text-graphite border-rule";
       return (
-        <div className={`self-center rounded border px-3 py-1 text-center text-xs ${tone}`}>
+        <div role="status" className={`self-center rounded border px-3 py-1 text-center text-xs ${tone}`}>
           {item.text}
         </div>
       );
     }
-    case "turn_end":
+    case "turn_end": {
+      // The cost when known (Claude); otherwise total tokens (openai backends
+      // that report usage); otherwise just the duration.
+      const tokens = (item.inputTokens ?? 0) + (item.outputTokens ?? 0);
       return (
         <div className="self-center font-mono text-[10.5px] tracking-wide text-graphite/70">
           — turn complete
           {item.durationMs != null && ` · ${(item.durationMs / 1000).toFixed(1)}s`}
-          {item.costUsd != null && ` · $${item.costUsd.toFixed(3)}`} —
+          {item.costUsd != null
+            ? ` · $${item.costUsd.toFixed(3)}`
+            : tokens > 0
+              ? ` · ${fmtTokens(tokens)} tok`
+              : ""}{" "}
+          —
         </div>
       );
+    }
   }
 }
 
@@ -672,6 +759,214 @@ function ToolChip({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
             <DiffView key={file.path} file={file} />
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A mid-turn agent question (AskUserQuestion / ask_user). While pending it
+ * renders one block per question — header chip, question text, clickable
+ * options (checkboxes for multi-select), and an "Other…" free-text input —
+ * plus a Skip action that dismisses the whole card. A card of single-select
+ * questions submits itself the moment every question has an answer; any
+ * multi-select question adds an explicit Submit button. Once resolved (or
+ * restored from a transcript) it collapses to muted question → answer lines.
+ */
+function QuestionCard({
+  item,
+  onAnswer,
+  onDismiss,
+}: {
+  item: Extract<ChatItem, { kind: "question" }>;
+  onAnswer: (questionId: string, answers: Record<string, string>) => void;
+  onDismiss: (questionId: string) => void;
+}) {
+  /** Single-select: question text → chosen label (or free text). */
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  /** Multi-select: question text → checked labels, in click order. */
+  const [checked, setChecked] = useState<Record<string, string[]>>({});
+  /** Free-text "Other…" drafts per question. */
+  const [other, setOther] = useState<Record<string, string>>({});
+
+  if (item.status !== "pending") {
+    return (
+      <div
+        data-question-card
+        className="max-w-full self-start rounded-lg border border-rule bg-ink-2 px-4 py-2.5"
+      >
+        <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-graphite">
+          {item.status === "answered"
+            ? "answered"
+            : item.status === "stale"
+              ? "pending (reload to answer)"
+              : "skipped"}
+        </div>
+        {item.questions.map((q) => (
+          <div key={q.question} className="flex flex-wrap items-baseline gap-x-2 text-[12.5px]">
+            <span className="font-mono text-[10px] uppercase tracking-wide text-graphite/80">
+              {q.header}
+            </span>
+            <span className="text-paper-dim">{q.question}</span>
+            <span className="text-graphite">→</span>
+            <span className={item.status === "answered" ? "text-leaf" : "italic text-graphite"}>
+              {item.status === "answered"
+                ? item.answers?.[q.question] || "—"
+                : item.status === "stale"
+                  ? "pending"
+                  : "skipped"}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const anyMulti = item.questions.some((q) => q.multiSelect);
+
+  /** The answer a question currently holds, given a picked-map to evaluate. */
+  const answerFor = (q: AgentQuestion, pickedNow: Record<string, string>): string =>
+    q.multiSelect
+      ? [
+          ...(checked[q.question] ?? []),
+          ...(other[q.question]?.trim() ? [other[q.question].trim()] : []),
+        ].join(", ")
+      : (pickedNow[q.question] ?? "");
+
+  const complete = (pickedNow: Record<string, string>) =>
+    item.questions.every((q) => answerFor(q, pickedNow).trim().length > 0);
+
+  const submitWith = (pickedNow: Record<string, string>) => {
+    const answers: Record<string, string> = {};
+    for (const q of item.questions) answers[q.question] = answerFor(q, pickedNow);
+    onAnswer(item.questionId, answers);
+  };
+
+  /** Record a single-select answer; an all-single card submits when complete. */
+  const choose = (q: AgentQuestion, label: string) => {
+    const next = { ...picked, [q.question]: label };
+    setPicked(next);
+    if (!anyMulti && complete(next)) submitWith(next);
+  };
+
+  const toggle = (q: AgentQuestion, label: string) =>
+    setChecked((prev) => {
+      const cur = prev[q.question] ?? [];
+      return {
+        ...prev,
+        [q.question]: cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label],
+      };
+    });
+
+  return (
+    <div
+      data-question-card
+      className="w-full max-w-full self-start rounded-lg border border-gold/50 bg-ink-2 px-4 py-3"
+    >
+      {/* The card itself is interactive, so the announcement lives on a
+          visually-hidden status line (same W7 pattern as the notices):
+          without it, a screen reader hears the busy indicator go quiet and
+          nothing else — the turn looks hung. */}
+      <span role="status" className="sr-only">
+        BlattBot is asking you a question
+      </span>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="working-dot inline-block h-1.5 w-1.5 rounded-full bg-gold" />
+        <span className="font-mono text-[10.5px] uppercase tracking-wide text-gold">
+          BlattBot asks
+        </span>
+        <button
+          type="button"
+          onClick={() => onDismiss(item.questionId)}
+          aria-label="Skip these questions"
+          title="Skip — the agent proceeds with its best judgment"
+          className="ml-auto rounded border border-rule px-2 py-0.5 text-[11px] text-graphite transition-colors hover:border-pencil hover:text-pencil"
+        >
+          Skip
+        </button>
+      </div>
+      {item.questions.map((q) => (
+        <div key={q.question} className="mb-3 last:mb-0">
+          <div className="mb-1.5 flex items-baseline gap-2">
+            <span className="shrink-0 rounded-full border border-gold/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-gold">
+              {q.header}
+            </span>
+            <span className="font-serif text-[14.5px] leading-snug text-paper">{q.question}</span>
+          </div>
+          <div className="flex flex-col gap-1">
+            {q.options.map((o) =>
+              q.multiSelect ? (
+                <label
+                  key={o.label}
+                  title={o.description || undefined}
+                  className="flex cursor-pointer items-baseline gap-2 rounded border border-rule px-2.5 py-1.5 text-[13px] text-paper-dim transition-colors hover:border-leaf/40 hover:text-paper"
+                >
+                  <input
+                    type="checkbox"
+                    checked={(checked[q.question] ?? []).includes(o.label)}
+                    onChange={() => toggle(q, o.label)}
+                    className="translate-y-px accent-leaf"
+                  />
+                  <span className="flex min-w-0 flex-col">
+                    <span>{o.label}</span>
+                    {o.description && (
+                      <span className="text-[11px] leading-snug text-graphite">{o.description}</span>
+                    )}
+                  </span>
+                </label>
+              ) : (
+                <button
+                  key={o.label}
+                  type="button"
+                  onClick={() => choose(q, o.label)}
+                  title={o.description || undefined}
+                  className={`rounded border px-2.5 py-1.5 text-left text-[13px] transition-colors ${
+                    picked[q.question] === o.label
+                      ? "border-leaf/60 bg-leaf/10 text-paper"
+                      : "border-rule text-paper-dim hover:border-leaf/40 hover:text-paper"
+                  }`}
+                >
+                  <span className="block">{o.label}</span>
+                  {o.description && (
+                    <span className="block text-[11px] leading-snug text-graphite">
+                      {o.description}
+                    </span>
+                  )}
+                </button>
+              ),
+            )}
+            <input
+              value={other[q.question] ?? ""}
+              onChange={(e) =>
+                setOther((prev) => ({ ...prev, [q.question]: e.target.value }))
+              }
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                const text = (other[q.question] ?? "").trim();
+                if (q.multiSelect) {
+                  // The draft joins the checked labels — Enter submits the card.
+                  if (complete(picked)) submitWith(picked);
+                } else if (text) {
+                  choose(q, text);
+                }
+              }}
+              placeholder="Other…"
+              aria-label={`Other answer: ${q.question}`}
+              className="rounded border border-rule bg-ink px-2.5 py-1.5 text-[12.5px] text-paper placeholder:text-graphite/60"
+            />
+          </div>
+        </div>
+      ))}
+      {anyMulti && (
+        <button
+          type="button"
+          onClick={() => complete(picked) && submitWith(picked)}
+          disabled={!complete(picked)}
+          className="mt-1 rounded bg-leaf-deep px-3 py-1 text-[12px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-40"
+        >
+          Submit answers
+        </button>
       )}
     </div>
   );

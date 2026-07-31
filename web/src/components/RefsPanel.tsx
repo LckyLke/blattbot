@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type ImportBibResult, type RefEntry, type RefsResponse } from "../api";
+import { relTime } from "./Chat";
 
 interface Props {
   projectId: string;
@@ -20,6 +21,13 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 const ADD_SKELETON = "@article{key,\n  title = {},\n  author = {},\n  year = {}\n}";
+
+/** Badge per audit status; `skipped` (network failure) renders no badge at all. */
+const AUDIT_BADGE: Record<string, { glyph: string; cls: string; label: string }> = {
+  verified: { glyph: "✓", cls: "text-leaf/80 hover:text-leaf", label: "Verified" },
+  unresolved: { glyph: "?", cls: "text-gold hover:text-gold", label: "Unresolved" },
+  mismatch: { glyph: "⚠", cls: "text-pencil hover:text-pencil", label: "Title mismatch" },
+};
 
 export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Props) {
   const [data, setData] = useState<RefsResponse | null>(null);
@@ -46,15 +54,31 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
   const [editBusy, setEditBusy] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+
+  // Stale-async guard: the panel is not remounted on project switch (only the
+  // projectId prop changes), so slow requests — the audit easily runs tens of
+  // seconds — must never splice their result into another project's view.
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
+  useEffect(() => {
+    setAuditBusy(false);
+    setAuditError(null);
+  }, [projectId]);
 
   const load = useCallback(() => {
     api
       .refs(projectId)
       .then((r) => {
+        if (projectIdRef.current !== projectId) return;
         setData(r);
         setLoadError(null);
       })
-      .catch((err) => setLoadError(err.message));
+      .catch((err) => {
+        if (projectIdRef.current !== projectId) return;
+        setLoadError(err.message);
+      });
   }, [projectId]);
 
   useEffect(load, [load, stamp]);
@@ -225,6 +249,56 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
     }
   }
 
+  async function runAudit() {
+    const startedFor = projectId;
+    setAuditBusy(true);
+    setAuditError(null);
+    try {
+      const audit = await api.auditRefs(projectId);
+      if (projectIdRef.current !== startedFor) return;
+      setData((d) => (d ? { ...d, audit } : d));
+    } catch (err: any) {
+      if (projectIdRef.current !== startedFor) return;
+      setAuditError(err.message);
+    } finally {
+      if (projectIdRef.current === startedFor) setAuditBusy(false);
+    }
+  }
+
+  const audit = data?.audit ?? null;
+  const auditSummary = (() => {
+    if (!audit) return null;
+    const counts = { verified: 0, mismatch: 0, unresolved: 0, skipped: 0 };
+    for (const r of Object.values(audit.results)) counts[r.status] += 1;
+    return [
+      `${counts.verified} verified`,
+      counts.unresolved > 0 ? `${counts.unresolved} unresolved` : null,
+      counts.mismatch > 0 ? `${counts.mismatch} mismatch` : null,
+      counts.skipped > 0 ? `${counts.skipped} skipped` : null,
+      `audited ${relTime(audit.at)}`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  })();
+
+  /** ✓ / ? / ⚠ next to the key, linking to the evidence when known. */
+  function auditBadge(e: RefEntry) {
+    const r = audit?.results[e.key];
+    const badge = r && AUDIT_BADGE[r.status];
+    if (!r || !badge) return null; // never audited, or skipped (network failure)
+    const title = r.detail ? `${badge.label} — ${r.detail}` : badge.label;
+    const cls = `shrink-0 font-mono text-[11px] transition-colors ${badge.cls}`;
+    return r.url ? (
+      <a href={r.url} target="_blank" rel="noreferrer" title={title} aria-label={`Audit: ${badge.label.toLowerCase()} — ${e.key}`} className={cls}>
+        {badge.glyph}
+      </a>
+    ) : (
+      <span title={title} aria-label={`Audit: ${badge.label.toLowerCase()} — ${e.key}`} className={cls}>
+        {badge.glyph}
+      </span>
+    );
+  }
+
   const chipBase =
     "rounded-full border px-2 py-0.5 font-mono text-[10.5px] transition-colors";
 
@@ -262,6 +336,16 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
           >
             unused {unusedCount > 0 ? `(${unusedCount})` : ""}
           </button>
+          <button
+            onClick={runAudit}
+            disabled={auditBusy || entries.length === 0}
+            title="Check every entry against Crossref/OpenAlex — no AI involved"
+            className={`${chipBase} disabled:opacity-50 ${
+              auditBusy ? "border-gold text-gold" : "border-rule text-graphite hover:border-leaf hover:text-leaf"
+            }`}
+          >
+            {auditBusy ? "auditing…" : "Audit citations"}
+          </button>
           <span className="ml-auto" />
           <button
             onClick={() => {
@@ -292,6 +376,17 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
             Export
           </a>
         </div>
+
+        {auditSummary && (
+          <p role="status" className="mt-1.5 font-mono text-[10.5px] text-graphite">
+            {auditSummary}
+          </p>
+        )}
+        {auditError && (
+          <p role="status" className="mt-1.5 text-[11.5px] leading-snug text-pencil">
+            {auditError}
+          </p>
+        )}
 
         {showUndefined && undefinedKeys.length > 0 && (
           <ul className="mt-2 rounded border border-pencil/40 bg-ink-2 px-3 py-2">
@@ -406,6 +501,7 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
                 >
                   {copied === e.key ? "copied" : e.key}
                 </button>
+                {auditBadge(e)}
                 {e.year && <span className="font-mono text-[11px] text-graphite">{e.year}</span>}
                 {total > 0 ? (
                   <button
@@ -479,6 +575,7 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
                     href={e.link}
                     target="_blank"
                     rel="noreferrer"
+                    aria-label={`Open the reference link for ${e.key}`}
                     title={e.link}
                     className="font-mono text-[10.5px] text-graphite transition-colors hover:text-gold"
                   >
@@ -560,6 +657,7 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff }: Pr
                     <button
                       onClick={() => fetchTldr(e, true)}
                       disabled={busyTldr}
+                      aria-label={`Regenerate the summary of ${e.key}`}
                       title="Regenerate summary"
                       className="font-mono text-[11px] text-graphite transition-colors hover:text-gold disabled:opacity-60"
                     >

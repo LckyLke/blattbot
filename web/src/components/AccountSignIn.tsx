@@ -26,6 +26,16 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
 
   const disabled = busy || grabbing !== null || !instance.trim();
 
+  // Cookie-mode sessions ride Overleaf's internal web API — say so up front
+  // when the target is overleaf.com itself (self-hosted instances differ).
+  const isOverleafCom = (() => {
+    try {
+      return /(^|\.)overleaf\.com$/i.test(new URL(instance.trim()).hostname);
+    } catch {
+      return /overleaf\.com/i.test(instance);
+    }
+  })();
+
   async function finish(freshCookie: string) {
     localStorage.setItem(INSTANCE_KEY, instance.trim());
     await onSession(instance.trim(), freshCookie);
@@ -76,6 +86,13 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
         />
       </label>
 
+      {isOverleafCom && (
+        <p className="mt-2 text-[10.5px] leading-snug text-graphite">
+          Connects through your browser session using Overleaf's internal web API (unofficial). See
+          SECURITY.md.
+        </p>
+      )}
+
       <div className="mt-2.5 flex items-center gap-1.5">
         <button
           type="button"
@@ -122,8 +139,16 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
         </div>
       )}
 
-      {message && <p className="mt-2 text-[11.5px] leading-snug text-leaf">{message}</p>}
-      {error && <p className="mt-2 text-[11.5px] leading-snug text-pencil">{error}</p>}
+      {message && (
+        <p role="status" className="mt-2 text-[11.5px] leading-snug text-leaf">
+          {message}
+        </p>
+      )}
+      {error && (
+        <p role="status" className="mt-2 text-[11.5px] leading-snug text-pencil">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

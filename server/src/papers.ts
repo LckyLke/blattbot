@@ -10,8 +10,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./config.js";
 import { loadSettings } from "./settings.js";
-import { readAllBibEntries } from "./citations.js";
-import type { BibEntry } from "./bib.js";
+import { readAllBibEntries, searchCrossref, searchOpenAlex, type PaperHit } from "./citations.js";
+import { entryDoi, type BibEntry } from "./bib.js";
 
 // ---- Persistent per-project store -----------------------------------------
 
@@ -307,4 +307,134 @@ export async function ensurePaperPdf(projectId: string, projectPath: string, cit
     return join(pdfDir(projectId), filename);
   }
   throw new NoPdfError();
+}
+
+// ---- Deterministic citation audit ------------------------------------------
+
+export type AuditStatus = "verified" | "mismatch" | "unresolved" | "skipped";
+
+export interface AuditResult {
+  status: AuditStatus;
+  /** Human explanation — e.g. both titles on a mismatch. */
+  detail?: string;
+  /** Evidence link (doi.org / OpenAlex / arXiv) when available. */
+  url?: string;
+}
+
+/** The persisted outcome of the last audit run for a project. */
+export interface CitationAudit {
+  at: string;
+  results: Record<string, AuditResult>;
+}
+
+const auditPath = (projectId: string) => join(papersDir(), `${projectId}.audit.json`);
+
+export function readAudit(projectId: string): CitationAudit | null {
+  try {
+    return JSON.parse(readFileSync(auditPath(projectId), "utf8")) as CitationAudit;
+  } catch {
+    return null;
+  }
+}
+
+function writeAudit(projectId: string, audit: CitationAudit): void {
+  mkdirSync(papersDir(), { recursive: true });
+  writeFileSync(auditPath(projectId), JSON.stringify(audit, null, 2));
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Evidence link for a search hit: DOI → OpenAlex work page → arXiv abstract. */
+function auditHitUrl(hit: PaperHit): string | undefined {
+  if (hit.doi) return `https://doi.org/${hit.doi}`;
+  const openalex = /^openalex:(W\w+)$/i.exec(hit.ref);
+  if (openalex) return `https://openalex.org/${openalex[1]}`;
+  const arxiv = /^arxiv:(.+)$/i.exec(hit.ref);
+  if (arxiv) return `https://arxiv.org/abs/${arxiv[1]}`;
+  return undefined;
+}
+
+/** Check a DOI against Crossref and compare titles. */
+async function auditByDoi(doi: string, title: string | undefined): Promise<AuditResult> {
+  const evidence = `https://doi.org/${doi}`;
+  let data: any;
+  try {
+    const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi).replace(/%2F/g, "/")}`, {
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.status === 404) return { status: "unresolved", detail: `DOI ${doi} not found on Crossref` };
+    if (!res.ok) return { status: "skipped", detail: `Crossref: HTTP ${res.status}` };
+    data = await res.json();
+  } catch (err: any) {
+    return { status: "skipped", detail: `Crossref unreachable: ${err?.message ?? err}` };
+  }
+  const remoteTitle = data?.message?.title?.[0];
+  if (!remoteTitle || !title) {
+    return { status: "verified", detail: "DOI resolves (no title to compare)", url: evidence };
+  }
+  if (titlesSimilar(title, String(remoteTitle))) return { status: "verified", url: evidence };
+  return {
+    status: "mismatch",
+    detail: `entry title "${title}" vs Crossref "${remoteTitle}"`,
+    url: evidence,
+  };
+}
+
+/** Look a title up on OpenAlex, then Crossref. */
+async function auditByTitle(title: string): Promise<AuditResult> {
+  let failures = 0;
+  try {
+    const hit = (await searchOpenAlex(title, 3)).find((h) => titlesSimilar(h.title, title));
+    if (hit) return { status: "verified", url: auditHitUrl(hit) };
+  } catch {
+    failures++;
+  }
+  try {
+    const hit = (await searchCrossref(title, 3)).find((h) => titlesSimilar(h.title, title));
+    if (hit) return { status: "verified", url: auditHitUrl(hit) };
+  } catch {
+    failures++;
+  }
+  if (failures === 2) return { status: "skipped", detail: "OpenAlex and Crossref both unreachable" };
+  return { status: "unresolved", detail: "no record with a matching title on OpenAlex or Crossref" };
+}
+
+async function auditEntry(entry: BibEntry): Promise<AuditResult> {
+  const doi = entryDoi(entry.fields);
+  const title = entry.fields.title?.trim();
+  if (doi) return auditByDoi(doi, title);
+  if (title) return auditByTitle(title);
+  return { status: "unresolved", detail: "entry has no DOI or title to check" };
+}
+
+/**
+ * Deterministic citation audit — no LLM involved. Each bib entry is checked
+ * against Crossref (by DOI) or OpenAlex/Crossref (by title search):
+ * `verified` = the reference resolves and the titles agree, `mismatch` = it
+ * resolves to a clearly different title, `unresolved` = no record found,
+ * `skipped` = a network failure prevented the check (NOT the same thing).
+ * Entries run sequentially with a small delay — polite to the public APIs.
+ * The outcome is persisted so badges survive reloads.
+ */
+export async function auditCitations(
+  projectId: string,
+  projectPath: string,
+  opts: { delayMs?: number } = {},
+): Promise<CitationAudit> {
+  const delayMs = opts.delayMs ?? 200;
+  const all = readAllBibEntries(projectPath);
+  const results: Record<string, AuditResult> = {};
+  for (let i = 0; i < all.length; i++) {
+    if (i > 0 && delayMs > 0) await sleep(delayMs);
+    const { entry } = all[i];
+    try {
+      results[entry.key] = await auditEntry(entry);
+    } catch (err: any) {
+      // allSettled semantics: one entry's failure never sinks the audit.
+      results[entry.key] = { status: "skipped", detail: String(err?.message ?? err) };
+    }
+  }
+  const audit: CitationAudit = { at: new Date().toISOString(), results };
+  writeAudit(projectId, audit);
+  return audit;
 }

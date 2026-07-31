@@ -19,7 +19,7 @@ import {
   type ProjectSettings,
 } from "./config.js";
 import * as git from "./git.js";
-import { compileProject, detectEngine, type CompileResult } from "./compile.js";
+import { compileProject, compileRev, detectEngine, revPdfPath, type CompileResult } from "./compile.js";
 import { findMainTex, listFiles, scanLabels } from "./latex.js";
 import { locateInSources } from "./locate.js";
 import {
@@ -35,9 +35,11 @@ import {
   NoPdfError,
   RateLimitError,
   arxivIdFromEntry,
+  auditCitations,
   ensurePaperPdf,
   getTldr,
   paperPdfPath,
+  readAudit,
   readPaperStore,
   sanitizeKeyForFile,
 } from "./papers.js";
@@ -53,11 +55,22 @@ import {
   isTurnActive,
   resolveBackendModel,
   resolveModel,
+  runOneShot,
   runTurn,
   validateProjectSettingsPatch,
   validateScope,
   type AgentMode,
 } from "./agent.js";
+import { collectDisclosureFacts, composeDisclosure } from "./disclosure.js";
+import {
+  answerQuestion,
+  dismissQuestion,
+  pendingQuestion,
+  questionStatus,
+  validateAnswers,
+} from "./questions.js";
+import { ASK_USER_TOOL_INFO } from "./backends/types.js";
+import { checkLatestVersion, currentVersion } from "./version.js";
 import {
   MAX_HISTORY_MESSAGES,
   OPENAI_SYSTEM_PROMPT,
@@ -172,6 +185,8 @@ if (webDist) {
 }
 
 const lastCompile = new Map<string, CompileResult>();
+/** Latest "Verify on Overleaf" build per project: the saved remote PDF's path. */
+const lastRemoteCompile = new Map<string, string>();
 
 function compilePublic(r: CompileResult) {
   const { pdfPath, ...rest } = r;
@@ -182,6 +197,13 @@ app.get("/api/health", async () => {
   const engine = await detectEngine(loadSettings().engine || undefined);
   return { ok: true, engine: engine?.name ?? null };
 });
+
+// Update check: the npm lookup is warmed at boot (see the listen block) and
+// cached for 24 h — this answers from that cache. latest is null when unknown.
+app.get("/api/version", async () => ({
+  current: currentVersion(),
+  latest: await checkLatestVersion(),
+}));
 
 // ---- Settings & transparency ----------------------------------------------
 
@@ -236,7 +258,7 @@ app.get("/api/agent/info", async () => {
     anthropicBaseUrl: s.anthropicBaseUrl || "https://api.anthropic.com",
     systemPromptPreset: "claude_code",
     systemPromptAppend: SYSTEM_APPEND,
-    tools: AGENT_TOOL_INFO,
+    tools: [...AGENT_TOOL_INFO, ASK_USER_TOOL_INFO],
     disallowedTools: DISALLOWED_TOOLS,
     ...common,
   };
@@ -608,6 +630,8 @@ app.get<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
     ...publicProject(project),
     files: listFiles(dir),
     turnActive: isTurnActive(project.id),
+    // A reload mid-turn restores the actionable question card from this.
+    pendingQuestion: pendingQuestion(project.id) ?? null,
     hasChanges: await git.hasChanges(dir).catch(() => false),
     lastCompile: compile ? compilePublic(compile) : null,
   };
@@ -762,8 +786,19 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/sync", async (req, reply
   if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
   try {
     const result = await sync.syncIn(project);
-    broadcast(project.id, { type: "synced", detail: result.detail });
-    return { ok: true, output: result.detail ?? "" };
+    broadcast(project.id, {
+      type: "synced",
+      detail: result.detail,
+      merged: result.merged,
+      drift: result.drift,
+    });
+    return {
+      ok: true,
+      output: result.detail ?? "",
+      changed: result.changed ?? false,
+      merged: result.merged ?? [],
+      drift: result.drift ?? [],
+    };
   } catch (err: any) {
     return reply.code(422).send({ error: err.message });
   }
@@ -805,7 +840,7 @@ app.post<{ Params: { id: string }; Body: { accountId?: string } }>(
   },
 );
 
-app.post<{ Params: { id: string }; Body: { message?: string } }>(
+app.post<{ Params: { id: string }; Body: { message?: string; force?: boolean } }>(
   "/api/projects/:id/approve",
   async (req, reply) => {
     const project = getProject(req.params.id);
@@ -813,16 +848,22 @@ app.post<{ Params: { id: string }; Body: { message?: string } }>(
     if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
     const message = req.body?.message?.trim() || "BlattBot edit";
     try {
-      const result = await sync.approve(project, message);
+      const result = await sync.approve(project, message, { force: req.body?.force === true });
       broadcast(project.id, {
         type: "approved",
         pushed: result.pushed,
         uploaded: result.uploaded,
         deleted: result.deleted,
         warnings: result.warnings,
+        absorbedRemote: result.absorbedRemote,
       });
       return { ok: true, ...result };
     } catch (err: any) {
+      // Remote drift touching locally edited files: nothing was committed or
+      // pushed — the UI offers per-file discard or an explicit force.
+      if (err instanceof sync.ApproveConflictError) {
+        return reply.code(409).send({ error: err.message, conflicts: err.conflicts });
+      }
       return reply.code(422).send({ error: err.message });
     }
   },
@@ -904,18 +945,95 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/compile", async (req, re
   return compilePublic(result);
 });
 
-app.get<{ Params: { id: string } }>("/api/projects/:id/pdf", async (req, reply) => {
+// Verify on Overleaf: run the remote instance's own compiler on the project's
+// CURRENT REMOTE state (approved & pushed — never unpushed local edits). A
+// failed build is a *result*, not a server error: 200 with the remote log tail.
+app.post<{ Params: { id: string } }>("/api/projects/:id/remote-compile", async (req, reply) => {
   const project = getProject(req.params.id);
   if (!project) return reply.code(404).send({ error: "unknown project" });
-  const compile = lastCompile.get(project.id);
-  if (!compile?.pdfPath || !existsSync(compile.pdfPath)) {
-    return reply.code(404).send({ error: "no compiled PDF — run compile first" });
+  if (project.kind !== "overleaf") {
+    return reply.code(400).send({ error: "remote compile is only available for Overleaf cookie-mode projects" });
   }
-  reply.header("Cache-Control", "no-store");
-  const filename = `${project.name.replace(/[^\w. -]+/g, "_") || "project"}.pdf`;
-  reply.header("Content-Disposition", `inline; filename="${filename}"`);
-  return reply.type("application/pdf").send(createReadStream(compile.pdfPath));
+  try {
+    const result = await sync.remoteCompile(project);
+    if (!result.pdf) {
+      return { status: result.status, pdf: false, logTail: result.logTail ?? "" };
+    }
+    mkdirSync(buildDir(project.id), { recursive: true });
+    const pdfPath = join(buildDir(project.id), "remote.pdf");
+    writeFileSync(pdfPath, result.pdf);
+    lastRemoteCompile.set(project.id, pdfPath);
+    return { status: result.status, pdf: true };
+  } catch (err: any) {
+    return reply.code(422).send({ error: err.message });
+  }
 });
+
+// Rendered-diff support: compile the project's state AS COMMITTED at a rev
+// (only HEAD — the approval base — for now) into a per-sha build cache. The
+// pdf route serves the cached build via ?rev=<sha>. A failed build is a
+// result, not a server error: 200 with the log tail.
+app.post<{ Params: { id: string }; Body: { rev?: string } }>(
+  "/api/projects/:id/compile-rev",
+  async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    if ((req.body?.rev ?? "HEAD") !== "HEAD") {
+      return reply.code(400).send({ error: 'only rev "HEAD" is supported' });
+    }
+    const dir = projectDir(project.id);
+    try {
+      const sha = await git.revParse(dir, "HEAD");
+      const result = await compileRev(project.id, dir, sha, project.mainTex);
+      if (!result.ok) return { ok: false, sha, log: result.logTail };
+      return { ok: true, sha };
+    } catch (err: any) {
+      return reply.code(422).send({ error: err.message });
+    }
+  },
+);
+
+app.get<{ Params: { id: string }; Querystring: { source?: string; rev?: string } }>(
+  "/api/projects/:id/pdf",
+  async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    const safeName = project.name.replace(/[^\w. -]+/g, "_") || "project";
+    // ?rev=<sha> serves the cached build of that committed revision (made by
+    // POST /compile-rev — the rendered diff's approval-base PDF). The hex-only
+    // check doubles as the path-traversal guard.
+    if (req.query.rev) {
+      if (!/^[0-9a-f]{7,40}$/.test(req.query.rev)) {
+        return reply.code(400).send({ error: "invalid rev" });
+      }
+      const revPath = revPdfPath(project.id, req.query.rev);
+      if (!existsSync(revPath)) {
+        return reply.code(404).send({ error: "no cached build for that revision — compile it first" });
+      }
+      reply.header("Cache-Control", "no-store");
+      reply.header("Content-Disposition", `inline; filename="${safeName}-${req.query.rev.slice(0, 7)}.pdf"`);
+      return reply.type("application/pdf").send(createReadStream(revPath));
+    }
+    // ?source=remote serves the last "Verify on Overleaf" build instead of
+    // the local preflight PDF (cached the same way: in memory, per boot).
+    if (req.query.source === "remote") {
+      const remotePath = lastRemoteCompile.get(project.id);
+      if (!remotePath || !existsSync(remotePath)) {
+        return reply.code(404).send({ error: "no Overleaf build — run Verify on Overleaf first" });
+      }
+      reply.header("Cache-Control", "no-store");
+      reply.header("Content-Disposition", `inline; filename="${safeName}-overleaf.pdf"`);
+      return reply.type("application/pdf").send(createReadStream(remotePath));
+    }
+    const compile = lastCompile.get(project.id);
+    if (!compile?.pdfPath || !existsSync(compile.pdfPath)) {
+      return reply.code(404).send({ error: "no compiled PDF — run compile first" });
+    }
+    reply.header("Cache-Control", "no-store");
+    reply.header("Content-Disposition", `inline; filename="${safeName}.pdf"`);
+    return reply.type("application/pdf").send(createReadStream(compile.pdfPath));
+  },
+);
 
 // Read-only reverse lookup: text copied from the rendered PDF → the .tex
 // source position that produced it (used by the viewer's double-click jump).
@@ -1027,13 +1145,13 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/labels", async (req, repl
 
 // ---- References: Zotero-lite citation manager ------------------------------
 
-/** Best link for a bib entry: DOI → url field → arXiv abstract page. */
+/** Best source link for a bib entry: DOI → arXiv abstract page → url field. */
 function refLink(entry: BibEntry): string | null {
   const doi = entry.fields.doi?.trim().replace(/^https?:\/\/(dx\.)?doi\.org\//, "");
   if (doi) return `https://doi.org/${doi}`;
-  if (entry.fields.url?.trim()) return entry.fields.url.trim();
   const arxivId = arxivIdFromEntry(entry);
   if (arxivId) return `https://arxiv.org/abs/${arxivId}`;
+  if (entry.fields.url?.trim()) return entry.fields.url.trim();
   return null;
 }
 
@@ -1063,7 +1181,19 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/refs", async (req, reply)
       hasPdf: Boolean(paperPdfPath(project.id, entry.key, store)),
     };
   });
-  return { entries, undefinedKeys, unusedCount: unusedKeys.length };
+  return { entries, undefinedKeys, unusedCount: unusedKeys.length, audit: readAudit(project.id) };
+});
+
+// Deterministic citation audit: every entry checked against Crossref/OpenAlex
+// (no LLM). The result is persisted so the badges survive reloads.
+app.post<{ Params: { id: string } }>("/api/projects/:id/refs/audit", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "unknown project" });
+  try {
+    return await auditCitations(project.id, projectDir(project.id));
+  } catch (err: any) {
+    return reply.code(422).send({ error: err?.message ?? String(err) });
+  }
 });
 
 // Manual reference edits are ordinary working-tree changes: every write below
@@ -1263,6 +1393,30 @@ app.delete<{ Params: { id: string; chatId: string } }>(
   },
 );
 
+// AI-use disclosure: deterministic facts from the stored chats, composed into
+// a factual paragraph; the agent may polish the phrasing, but any failure
+// falls back to the deterministic text — the endpoint itself never fails on it.
+app.post<{ Params: { id: string } }>("/api/projects/:id/disclosure", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "unknown project" });
+  const facts = collectDisclosureFacts(project.id);
+  let text = composeDisclosure(project.name, facts);
+  if (facts.turns > 0) {
+    try {
+      const polished = await runOneShot(
+        "Polish the phrasing of this AI-use disclosure statement for an academic paper. " +
+          "Keep every fact, number, and name exactly as stated, keep it to one short factual " +
+          "paragraph, and use no puffery. Reply with only the revised paragraph.\n\n" +
+          text,
+      );
+      if (polished.trim()) text = polished.trim();
+    } catch {
+      /* the deterministic paragraph stands */
+    }
+  }
+  return { text, facts };
+});
+
 app.post<{ Params: { id: string }; Body: { message: string; mode?: string; files?: string[] } }>(
   "/api/projects/:id/chat",
   async (req, reply) => {
@@ -1302,7 +1456,16 @@ app.post<{ Params: { id: string }; Body: { message: string; mode?: string; files
     const persist = (event: Record<string, unknown>) => {
       try {
         const t = event.type;
-        if (t === "text_final" || t === "tool_use" || t === "tool_result" || t === "turn_end" || t === "notice") {
+        if (
+          t === "text_final" ||
+          t === "tool_use" ||
+          t === "tool_result" ||
+          t === "turn_end" ||
+          t === "notice" ||
+          t === "question" ||
+          t === "question_answered" ||
+          t === "question_dismissed"
+        ) {
           appendEvent(project.id, chatId, event as { type: string });
         } else if (t === "error") {
           appendEvent(project.id, chatId, {
@@ -1376,6 +1539,53 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/interrupt", async (req, 
   return { ok: true, interrupted };
 });
 
+// ---- Mid-turn questions (AskUserQuestion / ask_user) -----------------------
+// Answer the pending question: body maps each question's TEXT to the chosen
+// answer string (multi-select answers comma-joined; free-text is any string).
+app.post<{ Params: { id: string; questionId: string }; Body: { answers?: Record<string, string> } }>(
+  "/api/projects/:id/question/:questionId",
+  async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    // The answers validate AGAINST the pending question (keys must be its
+    // question texts) — resolve the id's status first so an unknown or
+    // already-settled id still gets its 404/410 regardless of the body.
+    const pending = pendingQuestion(project.id);
+    if (!pending || pending.questionId !== req.params.questionId) {
+      if (questionStatus(project.id, req.params.questionId) === "resolved") {
+        return reply.code(410).send({ error: "that question was already answered or dismissed" });
+      }
+      return reply.code(404).send({ error: "no such pending question" });
+    }
+    let answers: Record<string, string>;
+    try {
+      answers = validateAnswers(req.body?.answers, pending.questions);
+    } catch (err: any) {
+      return reply.code(400).send({ error: err.message });
+    }
+    const outcome = answerQuestion(project.id, req.params.questionId, answers);
+    if (outcome === "unknown") return reply.code(404).send({ error: "no such pending question" });
+    if (outcome === "resolved") {
+      return reply.code(410).send({ error: "that question was already answered or dismissed" });
+    }
+    return { ok: true };
+  },
+);
+
+app.post<{ Params: { id: string; questionId: string } }>(
+  "/api/projects/:id/question/:questionId/dismiss",
+  async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    const outcome = dismissQuestion(project.id, req.params.questionId);
+    if (outcome === "unknown") return reply.code(404).send({ error: "no such pending question" });
+    if (outcome === "resolved") {
+      return reply.code(410).send({ error: "that question was already answered or dismissed" });
+    }
+    return { ok: true };
+  },
+);
+
 app.get("/api/ws", { websocket: true }, (socket, req) => {
   // The upgrade bypasses the /api token hook — enforce it here. The browser
   // sends the SameSite cookie automatically; scripts may pass ?token=.
@@ -1403,6 +1613,9 @@ try {
   console.error(err);
   process.exit(1);
 }
+
+// Warm the update check in the background — never blocks startup, never throws.
+void checkLatestVersion().catch(() => {});
 
 // The CLI (bin/blattbot.js) imports this module to start the server and uses
 // the app handle for a clean shutdown on Ctrl+C.

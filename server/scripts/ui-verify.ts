@@ -8,6 +8,7 @@
  */
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -19,6 +20,7 @@ const SHOTS = process.env.UI_SHOTS_DIR ?? "/tmp/blattbot-ui-shots";
 const EXECUTABLE = `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
 const SERVER_PORT = 4570;
 const MOCK_PORT = 4571;
+const ASK_PORT = 4572;
 const PROJECT_ID = "0123456789abcdef01234567";
 const COOKIE = "overleaf_session2=mock-session";
 
@@ -48,6 +50,107 @@ const REFS_BIB = `@inproceedings{vaswani2017attention,
   year      = {2017},
 }
 `;
+
+/**
+ * Minimal OpenAI-compatible SSE endpoint for the AskUserQuestion e2e (W9):
+ * each turn's first completion request streams an ask_user tool call (turn 1
+ * asks about the section, turn 2 about the abstract, so the two cards are
+ * distinguishable); once the turn's tool result arrives — the request's LAST
+ * message is a tool message — it streams a final text that echoes the chosen
+ * answer, or the skip when the user declined. Purely local — no real
+ * endpoint is ever contacted.
+ */
+function startAskMock(port: number): Promise<{ close: () => Promise<void> }> {
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      let body: any = null;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        /* leave null */
+      }
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const sse = (obj: unknown) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+      const msgs: any[] = body?.messages ?? [];
+      const last = msgs.at(-1);
+      const userCount = msgs.filter((m: any) => m.role === "user").length;
+      if (last?.role !== "tool") {
+        const args = JSON.stringify({
+          questions: [
+            userCount >= 2
+              ? {
+                  question: "Should I also polish the abstract?",
+                  header: "Abstract",
+                  options: [
+                    { label: "Yes, polish it", description: "Tighten the wording" },
+                    { label: "No, leave it", description: "Keep it as written" },
+                  ],
+                  multiSelect: false,
+                }
+              : {
+                  question: "Which section should I improve?",
+                  header: "Section",
+                  options: [
+                    { label: "Introduction", description: "Rework the opening" },
+                    { label: "Conclusion", description: "Strengthen the ending" },
+                  ],
+                  multiSelect: false,
+                },
+          ],
+        });
+        sse({
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: `call_ask_${userCount}`,
+                    function: { name: "ask_user", arguments: args },
+                  },
+                ],
+              },
+            },
+          ],
+        });
+        sse({ choices: [{ delta: {}, finish_reason: "tool_calls" }] });
+      } else {
+        // The turn's tool result — echo the answer, or the decline on a skip.
+        let declined = false;
+        let chosen = "nothing";
+        try {
+          const parsed = JSON.parse(last.content);
+          declined = parsed?.declined === true;
+          const first = Object.values(parsed?.answers ?? {})[0];
+          if (typeof first === "string" && first) chosen = first;
+        } catch {
+          /* keep the defaults */
+        }
+        sse({
+          choices: [
+            {
+              delta: {
+                content: declined
+                  ? "You skipped the question — proceeding with my best judgment."
+                  : `Understood — I will focus on the ${chosen} as requested.`,
+              },
+            },
+          ],
+        });
+        sse({ choices: [{ delta: {}, finish_reason: "stop" }] });
+      }
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+  });
+  return new Promise((resolveStart) =>
+    server.listen(port, "127.0.0.1", () =>
+      resolveStart({ close: () => new Promise<void>((r) => server.close(() => r())) }),
+    ),
+  );
+}
 
 /** Local auth: script-side API calls carry the Bearer token from /api/bootstrap. */
 let authToken = "";
@@ -81,6 +184,7 @@ async function main() {
   const mock = await startMockOverleaf(MOCK_PORT, PROJECT_ID);
   mock.files.set("main.tex", Buffer.from(MAIN_TEX));
   mock.files.set("sections/refs.bib", Buffer.from(REFS_BIB));
+  const askMock = await startAskMock(ASK_PORT);
 
   // Isolated data dir so the real registry is untouched; borrow the tectonic binary.
   const dataDir = mkdtempSync(join(tmpdir(), "blattbot-ui-verify-"));
@@ -115,7 +219,13 @@ async function main() {
     await page.goto(`http://127.0.0.1:${SERVER_PORT}`, { waitUntil: "networkidle" });
     await shot("20-dashboard-empty");
 
+    // ---- Unofficial-API notice: shown for overleaf.com (the default instance),
+    // hidden once the instance points at a self-hosted/mock host.
+    const unofficialNotice = page.getByText(/internal web API \(unofficial\)/);
+    const unofficialNoticeShown = (await unofficialNotice.count()) > 0;
     await page.getByPlaceholder(/overleaf\.com — or a project link/).fill(`http://127.0.0.1:${MOCK_PORT}`);
+    await page.waitForTimeout(200);
+    const unofficialNoticeOk = unofficialNoticeShown && (await unofficialNotice.count()) === 0;
     await page.getByRole("button", { name: "paste cookie" }).click();
     await page.getByPlaceholder(/overleaf_session2/).fill(COOKIE);
     await page.getByRole("button", { name: "Use this session" }).click();
@@ -139,6 +249,25 @@ async function main() {
     const openCompileOk = (await page.locator("canvas").count()) >= 1;
     await page.waitForTimeout(400);
     await shot("23-project-open");
+
+    // ---- W7 a11y: the pane strips are real tablists; the active tab is selected ----
+    const tablistCount = await page.getByRole("tablist").count();
+    const tablistOk =
+      tablistCount >= 2 &&
+      (await aside().getByRole("tab", { name: "PDF", exact: true }).getAttribute("aria-selected")) ===
+        "true" &&
+      (await leftPane().getByRole("tab", { name: "Chat", exact: true }).getAttribute("aria-selected")) ===
+        "true";
+
+    // The built stylesheet keeps its prefers-reduced-motion fallbacks.
+    const cssHrefs = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map(
+        (l) => (l as HTMLLinkElement).href,
+      ),
+    );
+    let builtCss = "";
+    for (const href of cssHrefs) builtCss += await (await fetch(href)).text();
+    const reducedMotionOk = builtCss.includes("prefers-reduced-motion");
 
     const apiBase = `http://127.0.0.1:${SERVER_PORT}/api`;
     const projects = (await (await afetch(`${apiBase}/projects`)).json()) as { id: string; name: string }[];
@@ -338,7 +467,7 @@ async function main() {
     await shot("23e-chat-deleted");
 
     // ---- Source tab shows the actual code ----
-    await aside().getByRole("button", { name: "Source", exact: true }).click();
+    await aside().getByRole("tab", { name: "Source", exact: true }).click();
     await page.getByText("documentclass").first().waitFor({ timeout: 10_000 });
     await shot("24-source");
     const sourceText = await page.locator("body").innerText();
@@ -511,7 +640,7 @@ async function main() {
     await aside()
       .locator("span.text-gold", { hasText: "●" })
       .waitFor({ state: "detached", timeout: 10_000 });
-    await aside().getByRole("button", { name: "Proof", exact: false }).click();
+    await aside().getByRole("tab", { name: "Proof", exact: false }).click();
     await page
       .getByText("manual tweak from ui-verify")
       .filter({ visible: true })
@@ -563,7 +692,7 @@ async function main() {
     await shot("25d-proof-hunk-discarded");
 
     // ---- References: cited entry renders leaf-green with a line-numbered jump ----
-    await aside().getByRole("button", { name: "References", exact: true }).click();
+    await aside().getByRole("tab", { name: "References", exact: true }).click();
     const refChip = aside().getByRole("button", { name: "vaswani2017attention", exact: true });
     await refChip.waitFor({ timeout: 10_000 });
     // text-leaf (#8fb573) marks a cited entry's key chip.
@@ -579,7 +708,7 @@ async function main() {
     await occurrence.click();
     await aside().locator(".cm-flash-line").first().waitFor({ timeout: 10_000 });
     const sourceTabActive = await aside()
-      .getByRole("button", { name: "Source", exact: true })
+      .getByRole("tab", { name: "Source", exact: true })
       .evaluate((el) => el.className.includes("bg-ink-2"));
     const citeJumpOk =
       sourceTabActive &&
@@ -589,7 +718,7 @@ async function main() {
     await shot("25f-refs-jump");
 
     // ---- Add a reference by hand → the .bib diff lands in the Proof ----
-    await aside().getByRole("button", { name: "References", exact: true }).click();
+    await aside().getByRole("tab", { name: "References", exact: true }).click();
     await aside().getByRole("button", { name: "+ add entry" }).click();
     const NEW_REF = `@misc{uiverify2024note,
   title = {Tiny Test Note},
@@ -605,7 +734,7 @@ async function main() {
     await shot("25g-refs-added-proof");
 
     // Back on References the new entry is amber/unused (never cited).
-    await aside().getByRole("button", { name: "References", exact: true }).click();
+    await aside().getByRole("tab", { name: "References", exact: true }).click();
     const newChip = aside().getByRole("button", { name: "uiverify2024note", exact: true });
     await newChip.waitFor({ timeout: 10_000 });
     const newChipGold = await newChip.evaluate(
@@ -637,19 +766,66 @@ async function main() {
     await shot("25i-refs-edited-proof");
 
     // ---- Delete it (confirm-on-second-click) → the proof empties back out ----
-    await aside().getByRole("button", { name: "References", exact: true }).click();
+    await aside().getByRole("tab", { name: "References", exact: true }).click();
     await aside().getByRole("button", { name: "Delete uiverify2024note" }).click();
     await aside().getByRole("button", { name: "Really delete uiverify2024note?" }).click();
     await aside()
       .getByRole("button", { name: "Delete uiverify2024note" })
       .waitFor({ state: "detached", timeout: 10_000 });
-    await aside().getByRole("button", { name: "Proof", exact: false }).click();
+    await aside().getByRole("tab", { name: "Proof", exact: false }).click();
     await page.getByText("No pending changes").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
     // The .bib file is byte-identical to the pre-add state on disk.
     const refsBibRestored = (await getFile("sections/refs.bib")) === REFS_BIB;
     await shot("25j-refs-deleted");
 
-    await aside().getByRole("button", { name: "Source", exact: true }).click();
+    // ---- Rendered PDF diff: a visible edit → changed-page chips + region boxes ----
+    // (a comment-only tweak would produce no visual change — edit real text)
+    const putRendered = await afetch(`${apiBase}/projects/${mockProjectId}/file`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: "main.tex",
+        content: MAIN_TEX.replace(
+          "The approach compiles reliably.",
+          "The approach compiles reliably and reproducibly.",
+        ),
+      }),
+    });
+    if (!putRendered.ok) throw new Error(`PUT main.tex failed: ${putRendered.status}`);
+    // The PUT bypasses the websocket — reload so the proof (still the right
+    // pane's stored tab) picks up the pending diff.
+    await page.reload();
+    await page.getByRole("button", { name: "Back to dashboard" }).waitFor({ timeout: 10_000 });
+    await page.getByText("reproducibly").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+    const textToggle = aside().getByRole("tab", { name: "Text diff", exact: true });
+    const renderedToggle = aside().getByRole("tab", { name: "Rendered diff", exact: true });
+    const diffToggleOk = (await textToggle.count()) === 1 && (await renderedToggle.count()) === 1;
+    // Entering rendered mode compiles the approval base (HEAD) server-side,
+    // recompiles the (stale) working state, and pixel-compares client-side —
+    // real tectonic runs on both sides, hence the generous timeout.
+    await renderedToggle.click();
+    const changedChip = aside().getByRole("button", { name: "Changed page 3" });
+    await changedChip.waitFor({ timeout: 180_000 });
+    const renderedChipsOk = (await changedChip.count()) === 1;
+    // Only the conclusion page changed — pages 1 and 2 must not be listed.
+    const renderedOnlyP3 =
+      (await aside().getByRole("button", { name: "Changed page 1" }).count()) === 0 &&
+      (await aside().getByRole("button", { name: "Changed page 2" }).count()) === 0;
+    // The current page renders with red boxes around the changed region.
+    await aside().locator("[data-diff-box]").first().waitFor({ timeout: 10_000 });
+    const renderedBoxesOk = (await aside().locator("[data-diff-box]").count()) >= 1;
+    await shot("25k-rendered-diff");
+    // Discard the edit through the API; the rejected broadcast empties the
+    // proof live (no reload needed) and the tree returns to the seeded state.
+    const rejRendered = await afetch(`${apiBase}/projects/${mockProjectId}/reject`, {
+      method: "POST",
+    });
+    if (!rejRendered.ok) throw new Error(`reject failed: ${rejRendered.status}`);
+    await page.getByText("No pending changes").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+    const renderedRestoredOk = (await getFile("main.tex")) === MAIN_TEX;
+    await shot("25l-rendered-diff-discarded");
+
+    await aside().getByRole("tab", { name: "Source", exact: true }).click();
 
     // ---- Scope selector: checking a file shows the chip on the composer ----
     await page.getByRole("checkbox", { name: "Scope main.tex" }).check();
@@ -670,6 +846,15 @@ async function main() {
     await page.mouse.up();
     const widthAfter = await aside().evaluate((el) => el.getBoundingClientRect().width);
     await shot("27-resized");
+
+    // ---- W7 a11y: the separator is focusable; arrows move the split ~2%/press ----
+    await sep.focus();
+    const sepFocused = await sep.evaluate((el) => document.activeElement === el);
+    for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowLeft");
+    const widthKeyboard = await aside().evaluate((el) => el.getBoundingClientRect().width);
+    // 3 presses × ~2% of a 1500px window ≈ 90px — well past drift/rounding.
+    const keyboardResizeOk = sepFocused && widthKeyboard - widthAfter > 40;
+    await shot("27b-resized-keyboard");
 
     // ---- Settings: accounts (with the email from the mock), agent config, transparency ----
     await page.getByRole("button", { name: "Open settings" }).click();
@@ -722,9 +907,104 @@ async function main() {
       transparencyText.includes("search_papers");
     await shot("30-settings-transparency");
     await page.getByRole("button", { name: "Close settings" }).click();
+    await page.getByRole("dialog", { name: "Settings" }).waitFor({ state: "detached", timeout: 5_000 });
+
+    // ---- AskUserQuestion (W9): the agent asks mid-turn; card → answer → echo ----
+    // Point the openai backend at the local ask-mock through the Settings UI,
+    // send a chat message, and the mock's ask_user call must surface as an
+    // actionable question card that survives a reload while pending.
+    await page.getByRole("button", { name: "Open settings" }).click();
+    const askDlg = page.getByRole("dialog", { name: "Settings" });
+    await askDlg.getByRole("button", { name: "Agent" }).click();
+    await askDlg.getByRole("radio", { name: "OpenAI-compatible API" }).check();
+    await askDlg.getByPlaceholder("http://127.0.0.1:11434/v1").fill(`http://127.0.0.1:${ASK_PORT}/v1`);
+    await askDlg.getByPlaceholder(/llama3\.3:70b/).fill("ask-verify-model");
+    await askDlg.getByRole("button", { name: "Save settings" }).click();
+    await askDlg.getByText("Saved.").waitFor({ timeout: 5_000 });
+    await page.getByRole("button", { name: "Close settings" }).click();
+    await askDlg.waitFor({ state: "detached", timeout: 5_000 });
+
+    await page.getByPlaceholder(/Ask BlattBot/).fill("Improve one section of the thesis");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const askQuestionText = () =>
+      leftPane().getByText("Which section should I improve?").filter({ visible: true });
+    const askIntroOption = () =>
+      leftPane().getByRole("button", { name: "Introduction" }).filter({ visible: true });
+    await askQuestionText().first().waitFor({ timeout: 20_000 });
+    await askIntroOption().first().waitFor({ timeout: 10_000 });
+    const askCardOk =
+      (await askIntroOption().count()) > 0 &&
+      (await leftPane().getByRole("button", { name: "Conclusion" }).filter({ visible: true }).count()) > 0 &&
+      (await leftPane().getByText("Section", { exact: true }).filter({ visible: true }).count()) > 0 &&
+      (await leftPane().getByRole("button", { name: "Skip these questions" }).filter({ visible: true }).count()) > 0 &&
+      (await leftPane().getByPlaceholder("Other…").filter({ visible: true }).count()) > 0;
+    await shot("30b-question-card");
+
+    // Reload MID-PENDING: the turn-state payload re-arms the actionable card.
+    await page.reload();
+    await page.getByRole("button", { name: "Back to dashboard" }).waitFor({ timeout: 10_000 });
+    await askQuestionText().first().waitFor({ timeout: 10_000 });
+    await askIntroOption().first().waitFor({ timeout: 10_000 });
+    const askRestoredOk = (await askIntroOption().count()) > 0;
+    await shot("30c-question-restored");
+
+    // Answer → the turn resumes and the reply echoes the chosen label.
+    await askIntroOption().first().click();
+    await leftPane()
+      .getByText(/focus on the Introduction/)
+      .filter({ visible: true })
+      .first()
+      .waitFor({ timeout: 20_000 });
+    const askAnsweredOk =
+      (await leftPane().getByText(/focus on the Introduction/).filter({ visible: true }).count()) > 0;
+    await leftPane().getByText("turn complete").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+    // The card collapsed: option buttons are gone, the muted summary remains.
+    const askCollapsedOk =
+      (await askIntroOption().count()) === 0 &&
+      (await leftPane().getByText("answered", { exact: true }).filter({ visible: true }).count()) > 0 &&
+      (await askQuestionText().count()) > 0;
+    await shot("30d-question-answered");
+
+    // ---- Skip path: the second turn asks again; the user skips — the
+    // declined tool result must reach the model (the mock echoes it) and the
+    // card must collapse to its muted "skipped" summary.
+    await page.getByPlaceholder(/Ask BlattBot/).fill("Anything else worth improving?");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const skipQuestionText = () =>
+      leftPane().getByText("Should I also polish the abstract?").filter({ visible: true });
+    const skipButton = () =>
+      leftPane().getByRole("button", { name: "Skip these questions" }).filter({ visible: true });
+    await skipQuestionText().first().waitFor({ timeout: 20_000 });
+    await skipButton().first().waitFor({ timeout: 10_000 });
+    await shot("30e-question-skip-pending");
+    await skipButton().first().click();
+    // The dismiss travels App.dismissQuestion → POST …/dismiss → registry →
+    // the openai loop's {declined: true} tool result → the mock's echo.
+    await leftPane()
+      .getByText(/proceeding with my best judgment/)
+      .filter({ visible: true })
+      .first()
+      .waitFor({ timeout: 20_000 });
+    const askSkipEchoOk =
+      (await leftPane().getByText(/proceeding with my best judgment/).filter({ visible: true }).count()) > 0;
+    // Second turn complete (the first one's marker is still in the chat).
+    await leftPane().getByText("turn complete").filter({ visible: true }).nth(1).waitFor({ timeout: 10_000 });
+    const askSkippedCollapsedOk =
+      (await skipButton().count()) === 0 &&
+      (await leftPane().getByRole("button", { name: "Yes, polish it" }).filter({ visible: true }).count()) === 0 &&
+      (await leftPane().getByText("skipped", { exact: true }).filter({ visible: true }).count()) > 0 &&
+      (await skipQuestionText().count()) > 0;
+    await shot("30f-question-skipped");
+
+    // Back to the stock Claude backend for the rest of the flow.
+    await afetch(`${apiBase}/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backend: "", openaiBaseUrl: "", openaiModel: "" }),
+    });
 
     // ---- Opening the PDF tab auto-compiles, with a visible progress indicator ----
-    await aside().getByRole("button", { name: "PDF", exact: true }).click();
+    await aside().getByRole("tab", { name: "PDF", exact: true }).click();
     let compilingSeen = false;
     let canvasesDuringCompile = -1;
     try {
@@ -749,7 +1029,7 @@ async function main() {
     await shot("32-pdf-zoom");
 
     // ---- Dual panes: source on the left WHILE the PDF stays on the right ----
-    await leftPane().getByRole("button", { name: "Source", exact: true }).click();
+    await leftPane().getByRole("tab", { name: "Source", exact: true }).click();
     await leftPane().locator(".cm-content").first().waitFor({ state: "visible", timeout: 15_000 });
     const sideBySideOk =
       (await leftPane().locator(".cm-content").filter({ visible: true }).count()) > 0 &&
@@ -757,7 +1037,7 @@ async function main() {
     await shot("37-side-by-side");
 
     // Selecting the right pane's view on the left SWAPS the two panes.
-    await leftPane().getByRole("button", { name: "PDF", exact: true }).click();
+    await leftPane().getByRole("tab", { name: "PDF", exact: true }).click();
     await leftPane().locator("canvas").first().waitFor({ state: "visible", timeout: 30_000 });
     const swapOk =
       (await leftPane().locator("canvas").filter({ visible: true }).count()) > 0 &&
@@ -786,12 +1066,12 @@ async function main() {
 
     // ---- Double-click a PDF word → jump to the .tex line in the Source ----
     // Park the right pane on Proof first so the jump has to activate Source.
-    await aside().getByRole("button", { name: "Proof", exact: false }).click();
+    await aside().getByRole("tab", { name: "Proof", exact: false }).click();
     await page.getByText("No pending changes").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
     await leftPane().locator(".textLayer span", { hasText: "Attention" }).first().dblclick();
     await aside().locator(".cm-flash-line").first().waitFor({ timeout: 10_000 });
     const dblclickSourceActive = await aside()
-      .getByRole("button", { name: "Source", exact: true })
+      .getByRole("tab", { name: "Source", exact: true })
       .evaluate((el) => el.className.includes("bg-ink-2"));
     const dblclickJumpOk =
       dblclickSourceActive &&
@@ -801,9 +1081,9 @@ async function main() {
     // ---- Quote a PDF selection into the chat composer ----
     // Layout for this: chat on the left, PDF on the right (the chip only
     // offers itself while the other pane shows the chat).
-    await leftPane().getByRole("button", { name: "Chat", exact: true }).click();
+    await leftPane().getByRole("tab", { name: "Chat", exact: true }).click();
     await page.getByTitle("Switch chat").waitFor({ timeout: 5_000 });
-    await aside().getByRole("button", { name: "PDF", exact: true }).click();
+    await aside().getByRole("tab", { name: "PDF", exact: true }).click();
     await aside().locator(".textLayer span").first().waitFor({ timeout: 60_000 });
     const quoteSelection = await page.evaluate(() => {
       const layer = document.querySelector('aside[data-pane="right"] .textLayer');
@@ -847,11 +1127,11 @@ async function main() {
     // Clear the injected draft and restore the layout the rest of the flow
     // expects (chat left, source right).
     await composer.fill("");
-    await aside().getByRole("button", { name: "Source", exact: true }).click();
+    await aside().getByRole("tab", { name: "Source", exact: true }).click();
     await aside().locator(".cm-content").first().waitFor({ state: "visible", timeout: 15_000 });
 
     // Restore the chat on the left for the rest of the flow (right keeps source).
-    await leftPane().getByRole("button", { name: "Chat", exact: true }).click();
+    await leftPane().getByRole("tab", { name: "Chat", exact: true }).click();
     await page.getByTitle("Switch chat").waitFor({ timeout: 5_000 });
 
     // ---- Back to the dashboard: create a standalone local project ----
@@ -892,6 +1172,15 @@ async function main() {
       dialogDangerPencil &&
       (await page.locator(".card-grid li").filter({ hasText: "Mock Thesis" }).count()) > 0;
 
+    // ---- W7 a11y: Escape closes (cancels) the dialog and the project survives ----
+    await page.locator(".card-grid li").filter({ hasText: "Mock Thesis" }).first().hover();
+    await page.getByRole("button", { name: "Remove Mock Thesis" }).click();
+    await confirmDialog.waitFor({ timeout: 5_000 });
+    await page.keyboard.press("Escape");
+    await confirmDialog.waitFor({ state: "detached", timeout: 5_000 });
+    const dialogEscapeOk =
+      (await page.locator(".card-grid li").filter({ hasText: "Mock Thesis" }).count()) > 0;
+
     await page.getByRole("button", { name: "New blank project" }).click();
     await page.getByPlaceholder("My new paper").fill("Scratch Note");
     await page.getByRole("button", { name: "Create project" }).click();
@@ -899,7 +1188,7 @@ async function main() {
     // It opens straight into the project view with the seeded template files.
     await page.getByRole("checkbox", { name: "Scope main.tex" }).waitFor({ timeout: 15_000 });
     await page.getByRole("checkbox", { name: "Scope references.bib" }).waitFor({ timeout: 5_000 });
-    await aside().getByRole("button", { name: "Source", exact: true }).click();
+    await aside().getByRole("tab", { name: "Source", exact: true }).click();
     await page
       .getByText("Start writing here.")
       .filter({ visible: true })
@@ -973,6 +1262,12 @@ async function main() {
         backendPickerOk,
         backendFieldsSwapOk,
         backendSwitchOk,
+        askCardOk,
+        askRestoredOk,
+        askAnsweredOk,
+        askCollapsedOk,
+        askSkipEchoOk,
+        askSkippedCollapsedOk,
         compilingSeen,
         canvasesDuringCompile,
         compilingCleared,
@@ -992,6 +1287,11 @@ async function main() {
         unusedBadgeOk,
         editProofOk,
         refsBibRestored,
+        diffToggleOk,
+        renderedChipsOk,
+        renderedOnlyP3,
+        renderedBoxesOk,
+        renderedRestoredOk,
         localFilesOk,
         publishOk,
         publishedRow,
@@ -1004,6 +1304,11 @@ async function main() {
         cardGridOk,
         wordmarkNavOk,
         customDialogOk,
+        unofficialNoticeOk,
+        tablistOk,
+        reducedMotionOk,
+        keyboardResizeOk,
+        dialogEscapeOk,
       }),
     );
     if (!accountOk) throw new Error("Dashboard did not show the account email/host");
@@ -1080,6 +1385,24 @@ async function main() {
     if (!backendSwitchOk) {
       throw new Error("backend switching did not persist openai → claude → \"\" via GET /api/settings");
     }
+    if (!askCardOk) {
+      throw new Error("the AskUserQuestion card (options, header chip, Skip, Other…) did not render");
+    }
+    if (!askRestoredOk) {
+      throw new Error("reloading mid-question did not restore an actionable question card");
+    }
+    if (!askAnsweredOk) {
+      throw new Error("answering the question did not produce a reply echoing the chosen label");
+    }
+    if (!askCollapsedOk) {
+      throw new Error("the answered question card did not collapse to its muted summary");
+    }
+    if (!askSkipEchoOk) {
+      throw new Error("skipping the question did not deliver the declined tool result to the model");
+    }
+    if (!askSkippedCollapsedOk) {
+      throw new Error("the skipped question card did not collapse to its muted 'skipped' summary");
+    }
     if (canvases < 1) throw new Error("PDF viewer rendered no pages");
     if (downloads > 0) throw new Error("PDF triggered a browser download — must render inline");
     if (Math.abs(widthAfter - widthBefore) < 100) throw new Error("panel resize had no effect");
@@ -1099,6 +1422,17 @@ async function main() {
     if (!unusedBadgeOk) throw new Error("new entry does not show the unused badge");
     if (!editProofOk) throw new Error("editing the reference did not update the proof diff");
     if (!refsBibRestored) throw new Error("deleting the reference did not restore refs.bib to its pre-add state");
+    if (!diffToggleOk) throw new Error("Proof did not show the Text diff | Rendered diff toggle");
+    if (!renderedChipsOk) {
+      throw new Error("rendered diff did not list the changed page (no 'Changed page 3' chip)");
+    }
+    if (!renderedOnlyP3) {
+      throw new Error("rendered diff flagged unchanged pages (1 or 2) as changed");
+    }
+    if (!renderedBoxesOk) throw new Error("rendered diff drew no region boxes on the changed page");
+    if (!renderedRestoredOk) {
+      throw new Error("discarding after the rendered diff did not restore main.tex");
+    }
     if (!localFilesOk) throw new Error("local project files did not appear in the Source tab");
     if (!publishOk) throw new Error("mock Overleaf did not receive the published project files");
     if (publishedRow < 1) throw new Error("published project did not appear under the account");
@@ -1121,11 +1455,25 @@ async function main() {
     if (!customDialogOk) {
       throw new Error("remove-project did not show the styled in-app confirm dialog (or Cancel lost the card)");
     }
+    if (!unofficialNoticeOk) {
+      throw new Error(
+        "the unofficial-API notice did not show for overleaf.com (or stayed for the mock host)",
+      );
+    }
+    if (!tablistOk) {
+      throw new Error("pane strips are not tablists with aria-selected on the active tab");
+    }
+    if (!reducedMotionOk) throw new Error("built CSS lost its prefers-reduced-motion fallbacks");
+    if (!keyboardResizeOk) {
+      throw new Error("the pane separator is not keyboard-resizable (focus + ArrowLeft)");
+    }
+    if (!dialogEscapeOk) throw new Error("Escape did not cancel the confirm dialog");
     console.log(`✅ UI verify finished — screenshots in ${SHOTS}`);
   } finally {
     await browser?.close().catch(() => {});
     server.kill();
     await mock.close();
+    await askMock.close();
     rmSync(dataDir, { recursive: true, force: true });
   }
 }

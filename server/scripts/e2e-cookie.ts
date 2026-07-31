@@ -1,8 +1,8 @@
 /**
  * End-to-end test of Overleaf cookie-sync mode against a faithful mock CE
  * instance: paste-link connect → local mirror → simulated agent edits →
- * approve (upload/replace/delete replay) → collaborator sync-in → dirty-skip
- * → reject → expired-session handling.
+ * approve (in-place doc edit/upload/delete replay) → collaborator sync-in →
+ * dirty-skip → reject → expired-session handling.
  *
  * Requires the BlattBot server running on BLATTBOT_PORT (default 4560).
  */
@@ -79,13 +79,20 @@ async function main() {
   assert(diff.includes("refs.bib"), "diff shows the deletion");
 
   step("3. Approve → replay onto Overleaf");
-  const approve = await api<{ pushed: boolean; uploaded: string[]; deleted: string[]; warnings: string[] }>(
+  const approve = await api<{
+    pushed: boolean;
+    uploaded: string[];
+    updatedInPlace?: string[];
+    deleted: string[];
+    warnings: string[];
+  }>(
     `/api/projects/${project.id}/approve`,
     { method: "POST", body: JSON.stringify({ message: "cookie e2e" }) },
   );
   console.log("approve:", JSON.stringify(approve));
   assert(approve.pushed, "approve reported pushed");
-  assert(approve.uploaded.includes("main.tex"), "modified file uploaded (via duplicate → delete → re-upload)");
+  assert(approve.uploaded.includes("main.tex"), "modified file landed remotely");
+  assert((approve.updatedInPlace ?? []).includes("main.tex"), "modified doc was edited in place over OT");
   assert(approve.uploaded.includes("chapters/outro.tex"), "subfolder file uploaded with relativePath");
   assert(approve.deleted.includes("refs.bib"), "deleted file removed server-side");
   assert((approve.warnings ?? []).length === 0, `no warnings, got: ${JSON.stringify(approve.warnings)}`);
@@ -97,7 +104,8 @@ async function main() {
   assert(mock.files.has("chapters/outro.tex"), "mock server has the subfolder file");
   assert(!mock.files.has("refs.bib"), "mock server no longer has refs.bib");
   assert(mock.deletes.includes("refs.bib"), "delete endpoint was used for refs.bib");
-  assert(mock.deletes.includes("main.tex"), "duplicate-replace used delete-then-upload for main.tex");
+  assert(!mock.deletes.includes("main.tex"), "in-place edit never deleted the main.tex entity");
+  assert((mock.docVersions.get("main.tex") ?? 0) === 1, "in-place edit bumped the doc's OT version");
 
   step("4. Collaborator edit lands via sync-in");
   mock.files.set("main.tex", Buffer.from("\\documentclass{article}\n\\begin{document}\nCollaborator was here.\n\\end{document}\n"));

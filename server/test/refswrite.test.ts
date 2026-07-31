@@ -43,8 +43,8 @@ describe("manual reference editing (add/update/delete)", () => {
 
     it("auto-renames a colliding key", () => {
       const r = addRefEntry(dir, "@misc{lecun2015deep,\n  title = {Different}\n}");
-      expect(r.key).toBe("lecun2015deepa");
-      expect(read()).toContain("@misc{lecun2015deepa,");
+      expect(r.key).toBe("lecun2015deep-2");
+      expect(read()).toContain("@misc{lecun2015deep-2,");
     });
 
     it("creates references.bib when the project has no .bib file", () => {
@@ -80,9 +80,9 @@ describe("manual reference editing (add/update/delete)", () => {
 
     it("renames when the edited key differs, keeping it unique against others", () => {
       const r = updateRefEntry(dir, "lecun2015deep", "@article{vaswani2017attention,\n  title = {X}\n}");
-      expect(r.key).toBe("vaswani2017attentiona"); // collision with the other entry
-      expect(read()).toContain("@article{vaswani2017attentiona,");
-      expect(keys().sort()).toEqual(["vaswani2017attention", "vaswani2017attentiona"]);
+      expect(r.key).toBe("vaswani2017attention-2"); // collision with the other entry
+      expect(read()).toContain("@article{vaswani2017attention-2,");
+      expect(keys().sort()).toEqual(["vaswani2017attention", "vaswani2017attention-2"]);
     });
 
     it("allows a plain rename to a fresh key", () => {

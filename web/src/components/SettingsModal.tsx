@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Account, type AgentInfo, type Settings } from "../api";
+import { api, type Account, type AgentInfo, type ProjectStats, type Settings } from "../api";
 import AccountSignIn from "./AccountSignIn";
 import { useDialog } from "./Dialog";
 
@@ -7,6 +7,10 @@ interface Props {
   onClose: () => void;
   /** Called whenever accounts changed, so the app can refresh its lists. */
   onAccountsChanged: () => void;
+  /** The open project, when settings were opened from inside one — enables
+   *  the per-project transparency section (totals, AI-use disclosure). */
+  projectId?: string | null;
+  projectName?: string;
 }
 
 type Tab = "accounts" | "agent" | "transparency";
@@ -22,12 +26,15 @@ const MODEL_SUGGESTIONS = [
   "haiku",
 ];
 
-export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
+export default function SettingsModal({ onClose, onAccountsChanged, projectId, projectName }: Props) {
   const dialog = useDialog();
   const [tab, setTab] = useState<Tab>("accounts");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [info, setInfo] = useState<AgentInfo | null>(null);
+  // Per-project transparency: cumulative totals + the disclosure generator.
+  const [projStats, setProjStats] = useState<ProjectStats | null>(null);
+  const [disclosureBusy, setDisclosureBusy] = useState(false);
 
   // Agent form state
   const [backend, setBackend] = useState<"claude" | "openai">("claude");
@@ -69,12 +76,45 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
   }, []);
 
   useEffect(() => {
+    if (!projectId) return;
+    let stale = false;
+    api
+      .project(projectId)
+      .then((d) => {
+        if (!stale) setProjStats(d.stats ?? { totalCostUsd: 0, totalTurns: 0 });
+      })
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [projectId]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  /** POST the disclosure endpoint and show the text in a copyable dialog. */
+  async function generateDisclosure() {
+    if (!projectId) return;
+    setDisclosureBusy(true);
+    setError(null);
+    try {
+      const r = await api.disclosure(projectId);
+      await dialog.alert({
+        title: "AI-use disclosure",
+        body: <DisclosureBody text={r.text} />,
+        dismissLabel: "Close",
+      });
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setDisclosureBusy(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -539,6 +579,36 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
                 file; session cookies and API keys stay on this machine (mode 0600) and are never
                 sent to the UI.
               </p>
+              {projectId && (
+                <div className="mb-4 rounded-md border border-rule bg-ink p-3">
+                  <h3 className="mb-1 text-[11px] font-medium uppercase tracking-[0.14em] text-graphite">
+                    This project{projectName ? ` — ${projectName}` : ""}
+                  </h3>
+                  <dl className="mb-2 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 font-mono text-[11.5px]">
+                    <dt className="text-graphite">agent turns</dt>
+                    <dd className="text-paper-dim">{projStats ? projStats.totalTurns : "…"}</dd>
+                    <dt className="text-graphite">total cost</dt>
+                    <dd className="text-paper-dim">
+                      {projStats
+                        ? projStats.totalCostUsd > 0
+                          ? `$${projStats.totalCostUsd.toFixed(2)}`
+                          : "unknown (no cost reported)"
+                        : "…"}
+                    </dd>
+                  </dl>
+                  <button
+                    onClick={() => void generateDisclosure()}
+                    disabled={disclosureBusy}
+                    className="rounded border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                  >
+                    {disclosureBusy ? "Generating…" : "Generate AI-use disclosure"}
+                  </button>
+                  <p className="mt-1.5 text-[10.5px] leading-snug text-graphite/70">
+                    A factual paragraph for venue AI-use disclosure requirements, built from this
+                    project's real usage record.
+                  </p>
+                </div>
+              )}
               {info ? (
                 <>
                   <dl className="mb-4 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 font-mono text-[11.5px]">
@@ -637,6 +707,30 @@ export default function SettingsModal({ onClose, onAccountsChanged }: Props) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Dialog body of the generated disclosure: the text plus a clipboard button. */
+function DisclosureBody({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div>
+      <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded border border-rule bg-ink px-3 py-2 font-serif text-[13px] leading-relaxed text-paper-dim">
+        {text}
+      </pre>
+      <button
+        type="button"
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          });
+        }}
+        className="mt-2 rounded border border-rule px-2.5 py-1 text-[11.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+      >
+        {copied ? "Copied." : "Copy to clipboard"}
+      </button>
     </div>
   );
 }

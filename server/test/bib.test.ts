@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   ensureUniqueKey,
+  entryDoi,
   findDuplicate,
   findEntrySpan,
   normalizeKey,
   parseBib,
+  parseEntrySource,
   rewriteKey,
 } from "../src/bib.js";
 
@@ -92,9 +94,9 @@ describe("ensureUniqueKey", () => {
   it("returns the key when unused", () => {
     expect(ensureUniqueKey("smith2020", new Set())).toBe("smith2020");
   });
-  it("appends letters on collision", () => {
-    expect(ensureUniqueKey("smith2020", new Set(["smith2020"]))).toBe("smith2020a");
-    expect(ensureUniqueKey("smith2020", new Set(["smith2020", "smith2020a"]))).toBe("smith2020b");
+  it("appends -2, -3, … on collision", () => {
+    expect(ensureUniqueKey("smith2020", new Set(["smith2020"]))).toBe("smith2020-2");
+    expect(ensureUniqueKey("smith2020", new Set(["smith2020", "smith2020-2"]))).toBe("smith2020-3");
   });
 });
 
@@ -171,5 +173,50 @@ describe("findDuplicate", () => {
 
   it("returns undefined when nothing matches", () => {
     expect(findDuplicate(entries, "10.9999/nope", "A Totally Different Paper")).toBeUndefined();
+  });
+
+  it("strips a doi: prefix from the incoming DOI", () => {
+    expect(findDuplicate(entries, "doi:10.1038/nature14539")).toMatchObject({
+      key: "lecun2015deep",
+      reason: "doi",
+    });
+  });
+
+  it("matches a doi-shaped url field on an existing entry", () => {
+    const urlOnly = parseBib(
+      "@article{ho2020ddpm,\n  title = {Denoising Diffusion Probabilistic Models},\n  url = {https://doi.org/10.5555/3495724}\n}",
+    );
+    expect(findDuplicate(urlOnly, "10.5555/3495724")).toMatchObject({
+      key: "ho2020ddpm",
+      reason: "doi",
+    });
+  });
+});
+
+describe("entryDoi", () => {
+  it("normalizes the doi field and falls back to a doi.org url", () => {
+    expect(entryDoi({ doi: "https://doi.org/10.1038/NATURE14539" })).toBe("10.1038/nature14539");
+    expect(entryDoi({ doi: "doi:10.1038/nature14539" })).toBe("10.1038/nature14539");
+    expect(entryDoi({ url: "https://dx.doi.org/10.5555/X" })).toBe("10.5555/x");
+    expect(entryDoi({ url: "https://arxiv.org/abs/2106.06935" })).toBeUndefined();
+    expect(entryDoi({})).toBeUndefined();
+  });
+});
+
+describe("parseEntrySource", () => {
+  it("keeps braces inside field values and collapses whitespace", () => {
+    const raw = "@Article{key1,\n  title = {The {\\TeX}book\n    revisited},\n  year = 1984,\n  note = \"quoted\"\n}";
+    const entry = parseEntrySource(raw)!;
+    expect(entry.type).toBe("article");
+    expect(entry.key).toBe("key1");
+    expect(entry.fields).toEqual([
+      { name: "title", value: "The {\\TeX}book revisited" },
+      { name: "year", value: "1984" },
+      { name: "note", value: "quoted" },
+    ]);
+  });
+
+  it("returns null for non-entries", () => {
+    expect(parseEntrySource("not bibtex")).toBeNull();
   });
 });

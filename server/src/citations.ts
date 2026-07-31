@@ -6,6 +6,7 @@ import {
   findEntrySpan,
   normalizeKey,
   parseBib,
+  parseEntrySource,
   rewriteKey,
   type BibEntry,
 } from "./bib.js";
@@ -27,7 +28,7 @@ export interface PaperHit {
   source: string;
 }
 
-async function searchCrossref(queryText: string, limit: number): Promise<PaperHit[]> {
+export async function searchCrossref(queryText: string, limit: number): Promise<PaperHit[]> {
   const url =
     `https://api.crossref.org/works?query=${encodeURIComponent(queryText)}` +
     `&rows=${limit}` +
@@ -54,7 +55,7 @@ async function searchCrossref(queryText: string, limit: number): Promise<PaperHi
 }
 
 /** OpenAlex: free, fast, no key, and covers ML venues (incl. DOI-less NeurIPS/ICLR papers). */
-async function searchOpenAlex(queryText: string, limit: number): Promise<PaperHit[]> {
+export async function searchOpenAlex(queryText: string, limit: number): Promise<PaperHit[]> {
   const url =
     `https://api.openalex.org/works?search=${encodeURIComponent(queryText)}` +
     `&per-page=${limit}&mailto=${CROSSREF_MAILTO}`;
@@ -332,11 +333,150 @@ export async function fetchBibtexByRef(ref: string): Promise<string> {
   return fetchBibtex(trimmed);
 }
 
+// ---- Entry normalization ---------------------------------------------------
+
+/** Words needing brace protection: ≥2 capitals, or a capital after the first letter. */
+function needsBraces(word: string): boolean {
+  if ((word.match(/[A-Z]/g) ?? []).length >= 2) return true;
+  return /^.+[A-Z]/.test(word); // mid-word capital: arXiv, iPhone, …
+}
+
+/**
+ * Wrap TeX-hostile title words (acronyms, mixed-case names like GPT-4) in
+ * braces so BibTeX styles cannot lowercase them. Text already inside braces
+ * passes through verbatim — never double-braced.
+ */
+export function braceProtectTitle(title: string): string {
+  let out = "";
+  let i = 0;
+  while (i < title.length) {
+    if (title[i] === "{") {
+      // Copy the balanced braced group verbatim.
+      const start = i;
+      let depth = 0;
+      do {
+        if (title[i] === "{") depth++;
+        else if (title[i] === "}") depth--;
+        i++;
+      } while (i < title.length && depth > 0);
+      out += title.slice(start, i);
+      continue;
+    }
+    let j = i;
+    while (j < title.length && title[j] !== "{") j++;
+    out += title
+      .slice(i, j)
+      .split(/(\s+)/)
+      .map((tok) => {
+        const m = /^(\W*)([\w](?:[\w+-]*[\w])?)([^\w]*)$/.exec(tok);
+        if (!m || !needsBraces(m[2])) return tok;
+        return `${m[1]}{${m[2]}}${m[3]}`;
+      })
+      .join("");
+    i = j;
+  }
+  return out;
+}
+
+/** Required fields per entry type; names within a group are alternatives. */
+const REQUIRED_FIELDS: Record<string, string[][]> = {
+  article: [["journal"], ["year"]],
+  inproceedings: [["booktitle"], ["year"]],
+  misc: [["eprint", "url"], ["year"]],
+};
+
+export interface NormalizedEntryResult {
+  bibtex: string;
+  warnings: string[];
+}
+
+/**
+ * Normalize a fetched BibTeX entry: strip abstract/keywords, brace-protect
+ * the title, optionally add a DOI, and re-serialize consistently (2-space
+ * indent, one field per line). Missing required fields become warnings —
+ * the entry itself is never annotated.
+ */
+export function normalizeEntryBibtex(raw: string, opts: { key?: string; addDoi?: string } = {}): NormalizedEntryResult {
+  const parsed = parseEntrySource(raw);
+  if (!parsed) throw new Error("Fetched BibTeX could not be parsed.");
+  const fields = parsed.fields.filter((f) => f.name !== "abstract" && f.name !== "keywords");
+  for (const f of fields) if (f.name === "title") f.value = braceProtectTitle(f.value);
+  if (opts.addDoi && !fields.some((f) => f.name === "doi")) {
+    fields.push({ name: "doi", value: opts.addDoi });
+  }
+  const key = opts.key ?? parsed.key;
+  const lines = fields.map((f) => `  ${f.name} = {${f.value}}`);
+  const bibtex = `@${parsed.type}{${key},\n${lines.join(",\n")}\n}`;
+  const have = new Set(fields.map((f) => f.name));
+  const warnings: string[] = [];
+  for (const group of REQUIRED_FIELDS[parsed.type] ?? []) {
+    if (!group.some((name) => have.has(name))) warnings.push(`field ${group.join("/")} missing`);
+  }
+  return { bibtex, warnings };
+}
+
+// ---- arXiv → published-version upgrade -------------------------------------
+
+function normTitleWords(s: string): Set<string> {
+  return new Set(s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean));
+}
+
+/** Strict title agreement for the arXiv→published upgrade (stricter than search dedupe). */
+function titlesCloselyMatch(a: string, b: string): boolean {
+  const wa = normTitleWords(a);
+  const wb = normTitleWords(b);
+  if (wa.size === 0 || wb.size === 0) return false;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / Math.max(wa.size, wb.size) >= 0.9;
+}
+
+/** Crossref: the DOI of a published work whose title closely matches. Silent on failure. */
+async function crossrefDoiForTitle(title: string): Promise<string | undefined> {
+  try {
+    const url =
+      `https://api.crossref.org/works?query.title=${encodeURIComponent(title)}` +
+      `&rows=3&select=DOI,title&mailto=${CROSSREF_MAILTO}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return undefined;
+    const data: any = await res.json();
+    for (const it of data?.message?.items ?? []) {
+      const doi = it?.DOI ? String(it.DOI).toLowerCase() : "";
+      const hitTitle = it?.title?.[0];
+      // arXiv's own 10.48550 DOIs are the preprint itself, not a published version.
+      if (!doi || doi.startsWith("10.48550/") || !hitTitle) continue;
+      if (titlesCloselyMatch(String(hitTitle), title)) return doi;
+    }
+  } catch {
+    /* silent — the plain arXiv entry is fine */
+  }
+  return undefined;
+}
+
 export interface AddCitationResult {
   status: "added" | "duplicate";
   key: string;
   bibFile: string;
   entryPreview?: string;
+  /** On "duplicate": which field matched the existing entry. */
+  matched?: "doi" | "title";
+  /** On "added": normalization warnings (e.g. missing required fields). */
+  warnings?: string[];
+  /** On "added" from an arXiv ref: the published version's DOI now in the entry. */
+  upgradedDoi?: string;
+}
+
+/** The agent-facing tool-result text for an add_citation outcome (shared by both backends). */
+export function formatAddCitationResult(result: AddCitationResult): string {
+  if (result.status === "duplicate") {
+    const matched = result.matched === "title" ? "matched by title" : "matched by DOI";
+    return `Already in bibliography as \\cite{${result.key}} (${result.bibFile}; ${matched}). Do not add it again.`;
+  }
+  const lines = [`Added to ${result.bibFile} as \\cite{${result.key}}.`];
+  if (result.upgradedDoi) lines.push(`Published version found: ${result.upgradedDoi} — using it.`);
+  for (const w of result.warnings ?? []) lines.push(`Warning: ${w}.`);
+  if (result.entryPreview) lines.push(result.entryPreview);
+  return lines.join("\n");
 }
 
 /** Read every entry across all .bib files in a project. */
@@ -511,18 +651,25 @@ export function exportBibliography(projectPath: string): string {
 
 /**
  * Fetch BibTeX for a reference (DOI, dblp:<key>, or arxiv:<id>), dedupe
- * against the project's bibliography, normalize the key, and append to a .bib file.
+ * against the project's bibliography, normalize the key and the entry,
+ * and append to a .bib file.
  */
 export async function addCitation(projectPath: string, ref: string, bibFile?: string): Promise<AddCitationResult> {
   const raw = await fetchBibtexByRef(ref);
   const parsed = parseBib(raw)[0];
   if (!parsed) throw new Error("Fetched BibTeX could not be parsed.");
 
+  // An arXiv preprint may have a published version — Crossref knows its DOI.
+  let upgradedDoi: string | undefined;
+  if (/^arxiv:/i.test(ref.trim()) && !parsed.fields.doi && parsed.fields.title) {
+    upgradedDoi = await crossrefDoiForTitle(parsed.fields.title);
+  }
+
   const all = readAllBibEntries(projectPath);
-  const dup = findDuplicate(all.map((x) => x.entry), parsed.fields.doi ?? ref, parsed.fields.title);
+  const dup = findDuplicate(all.map((x) => x.entry), upgradedDoi ?? parsed.fields.doi ?? ref, parsed.fields.title);
   if (dup) {
     const file = all.find((x) => x.entry.key === dup.key)?.file ?? "";
-    return { status: "duplicate", key: dup.key, bibFile: file };
+    return { status: "duplicate", key: dup.key, bibFile: file, matched: dup.reason };
   }
 
   const target = bibFile ?? findBibFiles(projectPath)[0] ?? "references.bib";
@@ -531,7 +678,7 @@ export async function addCitation(projectPath: string, ref: string, bibFile?: st
   const existingKeys = new Set(all.map((x) => x.entry.key));
   const desired = normalizeKey(parsed.fields.author, parsed.fields.year, parsed.fields.title);
   const key = ensureUniqueKey(desired, existingKeys);
-  const entry = rewriteKey(raw, key);
+  const { bibtex: entry, warnings } = normalizeEntryBibtex(raw, { key, addDoi: upgradedDoi });
 
   if (existsSync(targetPath)) {
     const current = readFileSync(targetPath, "utf8");
@@ -539,5 +686,12 @@ export async function addCitation(projectPath: string, ref: string, bibFile?: st
   } else {
     writeFileSync(targetPath, entry + "\n");
   }
-  return { status: "added", key, bibFile: target, entryPreview: entry.split("\n").slice(0, 3).join("\n") };
+  return {
+    status: "added",
+    key,
+    bibFile: target,
+    entryPreview: entry.split("\n").slice(0, 3).join("\n"),
+    warnings: warnings.length ? warnings : undefined,
+    upgradedDoi,
+  };
 }

@@ -10,6 +10,14 @@ export interface Project {
   overleafBaseUrl?: string;
   overleafProjectId?: string;
   accountId?: string;
+  /** Cumulative agent cost/turn totals — updated at every turn end. */
+  stats?: ProjectStats;
+}
+
+/** Cumulative agent usage of a project (cost known only on the Claude backend). */
+export interface ProjectStats {
+  totalCostUsd: number;
+  totalTurns: number;
 }
 
 /** A signed-in Overleaf instance session (cookie stays on the server). */
@@ -48,12 +56,49 @@ export interface ChatMeta {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** Running cost/token totals (absent until the first completed turn). */
+  stats?: { costUsd: number; inputTokens: number; outputTokens: number; turns: number };
+}
+
+/** Deterministic aggregate behind the AI-use disclosure text. */
+export interface DisclosureFacts {
+  turns: number;
+  chats: number;
+  modes: string[];
+  models: string[];
+  filesTouched: number;
+  firstUse: string | null;
+  lastUse: string | null;
 }
 
 /** One persisted transcript event, as stored in the chat's .jsonl. */
 export interface ChatTranscriptEvent {
   type: string;
   [key: string]: unknown;
+}
+
+/** One choice of a mid-turn agent question. */
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+/** One question the agent asked mid-turn (AskUserQuestion / ask_user). */
+export interface AgentQuestion {
+  /** Full question text — also the key of the answers record. */
+  question: string;
+  /** Short chip label (≤12 chars). */
+  header: string;
+  options: QuestionOption[];
+  /** Multi-select answers are comma-joined into one string. */
+  multiSelect: boolean;
+}
+
+/** The turn's unanswered question, included in the project detail while pending. */
+export interface PendingQuestion {
+  questionId: string;
+  questions: AgentQuestion[];
+  createdAt: string;
 }
 
 export interface AgentInfo {
@@ -105,6 +150,8 @@ export interface FileContent {
 export interface ProjectDetail extends Project {
   files: string[];
   turnActive: boolean;
+  /** The turn's unanswered mid-turn question (null unless a turn is blocked on one). */
+  pendingQuestion?: PendingQuestion | null;
   hasChanges: boolean;
   lastCompile: CompileInfo | null;
 }
@@ -147,10 +194,27 @@ export interface RefEntry extends BibEntry {
   hasPdf: boolean;
 }
 
+export type AuditStatus = "verified" | "mismatch" | "unresolved" | "skipped";
+
+export interface AuditResult {
+  status: AuditStatus;
+  /** Human explanation — e.g. both titles on a mismatch. */
+  detail?: string;
+  /** Evidence link (doi.org / OpenAlex / arXiv) when available. */
+  url?: string;
+}
+
+/** The persisted outcome of the last citation audit (deterministic, no LLM). */
+export interface CitationAudit {
+  at: string;
+  results: Record<string, AuditResult>;
+}
+
 export interface RefsResponse {
   entries: RefEntry[];
   undefinedKeys: { key: string; files: string[] }[];
   unusedCount: number;
+  audit: CitationAudit | null;
 }
 
 export interface ImportBibResult {
@@ -169,6 +233,24 @@ export interface ProjectSettings {
   defaultMode?: string;
   /** The model a turn on THIS project runs: override → global, aliases resolved. */
   resolvedModel: string;
+}
+
+/** A file both Overleaf and the local tree changed since the last sync. */
+export interface SyncConflict {
+  path: string;
+  /** "deleted-remote" = the file was deleted on Overleaf but edited locally. */
+  kind: "modified" | "deleted-remote";
+}
+
+/** Approve was refused (HTTP 409): remote edits overlap the local ones. */
+export class ApproveConflictError extends Error {
+  constructor(
+    message: string,
+    public readonly conflicts: SyncConflict[],
+  ) {
+    super(message);
+    this.name = "ApproveConflictError";
+  }
 }
 
 let authReady: Promise<void> | null = null;
@@ -216,6 +298,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<{ ok: boolean; engine: string | null }>("/api/health"),
+  version: () => request<{ current: string; latest: string | null }>("/api/version"),
   projects: () => request<Project[]>("/api/projects"),
   project: (id: string) => request<ProjectDetail>(`/api/projects/${id}`),
   addProject: (body: {
@@ -319,12 +402,53 @@ export const api = {
       { method: "DELETE" },
     ),
   interrupt: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}/interrupt`, { method: "POST" }),
-  diff: (id: string) => request<{ diff: string }>(`/api/projects/${id}/diff`),
-  approve: (id: string, message: string) =>
-    request<{ ok: boolean; pushed: boolean }>(`/api/projects/${id}/approve`, {
+  answerQuestion: (id: string, questionId: string, answers: Record<string, string>) =>
+    request<{ ok: boolean }>(
+      `/api/projects/${id}/question/${encodeURIComponent(questionId)}`,
+      { method: "POST", body: JSON.stringify({ answers }) },
+    ),
+  dismissQuestion: (id: string, questionId: string) =>
+    request<{ ok: boolean }>(
+      `/api/projects/${id}/question/${encodeURIComponent(questionId)}/dismiss`,
+      { method: "POST" },
+    ),
+  disclosure: (id: string) =>
+    request<{ text: string; facts: DisclosureFacts }>(`/api/projects/${id}/disclosure`, {
       method: "POST",
-      body: JSON.stringify({ message }),
     }),
+  diff: (id: string) => request<{ diff: string }>(`/api/projects/${id}/diff`),
+  /**
+   * Approve & push. A 409 carrying `conflicts` (Overleaf changed files the
+   * local tree also edited) throws ApproveConflictError so the Proof view can
+   * offer per-file discard or a forced overwrite; other errors throw plainly.
+   */
+  approve: async (id: string, message: string, force = false) => {
+    await ensureAuth();
+    const res = await fetch(`/api/projects/${id}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, force }),
+    });
+    if (!res.ok) {
+      let body: any = null;
+      try {
+        body = await res.json();
+      } catch {
+        /* not json */
+      }
+      const reason = typeof body?.error === "string" ? body.error : `HTTP ${res.status}`;
+      if (res.status === 409 && Array.isArray(body?.conflicts)) {
+        throw new ApproveConflictError(reason, body.conflicts as SyncConflict[]);
+      }
+      throw new Error(reason);
+    }
+    return (await res.json()) as {
+      ok: boolean;
+      pushed: boolean;
+      warnings?: string[];
+      absorbedRemote?: string[];
+    };
+  },
   reject: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}/reject`, { method: "POST" }),
   rejectFile: (id: string, path: string) =>
     request<{ ok: boolean; diff: string }>(`/api/projects/${id}/reject-file`, {
@@ -336,10 +460,36 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ patch }),
     }),
-  sync: (id: string) => request<{ ok: boolean; output: string }>(`/api/projects/${id}/sync`, { method: "POST" }),
+  sync: (id: string) =>
+    request<{ ok: boolean; output: string; changed?: boolean; merged?: string[]; drift?: string[] }>(
+      `/api/projects/${id}/sync`,
+      { method: "POST" },
+    ),
   compile: (id: string) => request<CompileInfo>(`/api/projects/${id}/compile`, { method: "POST" }),
+  /**
+   * Compile the project's state as committed at a rev (only "HEAD" — the
+   * approval base — for now) into the server's per-sha cache. ok:true means
+   * the build is fetchable via /pdf?rev=<sha>; otherwise log carries the tail.
+   */
+  compileRev: (id: string, rev = "HEAD") =>
+    request<{ ok: boolean; sha: string; log?: string }>(`/api/projects/${id}/compile-rev`, {
+      method: "POST",
+      body: JSON.stringify({ rev }),
+    }),
+  /**
+   * "Verify on Overleaf": run Overleaf's own compiler on the project's current
+   * REMOTE state. pdf:true = the build is fetchable via /pdf?source=remote;
+   * otherwise logTail carries the tail of the remote compile log.
+   */
+  remoteCompile: (id: string) =>
+    request<{ status: string; pdf: boolean; logTail?: string }>(
+      `/api/projects/${id}/remote-compile`,
+      { method: "POST" },
+    ),
   bib: (id: string) => request<{ entries: BibEntry[] }>(`/api/projects/${id}/bib`),
   refs: (id: string) => request<RefsResponse>(`/api/projects/${id}/refs`),
+  auditRefs: (id: string) =>
+    request<CitationAudit>(`/api/projects/${id}/refs/audit`, { method: "POST" }),
   tldr: (id: string, key: string, force = false) =>
     request<{ summary: string; source: string }>(
       `/api/projects/${id}/refs/${encodeURIComponent(key)}/tldr`,
