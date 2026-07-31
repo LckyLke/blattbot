@@ -392,11 +392,25 @@ export class OverleafClient {
       throw new Error(`remote compile failed: HTTP ${res.status} ${JSON.stringify(data)}`);
     }
     const outputFiles: any[] = Array.isArray(data.outputFiles) ? data.outputFiles : [];
-    // Output urls are server-relative and already carry the build/compileGroup/
-    // clsiserverid query params — fetch them exactly as given.
+    // Output urls are server-relative, but overleaf.com omits the CLSI affinity
+    // params from them — its web client appends clsiserverid (and compileGroup)
+    // from the compile response, and without clsiserverid the load balancer
+    // routes the download to the wrong compile server (HTTP 404). CE responses
+    // carry no clsiServerId, so nothing is appended there.
+    const withClsiParams = (url: string): string => {
+      const extra: string[] = [];
+      if (typeof data.clsiServerId === "string" && data.clsiServerId && !/[?&]clsiserverid=/.test(url)) {
+        extra.push(`clsiserverid=${encodeURIComponent(data.clsiServerId)}`);
+      }
+      if (typeof data.compileGroup === "string" && data.compileGroup && !/[?&]compileGroup=/.test(url)) {
+        extra.push(`compileGroup=${encodeURIComponent(data.compileGroup)}`);
+      }
+      if (extra.length === 0) return url;
+      return url + (url.includes("?") ? "&" : "?") + extra.join("&");
+    };
     const urlOf = (path: string): string | undefined => {
       const u = outputFiles.find((f) => f?.path === path)?.url;
-      return typeof u === "string" ? u : undefined;
+      return typeof u === "string" ? withClsiParams(u) : undefined;
     };
     const pdfUrl = urlOf("output.pdf");
     if (data.status === "success" && pdfUrl) {

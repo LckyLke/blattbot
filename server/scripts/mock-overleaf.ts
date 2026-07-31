@@ -378,9 +378,11 @@ export async function startMockOverleaf(
       }
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer); // options ignored
+      // Like overleaf.com: the output urls do NOT carry clsiserverid — the
+      // client must append it from the response's clsiServerId itself.
       const out = (path: string, type: string) => ({
         path,
-        url: `/project/${proj.id}/output/${path}?compileGroup=standard&build=mockbuild123&clsiserverid=mock-clsi`,
+        url: `/project/${proj.id}/output/${path}?compileGroup=standard&build=mockbuild123`,
         build: "mockbuild123",
         type,
       });
@@ -388,7 +390,7 @@ export async function startMockOverleaf(
         200,
         JSON.stringify(
           state.failCompile
-            ? { status: "failure", outputFiles: [out("output.log", "log")] }
+            ? { status: "failure", outputFiles: [out("output.log", "log")], clsiServerId: "mock-clsi" }
             : {
                 status: "success",
                 outputFiles: [out("output.pdf", "pdf"), out("output.log", "log")],
@@ -399,8 +401,14 @@ export async function startMockOverleaf(
       return;
     }
 
-    // Compile outputs, at the urls the compile response handed out.
+    // Compile outputs, at the urls the compile response handed out. Like
+    // overleaf.com's load balancer, a download without the clsiserverid the
+    // compile response announced lands on the "wrong server": HTTP 404.
     if (proj && req.method === "GET" && sub.startsWith("/output/")) {
+      if (url.searchParams.get("clsiserverid") !== "mock-clsi") {
+        respond(404, JSON.stringify({ error: "not found (wrong clsi server)" }));
+        return;
+      }
       const file = sub.slice("/output/".length);
       if (file === "output.pdf" && !state.failCompile) {
         respond(200, MOCK_PDF, "application/pdf");

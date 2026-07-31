@@ -15,6 +15,7 @@ import {
   type SyncConflict,
 } from "./api";
 import { tabStripKeyDown } from "./a11y";
+import { parseDiff } from "./diff";
 import { DialogProvider, useDialog } from "./components/Dialog";
 import Sidebar from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
@@ -224,7 +225,19 @@ function itemsFromEvents(
   );
 }
 
+/**
+ * Root: the dialog provider mounts above the shell so the shell itself (not
+ * only its children) can confirm — e.g. leaving with unapproved changes.
+ */
 export default function App() {
+  return (
+    <DialogProvider>
+      <AppShell />
+    </DialogProvider>
+  );
+}
+
+function AppShell() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [view, setView] = useState<View>("dashboard");
@@ -788,15 +801,68 @@ export default function App() {
     });
   }, [detail, selectedId]);
 
-  const openProject = useCallback((id: string) => {
-    setSelectedId(id);
-    setView("project");
-  }, []);
+  const dialog = useDialog();
 
-  const goDashboard = useCallback(() => {
+  // Leaving the project view while the Proof holds unapproved changes: the
+  // edits stay saved on disk, but out of sight they are easy to forget — ask
+  // before the pending diff disappears from view. Resolves true on a clean
+  // diff without a dialog; approve/discard never navigate, so they are
+  // unaffected.
+  const confirmLeave = useCallback(
+    (confirmLabel: string): Promise<boolean> => {
+      if (!diff.trim()) return Promise.resolve(true);
+      const project = selectedRef.current;
+      const n = parseDiff(diff).length;
+      const dest =
+        project?.kind === "overleaf"
+          ? "reach Overleaf"
+          : project?.kind === "git"
+            ? "reach the git remote"
+            : "be committed";
+      return dialog.confirm({
+        title: "Unapproved changes",
+        body:
+          `${n === 1 ? "1 file has" : `${n} files have`} changes in ` +
+          `“${project?.name ?? "this project"}” that haven't been approved — they stay ` +
+          `saved locally but won't ${dest} until you approve them.`,
+        confirmLabel,
+        cancelLabel: "Stay",
+      });
+    },
+    [diff, dialog],
+  );
+
+  const openProject = useCallback(
+    async (id: string) => {
+      if (view === "project" && id !== selectedId && !(await confirmLeave("Switch project"))) {
+        return;
+      }
+      setSelectedId(id);
+      setView("project");
+    },
+    [view, selectedId, confirmLeave],
+  );
+
+  const goDashboard = useCallback(async () => {
+    if (view === "project" && !(await confirmLeave("Go to dashboard"))) return;
     setView("dashboard");
     void refreshProjects();
-  }, [refreshProjects]);
+  }, [view, confirmLeave, refreshProjects]);
+
+  // Browser-level guard on closing/reloading the tab: armed only while
+  // unapproved changes are pending or an agent turn is still running — a
+  // clean, idle state never nags.
+  const warnBeforeUnload = Boolean(diff.trim()) || busy;
+  useEffect(() => {
+    if (!warnBeforeUnload) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Chromium additionally requires returnValue to be set.
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [warnBeforeUnload]);
 
   const send = useCallback(
     async (message: string, mode: string) => {
@@ -1395,7 +1461,6 @@ export default function App() {
   };
 
   return (
-    <DialogProvider>
     <div className="flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center gap-4 border-b border-rule bg-ink-2 px-4">
         <button
@@ -1516,7 +1581,6 @@ export default function App() {
         />
       )}
     </div>
-    </DialogProvider>
   );
 }
 

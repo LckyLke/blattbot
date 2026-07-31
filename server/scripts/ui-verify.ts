@@ -648,6 +648,56 @@ async function main() {
       .waitFor({ timeout: 10_000 });
     await shot("25-proof-manual-edit");
 
+    // ---- Leave warning: with the manual tweak still unapproved, the tab-close
+    // guard is armed (a synthetic beforeunload comes back defaultPrevented)…
+    await page
+      .waitForFunction(
+        () => {
+          const ev = new Event("beforeunload", { cancelable: true });
+          window.dispatchEvent(ev);
+          return ev.defaultPrevented;
+        },
+        { timeout: 5_000 },
+      )
+      .catch(() => {});
+    const leaveUnloadArmedOk = await page.evaluate(() => {
+      const ev = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    });
+
+    // …and navigating away (the wordmark) opens the in-app confirm naming the
+    // project and the pending file count.
+    await page.getByRole("button", { name: "Back to the project dashboard" }).click();
+    const leaveDlg = page.getByRole("dialog", { name: "Unapproved changes" });
+    await leaveDlg.waitFor({ timeout: 5_000 });
+    const leaveWarnShownOk =
+      (await leaveDlg.getByText(/1 file has changes/).count()) > 0 &&
+      (await leaveDlg.getByText(/Mock Thesis/).count()) > 0 &&
+      (await leaveDlg.getByText(/reach Overleaf/).count()) > 0;
+    await shot("25a1-leave-warning");
+    // Stay: the dialog closes and the project view (with its proof) remains.
+    await leaveDlg.getByRole("button", { name: "Stay" }).click();
+    await leaveDlg.waitFor({ state: "detached", timeout: 5_000 });
+    const leaveWarnStayOk =
+      (await page.getByRole("button", { name: "Back to dashboard" }).count()) > 0 &&
+      (await page.getByText("manual tweak from ui-verify").filter({ visible: true }).count()) > 0;
+    // Leave: confirming navigates to the dashboard — nothing is lost, the
+    // pending diff is still on disk and shows again once the project reopens.
+    await page.getByRole("button", { name: "Back to the project dashboard" }).click();
+    await leaveDlg.waitFor({ timeout: 5_000 });
+    await leaveDlg.getByRole("button", { name: "Go to dashboard" }).click();
+    await page.locator(".card-grid").first().waitFor({ timeout: 10_000 });
+    const leaveWarnLeaveOk = (await page.locator(".card-grid").count()) > 0;
+    await shot("25a2-leave-confirmed");
+    await page.getByRole("button", { name: "Open Mock Thesis" }).click();
+    await page.getByRole("button", { name: "Back to dashboard" }).waitFor({ timeout: 10_000 });
+    await page
+      .getByText("manual tweak from ui-verify")
+      .filter({ visible: true })
+      .first()
+      .waitFor({ timeout: 10_000 });
+
     // ---- Partial rejection: two files pending → discard one file, then one hunk ----
     // Second manual edit via the file PUT endpoint (main.tex already carries the
     // editor tweak above), so the proof shows two independent files.
@@ -689,6 +739,23 @@ async function main() {
     await page.getByRole("button", { name: "Really discard this change in main.tex?" }).click();
     await page.getByText("No pending changes").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
     const rejectHunkContentOk = (await getFile("main.tex")) === MAIN_TEX;
+    // With the proof empty again (and no turn running) the tab-close guard
+    // must disarm — a clean state never nags.
+    await page
+      .waitForFunction(
+        () => {
+          const ev = new Event("beforeunload", { cancelable: true });
+          window.dispatchEvent(ev);
+          return !ev.defaultPrevented;
+        },
+        { timeout: 5_000 },
+      )
+      .catch(() => {});
+    const leaveUnloadClearedOk = await page.evaluate(() => {
+      const ev = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(ev);
+      return !ev.defaultPrevented;
+    });
     await shot("25d-proof-hunk-discarded");
 
     // ---- References: cited entry renders leaf-green with a line-numbered jump ----
@@ -1280,6 +1347,11 @@ async function main() {
         rejectFileUiOk,
         rejectFileContentOk,
         rejectHunkContentOk,
+        leaveWarnShownOk,
+        leaveWarnStayOk,
+        leaveWarnLeaveOk,
+        leaveUnloadArmedOk,
+        leaveUnloadClearedOk,
         refChipLeaf,
         citeJumpOk,
         addProofOk,
@@ -1415,6 +1487,19 @@ async function main() {
       throw new Error("reject-file did not revert the discarded file (or clobbered the other one)");
     }
     if (!rejectHunkContentOk) throw new Error("reject-hunk did not revert the hunk's change on disk");
+    if (!leaveWarnShownOk) {
+      throw new Error(
+        "leaving with unapproved changes did not open the confirm naming the project and file count",
+      );
+    }
+    if (!leaveWarnStayOk) throw new Error("'Stay' did not keep the project view with its pending proof");
+    if (!leaveWarnLeaveOk) throw new Error("'Go to dashboard' did not navigate to the dashboard");
+    if (!leaveUnloadArmedOk) {
+      throw new Error("beforeunload guard was not armed while unapproved changes were pending");
+    }
+    if (!leaveUnloadClearedOk) {
+      throw new Error("beforeunload guard did not disarm once the pending changes were gone");
+    }
     if (!refChipLeaf) throw new Error("cited entry's key chip is not leaf-green");
     if (!citeJumpOk) throw new Error("usage jump did not reveal the cite line in the Source tab");
     if (!addProofOk) throw new Error("adding a reference showed no sections/refs.bib diff in the Proof");

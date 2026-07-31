@@ -56,18 +56,29 @@ describe("compile-rev (approval-base build cache)", () => {
     dataDir = mkdtempSync(join(tmpdir(), "blattbot-compilerev-"));
     countFile = join(dataDir, "compile-count");
     mkdirSync(join(dataDir, "bin"), { recursive: true });
-    writeFileSync(
-      join(dataDir, "bin", "tectonic"),
-      [
-        "#!/bin/sh",
-        'out="$2"', // args: --outdir <out> --keep-logs --chatter minimal <main>
-        'for a in "$@"; do main="$a"; done',
-        '{ printf "%%PDF-1.4 fake\\n"; cat "$main"; } > "$out/$(basename "$main" .tex).pdf"',
-        `echo run >> "${countFile}"`,
-        "",
-      ].join("\n"),
-      { mode: 0o755 },
-    );
+    // The fake engine is a Node script so it runs on every OS. POSIX executes
+    // it directly via its shebang; Windows cannot execute extensionless
+    // scripts, so it gets a .cmd shim (which also exercises the real batch
+    // spawn path in compile.ts).
+    const stubJs = [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const args = process.argv.slice(2);", // --outdir <out> --keep-logs --chatter minimal <main>
+      "const out = args[args.indexOf('--outdir') + 1];",
+      "const main = args[args.length - 1];",
+      "const pdf = path.join(out, path.basename(main, '.tex') + '.pdf');",
+      "fs.writeFileSync(pdf, '%PDF-1.4 fake\\n' + fs.readFileSync(main, 'utf8'));",
+      `fs.appendFileSync(${JSON.stringify(countFile)}, 'run\\n');`,
+      "",
+    ].join("\n");
+    if (process.platform === "win32") {
+      writeFileSync(join(dataDir, "bin", "tectonic.js"), stubJs);
+      writeFileSync(join(dataDir, "bin", "tectonic.cmd"), `@node "%~dp0tectonic.js" %*\r\n`);
+    } else {
+      writeFileSync(join(dataDir, "bin", "tectonic"), `#!/usr/bin/env node\n${stubJs}`, {
+        mode: 0o755,
+      });
+    }
 
     // Boot the real server in-process; index.ts listens at import time, so
     // the env must be stubbed before the import.

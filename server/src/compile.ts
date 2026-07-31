@@ -41,18 +41,37 @@ export function resetEngineCache(): void {
 
 async function which(cmd: string): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileP("which", [cmd]);
-    return stdout.trim() || undefined;
+    // `which` does not exist on Windows; `where` may print several matches.
+    const finder = process.platform === "win32" ? "where" : "which";
+    const { stdout } = await execFileP(finder, [cmd]);
+    return stdout.split(/\r?\n/).find((l) => l.trim())?.trim() || undefined;
   } catch {
     return undefined;
   }
 }
 
 async function findEngine(name: string): Promise<{ name: string; path: string } | undefined> {
-  const local = join(BIN_DIR, name);
-  if (existsSync(local)) return { name, path: local };
+  // Windows executables carry an extension; a bare name is never spawnable.
+  const candidates =
+    process.platform === "win32" ? [`${name}.exe`, `${name}.cmd`, `${name}.bat`, name] : [name];
+  for (const file of candidates) {
+    const local = join(BIN_DIR, file);
+    if (existsSync(local)) return { name, path: local };
+  }
   const p = await which(name);
   return p ? { name, path: p } : undefined;
+}
+
+/**
+ * Node refuses to execFile .cmd/.bat without a shell (CVE-2024-27980). Batch
+ * engines (wrapper shims are common on Windows) go through cmd.exe with every
+ * arg double-quoted — execFile's shell mode joins args without any quoting.
+ */
+function spawnEngine(path: string, args: string[], opts: Parameters<typeof execFileP>[2]) {
+  const batch = process.platform === "win32" && /\.(cmd|bat)$/i.test(path);
+  if (!batch) return execFileP(path, args, opts);
+  const quote = (s: string) => `"${s.replace(/"/g, '""')}"`;
+  return execFileP(quote(path), args.map(quote), { ...opts, shell: true });
 }
 
 export async function detectEngine(preferred?: string): Promise<{ name: string; path: string } | null> {
@@ -134,7 +153,7 @@ async function compileTree(sourceDir: string, outDir: string, mainTex?: string):
   let combined = "";
   let ok = true;
   try {
-    const { stdout, stderr } = await execFileP(engine.path, args, {
+    const { stdout, stderr } = await spawnEngine(engine.path, args, {
       cwd: sourceDir,
       maxBuffer: 64 * 1024 * 1024,
       timeout: 180_000,
