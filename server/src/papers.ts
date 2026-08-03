@@ -18,6 +18,7 @@ import {
   searchPapers,
   type PaperHit,
 } from "./citations.js";
+import { claimContextAtLine, collectCiteUsage } from "./usage.js";
 import { entryDoi, type BibEntry } from "./bib.js";
 
 // ---- Persistent per-project store -----------------------------------------
@@ -95,9 +96,26 @@ export class RateLimitError extends Error {
   }
 }
 
+/**
+ * A personal S2 key's introductory limit is 1 request/second — easy to blow
+ * through by accident, since resolveS2Paper below can fire up to three
+ * lookups (DOI, arXiv, title) back-to-back for one entry when the earlier
+ * ones 404. Only paced when a key is configured: the unauthenticated tier's
+ * constraint is a large pool shared across the whole internet, not a
+ * per-caller quota, so self-throttling to 1/sec there would only slow things
+ * down without reflecting the real limit.
+ */
+const S2_MIN_INTERVAL_MS = 1100;
+let lastS2CallAt = 0;
+
 /** GET an S2 endpoint. Returns null on 404, throws RateLimitError on 429. */
 async function s2Get(path: string): Promise<any | null> {
   const key = loadSettings().s2ApiKey;
+  if (key) {
+    const wait = S2_MIN_INTERVAL_MS - (Date.now() - lastS2CallAt);
+    if (wait > 0) await sleep(wait);
+    lastS2CallAt = Date.now();
+  }
   const res = await fetch(`${S2_BASE}${path}`, {
     headers: key ? { "x-api-key": key } : {},
     signal: AbortSignal.timeout(20000),
@@ -1020,5 +1038,103 @@ export async function auditCitations(
   }
   const audit: CitationAudit = { at: new Date().toISOString(), results };
   writeAudit(projectId, audit);
+  return audit;
+}
+
+// ---- Project-wide claim verification ---------------------------------------
+// auditCitations above is deterministic and identity-only ("is this a real
+// reference"); this runs verify_citation_support's actual reading-and-judging
+// check across the whole bibliography in one sweep, so gaps surface without
+// the user hand-picking claims one entry at a time.
+
+/** One entry's result in a project-wide sweep — the claim it was checked against, and where that claim came from. */
+export interface ClaimAuditEntry extends CitationCheckResult {
+  claim: string;
+  file: string;
+  line: number;
+}
+
+/** The persisted outcome of the last "verify all" sweep for a project. */
+export interface ClaimAudit {
+  at: string;
+  results: Record<string, ClaimAuditEntry>;
+  /** Cite keys with no \cite site — there is no claim to check them against. */
+  skipped: string[];
+}
+
+const claimAuditPath = (projectId: string) => join(papersDir(), `${projectId}.claims.json`);
+
+export function readClaimAudit(projectId: string): ClaimAudit | null {
+  try {
+    return JSON.parse(readFileSync(claimAuditPath(projectId), "utf8")) as ClaimAudit;
+  } catch {
+    return null;
+  }
+}
+
+function writeClaimAudit(projectId: string, audit: ClaimAudit): void {
+  mkdirSync(papersDir(), { recursive: true });
+  writeFileSync(claimAuditPath(projectId), JSON.stringify(audit, null, 2));
+}
+
+/**
+ * Check every cited reference against the claim at its FIRST citation site.
+ * A reference cited several times for different claims is checked only once
+ * here — its earliest site — since checking every site would multiply the
+ * PDF-fetch/LLM cost per entry; use the per-entry manual check (RefsPanel's
+ * "verify" button, or the agent's verify_citation_support tool) for the rest.
+ * Entries never cited anywhere are skipped: there is no claim to check them
+ * against. Runs sequentially (each entry already costs a PDF fetch/extract
+ * plus an LLM call, so this can take a while for a large bibliography) with a
+ * small extra gap so a run of already-cached entries does not burst the LLM
+ * backend. The outcome is persisted so the report survives reloads.
+ */
+export async function verifyAllCitations(
+  projectId: string,
+  projectPath: string,
+  opts: { delayMs?: number; judge?: Judge } = {},
+): Promise<ClaimAudit> {
+  const delayMs = opts.delayMs ?? 300;
+  const all = readAllBibEntries(projectPath);
+  const usage = collectCiteUsage(projectPath);
+  const results: Record<string, ClaimAuditEntry> = {};
+  const skipped: string[] = [];
+  let checked = 0;
+  for (const { entry } of all) {
+    const first = usage[entry.key]?.[0];
+    const line = first?.lines[0];
+    if (!first || line === undefined) {
+      skipped.push(entry.key);
+      continue;
+    }
+    let claim: string;
+    try {
+      claim = claimContextAtLine(readFileSync(join(projectPath, first.file), "utf8"), line);
+    } catch {
+      skipped.push(entry.key);
+      continue;
+    }
+    if (!claim) {
+      skipped.push(entry.key);
+      continue;
+    }
+    if (checked > 0 && delayMs > 0) await sleep(delayMs);
+    checked++;
+    try {
+      const result = await verifyCitationSupport(projectId, projectPath, entry.key, claim, { judge: opts.judge });
+      results[entry.key] = { ...result, claim, file: first.file, line };
+    } catch (err: any) {
+      results[entry.key] = {
+        verdict: "unclear",
+        explanation: String(err?.message ?? err),
+        basis: "abstract",
+        claim,
+        file: first.file,
+        line,
+      };
+    }
+  }
+  const audit: ClaimAudit = { at: new Date().toISOString(), results, skipped };
+  writeClaimAudit(projectId, audit);
   return audit;
 }

@@ -36,7 +36,7 @@ const CITE_RE = new RegExp(
 );
 
 /** Drop LaTeX comments: everything from an unescaped % to the end of the line. */
-function stripComments(tex: string): string {
+export function stripComments(tex: string): string {
   return tex
     .split("\n")
     .map((line) => {
@@ -101,6 +101,30 @@ export function usageReport(bibKeys: string[], usage: CiteUsage): UsageReport {
     .filter(([key]) => !defined.has(key))
     .map(([key, sites]) => ({ key, files: sites.map((s) => s.file) }));
   return { unusedKeys, undefinedKeys };
+}
+
+/** A single unbroken claim can't blow out the verification prompt. */
+const MAX_CLAIM_CHARS = 1500;
+
+/**
+ * The paragraph containing a given 1-indexed line — LaTeX's own sentence
+ * unit, since it does not hard-wrap. Blank lines are the paragraph
+ * boundary; comments are stripped first so a commented-out \cite never
+ * pollutes the extracted text. Pure.
+ */
+export function claimContextAtLine(tex: string, line: number): string {
+  const lines = stripComments(tex).split("\n");
+  const idx = Math.max(0, Math.min(lines.length - 1, line - 1));
+  let start = idx;
+  while (start > 0 && lines[start - 1].trim() !== "") start--;
+  let end = idx;
+  while (end < lines.length - 1 && lines[end + 1].trim() !== "") end++;
+  const context = lines
+    .slice(start, end + 1)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return context.length > MAX_CLAIM_CHARS ? `${context.slice(0, MAX_CLAIM_CHARS)}…` : context;
 }
 
 /** Scan every .tex file in a project directory. */

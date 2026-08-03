@@ -260,6 +260,54 @@ describe("getTldr", () => {
   });
 });
 
+describe("s2Get rate-limit pacing", () => {
+  // resolveS2Paper tries DOI, then arXiv, then title — up to three sequential
+  // calls for one entry when the earlier ones 404. A personal key's
+  // introductory limit is 1 req/sec, so firing all three back-to-back can
+  // 429 even with a perfectly valid key unless they are paced apart.
+  const PACED_ENTRY = { fields: { doi: "10.1234/paced", eprint: "2106.06935", title: "Paced Paper" } };
+
+  it("paces sequential lookups ~1.1s apart once a personal key is set", async () => {
+    const { saveSettings } = await import("../src/settings.js");
+    saveSettings({ s2ApiKey: "test-key" });
+    const papers = await load();
+    const callTimes: number[] = [];
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          callTimes.push(Date.now());
+          return jsonRes(404, {});
+        }),
+      );
+      const result = papers.resolveS2Paper(PACED_ENTRY);
+      await vi.advanceTimersByTimeAsync(4000);
+      await result;
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(callTimes.length).toBe(3);
+    expect(callTimes[1] - callTimes[0]).toBeGreaterThanOrEqual(1100);
+    expect(callTimes[2] - callTimes[1]).toBeGreaterThanOrEqual(1100);
+  });
+
+  it("does not pace requests when no key is configured — the shared pool isn't a per-caller quota", async () => {
+    const papers = await load();
+    const callTimes: number[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        callTimes.push(Date.now());
+        return jsonRes(404, {});
+      }),
+    );
+    await papers.resolveS2Paper(PACED_ENTRY);
+    expect(callTimes.length).toBe(3);
+    expect(callTimes[2] - callTimes[0]).toBeLessThan(500);
+  });
+});
+
 describe("titlesSimilar", () => {
   it("tolerates punctuation and case but rejects different papers", async () => {
     const papers = await load();
@@ -540,5 +588,86 @@ describe("formatCitationCheckResult", () => {
     expect(out).toContain("SUPPORTED");
     expect(out).toContain("checked against the abstract only");
     expect(out).not.toContain("Do not leave this as-is");
+  });
+});
+
+describe("verifyAllCitations", () => {
+  function writeTex(name: string, content: string) {
+    writeFileSync(join(projectDir, name), content);
+  }
+
+  it("checks each cited entry against its first citation site and skips unused entries", async () => {
+    const papers = await load();
+    writeBib(
+      [
+        `@article{used1,`,
+        `  title = {Used One},`,
+        `  doi = {10.1/one},`,
+        `  abstract = {First entry abstract.}`,
+        `}`,
+        ``,
+        `@article{used2,`,
+        `  title = {Used Two},`,
+        `  doi = {10.1/two},`,
+        `  abstract = {Second entry abstract.}`,
+        `}`,
+        ``,
+        `@article{unused,`,
+        `  title = {Unused},`,
+        `  doi = {10.1/three},`,
+        `  abstract = {Never cited.}`,
+        `}`,
+      ].join("\n"),
+    );
+    writeTex(
+      "main.tex",
+      [
+        "Some intro text.",
+        "",
+        "Transformers scale well \\cite{used1} on long sequences.",
+        "",
+        "Later, the same idea reappears \\cite{used1} again.",
+        "",
+        "A second finding \\cite{used2} about something else.",
+      ].join("\n"),
+    );
+    // No PDF/S2/OpenAlex record for any of these — every entry falls back to
+    // its own bib abstract, which is already on hand with no further fetch.
+    vi.stubGlobal("fetch", vi.fn(async () => jsonRes(404, {})));
+    const judge = vi.fn(async (prompt: string) =>
+      prompt.includes("Second entry abstract") ? "NOT_SUPPORTED\nDoesn't match." : "SUPPORTED\nMatches.",
+    );
+
+    const audit = await papers.verifyAllCitations("proj1", projectDir, { judge, delayMs: 0 });
+
+    expect(Object.keys(audit.results).sort()).toEqual(["used1", "used2"]);
+    expect(audit.skipped).toEqual(["unused"]);
+    expect(audit.results["used1"]).toMatchObject({
+      verdict: "supported",
+      basis: "abstract",
+      file: "main.tex",
+      line: 3,
+      claim: "Transformers scale well \\cite{used1} on long sequences.",
+    });
+    expect(audit.results["used2"].verdict).toBe("not_supported");
+    // A second, later occurrence of used1 is not re-checked.
+    expect(judge).toHaveBeenCalledTimes(2);
+    // Persisted so the report survives a reload.
+    expect(papers.readClaimAudit("proj1")).toEqual(audit);
+  });
+
+  it("skips every entry when nothing in the project is cited", async () => {
+    const papers = await load();
+    writeBib(`@article{lonely, title = {Lonely}, doi = {10.1/lonely}}`);
+    const judge = vi.fn(async () => "SUPPORTED\nshould never run");
+    const audit = await papers.verifyAllCitations("proj1", projectDir, { judge, delayMs: 0 });
+    expect(audit.results).toEqual({});
+    expect(audit.skipped).toEqual(["lonely"]);
+    expect(judge).not.toHaveBeenCalled();
+  });
+
+  it("returns null from readClaimAudit before any sweep has run", async () => {
+    const papers = await load();
+    expect(papers.readClaimAudit("never-run")).toBeNull();
   });
 });

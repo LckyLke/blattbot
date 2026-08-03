@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scanCiteUsage, usageReport } from "../src/usage.js";
+import { claimContextAtLine, scanCiteUsage, usageReport } from "../src/usage.js";
 
 describe("scanCiteUsage", () => {
   it("counts plain \\cite commands per key per file", () => {
@@ -89,5 +89,39 @@ describe("usageReport", () => {
   it("is empty when everything lines up", () => {
     const usage = scanCiteUsage([{ file: "main.tex", content: "\\cite{a}" }]);
     expect(usageReport(["a"], usage)).toEqual({ unusedKeys: [], undefinedKeys: [] });
+  });
+});
+
+describe("claimContextAtLine", () => {
+  it("returns the whole paragraph (blank-line delimited), not just the one line", () => {
+    const tex = [
+      "Intro paragraph, unrelated.",
+      "",
+      "Transformers scale well to long sequences \\cite{vaswani2017}",
+      "and outperform recurrent models on translation.",
+      "",
+      "Trailing paragraph, also unrelated.",
+    ].join("\n");
+    expect(claimContextAtLine(tex, 3)).toBe(
+      "Transformers scale well to long sequences \\cite{vaswani2017} and outperform recurrent models on translation.",
+    );
+  });
+
+  it("strips comments before extracting", () => {
+    const tex = "Real claim \\cite{a} here. % a stray comment\nmore text";
+    expect(claimContextAtLine(tex, 1)).toBe("Real claim \\cite{a} here. more text");
+  });
+
+  it("clamps an out-of-range line instead of throwing", () => {
+    const tex = "only one line";
+    expect(claimContextAtLine(tex, 999)).toBe("only one line");
+    expect(claimContextAtLine(tex, 0)).toBe("only one line");
+  });
+
+  it("truncates a paragraph that runs past the cap", () => {
+    const huge = "x".repeat(2000);
+    const result = claimContextAtLine(huge, 1);
+    expect(result.length).toBe(1501); // 1500 chars + the ellipsis
+    expect(result.endsWith("…")).toBe(true);
   });
 });

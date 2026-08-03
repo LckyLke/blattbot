@@ -212,11 +212,36 @@ export interface CitationAudit {
   results: Record<string, AuditResult>;
 }
 
+export type CitationVerdict = "supported" | "partially_supported" | "not_supported" | "unclear";
+
+/** Result of checking one claim against a cited paper's own content — not persisted. */
+export interface CitationCheckResult {
+  verdict: CitationVerdict;
+  explanation: string;
+  basis: "full_text" | "abstract";
+}
+
+/** One entry's result in a project-wide "verify all" sweep. */
+export interface ClaimAuditEntry extends CitationCheckResult {
+  claim: string;
+  file: string;
+  line: number;
+}
+
+/** The persisted outcome of the last project-wide claim-verification sweep. */
+export interface ClaimAudit {
+  at: string;
+  results: Record<string, ClaimAuditEntry>;
+  /** Cite keys with no \cite site — nothing to check a claim against. */
+  skipped: string[];
+}
+
 export interface RefsResponse {
   entries: RefEntry[];
   undefinedKeys: { key: string; files: string[] }[];
   unusedCount: number;
   audit: CitationAudit | null;
+  claimAudit: ClaimAudit | null;
 }
 
 export interface ImportBibResult {
@@ -527,6 +552,9 @@ export const api = {
   refs: (id: string) => request<RefsResponse>(`/api/projects/${id}/refs`),
   auditRefs: (id: string) =>
     request<CitationAudit>(`/api/projects/${id}/refs/audit`, { method: "POST" }),
+  /** Project-wide claim check: every cited entry against its first \cite site. Slow — reads each paper. */
+  verifyAllRefs: (id: string) =>
+    request<ClaimAudit>(`/api/projects/${id}/refs/verify-all`, { method: "POST" }),
   acceptAudit: (id: string, key: string) =>
     request<{ key: string; audit: CitationAudit }>(`/api/projects/${id}/refs/audit/accept`, {
       method: "POST",
@@ -543,6 +571,12 @@ export const api = {
     }),
   refPdfUrl: (id: string, key: string) =>
     `/api/projects/${id}/refs/${encodeURIComponent(key)}/pdf`,
+  /** Manual, on-demand check of a specific claim against the paper's own content. */
+  verifyRef: (id: string, key: string, claim: string) =>
+    request<CitationCheckResult>(`/api/projects/${id}/refs/${encodeURIComponent(key)}/verify`, {
+      method: "POST",
+      body: JSON.stringify({ claim }),
+    }),
   addRef: (id: string, bibtex: string, bibFile?: string) =>
     request<{ ok: boolean; key: string; diff: string }>(`/api/projects/${id}/refs`, {
       method: "POST",

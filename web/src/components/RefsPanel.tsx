@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type ImportBibResult, type RefEntry, type RefsResponse } from "../api";
+import { api, type CitationCheckResult, type ImportBibResult, type RefEntry, type RefsResponse } from "../api";
 import { relTime } from "./Chat";
 
 interface Props {
@@ -68,6 +68,27 @@ const AUDIT_BADGE: Record<string, { glyph: string; cls: string; label: string }>
   mismatch: { glyph: "⚠", cls: "text-pencil hover:text-pencil", label: "Title mismatch" },
 };
 
+const VERDICT_LABEL: Record<CitationCheckResult["verdict"], string> = {
+  supported: "Supported",
+  partially_supported: "Partially supported",
+  not_supported: "Not supported",
+  unclear: "Unclear",
+};
+
+const VERDICT_COLOR: Record<CitationCheckResult["verdict"], string> = {
+  supported: "text-leaf",
+  partially_supported: "text-gold",
+  not_supported: "text-pencil",
+  unclear: "text-graphite",
+};
+
+const CLAIM_GLYPH: Record<CitationCheckResult["verdict"], string> = {
+  supported: "✓",
+  partially_supported: "±",
+  not_supported: "✗",
+  unclear: "?",
+};
+
 export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFixWithAgent }: Props) {
   const [data, setData] = useState<RefsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -77,6 +98,10 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
   const [showUndefined, setShowUndefined] = useState(false);
   const [tldrBusy, setTldrBusy] = useState<Set<string>>(new Set());
   const [pdfBusy, setPdfBusy] = useState<Set<string>>(new Set());
+  const [verifyOpenId, setVerifyOpenId] = useState<string | null>(null);
+  const [verifyClaim, setVerifyClaim] = useState("");
+  const [verifyBusy, setVerifyBusy] = useState<Set<string>>(new Set());
+  const [verifyResults, setVerifyResults] = useState<Record<string, CitationCheckResult & { claim: string }>>({});
   const [entryErrors, setEntryErrors] = useState<Record<string, string>>({});
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
@@ -95,15 +120,22 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [auditBusy, setAuditBusy] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
+  const [verifyAllBusy, setVerifyAllBusy] = useState(false);
+  const [verifyAllError, setVerifyAllError] = useState<string | null>(null);
+  const [claimOpen, setClaimOpen] = useState<Set<string>>(new Set());
+  const [gapsOnly, setGapsOnly] = useState(false);
 
   // Stale-async guard: the panel is not remounted on project switch (only the
   // projectId prop changes), so slow requests — the audit easily runs tens of
-  // seconds — must never splice their result into another project's view.
+  // seconds, verify-all reads every paper and can run much longer — must
+  // never splice their result into another project's view.
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
   useEffect(() => {
     setAuditBusy(false);
     setAuditError(null);
+    setVerifyAllBusy(false);
+    setVerifyAllError(null);
   }, [projectId]);
 
   const load = useCallback(() => {
@@ -130,6 +162,10 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
 
   const visible = entries.filter((e) => {
     if (unusedOnly && usageTotal(e) > 0) return false;
+    if (gapsOnly) {
+      const r = verifyResults[`${e.file}:${e.key}`] ?? data?.claimAudit?.results[e.key];
+      if (!r || r.verdict === "supported") return false;
+    }
     const q = filter.toLowerCase();
     if (!q) return true;
     return (
@@ -207,6 +243,34 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
       setEntryError(e, err.message);
     } finally {
       setPdfBusy((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  function toggleVerify(e: RefEntry) {
+    const id = entryId(e);
+    setVerifyOpenId((open) => (open === id ? null : id));
+    setVerifyClaim("");
+    setEntryError(e, null);
+  }
+
+  async function runVerify(e: RefEntry) {
+    const id = entryId(e);
+    const claim = verifyClaim.trim();
+    if (!claim) return;
+    setVerifyBusy((s) => new Set(s).add(id));
+    setEntryError(e, null);
+    try {
+      const r = await api.verifyRef(projectId, e.key, claim);
+      setVerifyResults((m) => ({ ...m, [id]: { ...r, claim } }));
+      setVerifyOpenId(null);
+    } catch (err: any) {
+      setEntryError(e, err.message);
+    } finally {
+      setVerifyBusy((s) => {
         const next = new Set(s);
         next.delete(id);
         return next;
@@ -320,6 +384,76 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
       .join(" · ");
   })();
 
+  /** Every cited entry checked against the text at its first \cite site — reads each paper, so it is slow. */
+  async function runVerifyAll() {
+    const startedFor = projectId;
+    setVerifyAllBusy(true);
+    setVerifyAllError(null);
+    try {
+      const claimAudit = await api.verifyAllRefs(projectId);
+      if (projectIdRef.current !== startedFor) return;
+      setData((d) => (d ? { ...d, claimAudit } : d));
+    } catch (err: any) {
+      if (projectIdRef.current !== startedFor) return;
+      setVerifyAllError(err.message);
+    } finally {
+      if (projectIdRef.current === startedFor) setVerifyAllBusy(false);
+    }
+  }
+
+  const claimAudit = data?.claimAudit ?? null;
+  const claimGapCount = claimAudit
+    ? Object.values(claimAudit.results).filter((r) => r.verdict !== "supported").length
+    : 0;
+  const claimSummary = (() => {
+    if (!claimAudit) return null;
+    const counts = { supported: 0, partially_supported: 0, not_supported: 0, unclear: 0 };
+    for (const r of Object.values(claimAudit.results)) counts[r.verdict] += 1;
+    return [
+      `${counts.supported} supported`,
+      counts.partially_supported > 0 ? `${counts.partially_supported} partial` : null,
+      counts.not_supported > 0 ? `${counts.not_supported} NOT SUPPORTED` : null,
+      counts.unclear > 0 ? `${counts.unclear} unclear` : null,
+      claimAudit.skipped.length > 0 ? `${claimAudit.skipped.length} skipped (never cited)` : null,
+      `checked ${relTime(claimAudit.at)}`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  })();
+
+  /** The result to show for an entry: a fresh manual check wins over a stale bulk-sweep one. */
+  function claimResultFor(
+    e: RefEntry,
+  ): (CitationCheckResult & { claim: string; file?: string; line?: number }) | undefined {
+    return verifyResults[entryId(e)] ?? claimAudit?.results[e.key];
+  }
+
+  /** Compact glyph next to the key — click to reveal the claim + explanation below. */
+  function claimBadge(e: RefEntry) {
+    const r = claimResultFor(e);
+    if (!r) return null;
+    const id = entryId(e);
+    const open = claimOpen.has(id) || Boolean(verifyResults[id]);
+    return (
+      <button
+        onClick={() =>
+          setClaimOpen((s) => {
+            const next = new Set(s);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+          })
+        }
+        title={`Claim check: ${VERDICT_LABEL[r.verdict]} — click to ${open ? "hide" : "show"} details`}
+        aria-label={`Claim check for ${e.key}: ${VERDICT_LABEL[r.verdict]}`}
+        aria-expanded={open}
+        className={`shrink-0 rounded border border-current/30 px-1 font-mono text-[11px] transition-colors ${VERDICT_COLOR[r.verdict]}`}
+      >
+        {CLAIM_GLYPH[r.verdict]}
+      </button>
+    );
+  }
+
   /** ✓ / ? / ⚠ next to the key, linking to the evidence when known. */
   function auditBadge(e: RefEntry) {
     const r = audit?.results[e.key];
@@ -428,6 +562,31 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
           >
             {auditBusy ? "auditing…" : "Audit citations"}
           </button>
+          <button
+            onClick={runVerifyAll}
+            disabled={verifyAllBusy || entries.length === 0}
+            title="Check every cited entry against the claim at its first \cite site — reads each paper; can take a while"
+            className={`${chipBase} disabled:opacity-50 ${
+              verifyAllBusy ? "border-gold text-gold" : "border-rule text-graphite hover:border-leaf hover:text-leaf"
+            }`}
+          >
+            {verifyAllBusy ? "verifying…" : "Verify all"}
+          </button>
+          {claimAudit && (
+            <button
+              onClick={() => setGapsOnly((v) => !v)}
+              title="Show only citations whose claim check found a gap"
+              className={`${chipBase} ${
+                gapsOnly
+                  ? "border-pencil bg-pencil/10 text-pencil"
+                  : claimGapCount > 0
+                    ? "border-pencil/50 text-pencil hover:border-pencil"
+                    : "border-rule text-graphite hover:border-leaf hover:text-leaf"
+              }`}
+            >
+              gaps {claimGapCount > 0 ? `(${claimGapCount})` : ""}
+            </button>
+          )}
           <span className="ml-auto" />
           <button
             onClick={() => {
@@ -467,6 +626,16 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
         {auditError && (
           <p role="status" className="mt-1.5 text-[11.5px] leading-snug text-pencil">
             {auditError}
+          </p>
+        )}
+        {claimSummary && (
+          <p role="status" className="mt-1 font-mono text-[10.5px] text-graphite">
+            {claimSummary}
+          </p>
+        )}
+        {verifyAllError && (
+          <p role="status" className="mt-1.5 text-[11.5px] leading-snug text-pencil">
+            {verifyAllError}
           </p>
         )}
 
@@ -567,6 +736,9 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
           const total = usageTotal(e);
           const busyTldr = tldrBusy.has(id);
           const busyPdf = pdfBusy.has(id);
+          const busyVerify = verifyBusy.has(id);
+          const claimResult = claimResultFor(e);
+          const claimIsOpen = claimOpen.has(id) || Boolean(verifyResults[id]);
           return (
             <li key={id} className="border-b border-rule/50 py-2.5 last:border-0">
               <div className="flex items-baseline gap-2">
@@ -584,6 +756,7 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
                   {copied === e.key ? "copied" : e.key}
                 </button>
                 {auditBadge(e)}
+                {claimBadge(e)}
                 {fixButton(e)}
                 {e.year && <span className="font-mono text-[11px] text-graphite">{e.year}</span>}
                 {total > 0 ? (
@@ -695,7 +868,71 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
                 >
                   edit
                 </button>
+                <button
+                  onClick={() => toggleVerify(e)}
+                  aria-label={`Check a claim against ${e.key}`}
+                  title="Check whether this paper's own content supports a specific claim — reads its cached PDF, or its abstract if none is cached"
+                  className={`font-mono text-[10.5px] transition-colors disabled:opacity-60 ${
+                    verifyOpenId === id ? "text-leaf" : "text-graphite hover:text-paper-dim"
+                  }`}
+                >
+                  verify
+                </button>
               </div>
+
+              {verifyOpenId === id && (
+                <div className="mt-1.5 rounded border border-rule bg-ink-2 p-2">
+                  <textarea
+                    value={verifyClaim}
+                    onChange={(ev) => setVerifyClaim(ev.target.value)}
+                    rows={2}
+                    placeholder="Paste the exact sentence this citation is attached to…"
+                    aria-label={`Claim to check against ${e.key}`}
+                    className="w-full resize-y rounded border border-rule bg-ink px-2 py-1.5 font-serif text-[12.5px] leading-relaxed text-paper placeholder:text-graphite/60"
+                  />
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <button
+                      onClick={() => runVerify(e)}
+                      disabled={busyVerify || !verifyClaim.trim()}
+                      className="rounded border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
+                    >
+                      {busyVerify ? "Reading paper…" : "Check"}
+                    </button>
+                    <button
+                      onClick={() => setVerifyOpenId(null)}
+                      className="rounded border border-rule px-3 py-1 text-[12px] text-paper-dim transition-colors hover:border-graphite"
+                    >
+                      Cancel
+                    </button>
+                    <span className="text-[11px] text-graphite">reads the cached PDF, or the abstract if none is cached</span>
+                  </div>
+                </div>
+              )}
+
+              {claimIsOpen && claimResult && (
+                <div className="mt-1.5 rounded border border-rule/60 bg-ink-2 px-2.5 py-2">
+                  <p className="font-mono text-[9.5px] uppercase tracking-wide text-graphite/70">
+                    Claim: <span className="normal-case text-graphite">"{claimResult.claim}"</span>
+                    {claimResult.file && claimResult.line !== undefined && (
+                      <button
+                        onClick={() => onJump(claimResult.file!, claimResult.line!)}
+                        className="ml-1.5 normal-case text-graphite underline decoration-dotted transition-colors hover:text-leaf"
+                      >
+                        jump to source
+                      </button>
+                    )}
+                  </p>
+                  <p className={`mt-1 font-mono text-[10.5px] font-medium ${VERDICT_COLOR[claimResult.verdict]}`}>
+                    {VERDICT_LABEL[claimResult.verdict]}
+                    <span className="ml-1.5 font-normal text-graphite/70">
+                      ({claimResult.basis === "full_text" ? "full paper" : "abstract only"})
+                    </span>
+                  </p>
+                  <p className="mt-1 font-serif text-[12.5px] leading-relaxed text-paper-dim">
+                    {claimResult.explanation}
+                  </p>
+                </div>
+              )}
 
               {editingId === id && (
                 <div className="mt-1.5 rounded border border-rule bg-ink-2 p-2">

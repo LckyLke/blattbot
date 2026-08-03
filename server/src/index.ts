@@ -41,8 +41,11 @@ import {
   getTldr,
   paperPdfPath,
   readAudit,
+  readClaimAudit,
   readPaperStore,
   sanitizeKeyForFile,
+  verifyAllCitations,
+  verifyCitationSupport,
 } from "./papers.js";
 import type { BibEntry } from "./bib.js";
 import {
@@ -1287,7 +1290,13 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/refs", async (req, reply)
       hasPdf: Boolean(paperPdfPath(project.id, entry.key, store)),
     };
   });
-  return { entries, undefinedKeys, unusedCount: unusedKeys.length, audit: readAudit(project.id) };
+  return {
+    entries,
+    undefinedKeys,
+    unusedCount: unusedKeys.length,
+    audit: readAudit(project.id),
+    claimAudit: readClaimAudit(project.id),
+  };
 });
 
 // Deterministic citation audit: every entry checked against Crossref/OpenAlex
@@ -1297,6 +1306,20 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/refs/audit", async (req,
   if (!project) return reply.code(404).send({ error: "unknown project" });
   try {
     return await auditCitations(project.id, projectDir(project.id));
+  } catch (err: any) {
+    return reply.code(422).send({ error: err?.message ?? String(err) });
+  }
+});
+
+// Project-wide claim check: every cited entry against the text at its first
+// \cite site (verify_citation_support run in bulk). Unlike the deterministic
+// audit above this reads each paper and calls an LLM, so it is slow for a
+// large bibliography — the result is persisted so the report survives reloads.
+app.post<{ Params: { id: string } }>("/api/projects/:id/refs/verify-all", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "unknown project" });
+  try {
+    return await verifyAllCitations(project.id, projectDir(project.id));
   } catch (err: any) {
     return reply.code(422).send({ error: err?.message ?? String(err) });
   }
@@ -1430,6 +1453,23 @@ app.get<{ Params: { id: string; key: string } }>("/api/projects/:id/refs/:key/pd
   reply.header("Content-Disposition", `inline; filename="${sanitizeKeyForFile(req.params.key)}.pdf"`);
   return reply.type("application/pdf").send(createReadStream(path));
 });
+
+/** Manual, on-demand version of the agent's verify_citation_support tool — not persisted. */
+app.post<{ Params: { id: string; key: string }; Body: { claim?: string } }>(
+  "/api/projects/:id/refs/:key/verify",
+  async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    const claim = req.body?.claim?.trim() ?? "";
+    if (!claim) return reply.code(400).send({ error: "claim is required" });
+    try {
+      return await verifyCitationSupport(project.id, projectDir(project.id), req.params.key, claim);
+    } catch (err: any) {
+      if (/^unknown citation key/.test(err?.message ?? "")) return reply.code(404).send({ error: err.message });
+      return reply.code(422).send({ error: err?.message ?? String(err) });
+    }
+  },
+);
 
 app.post<{ Params: { id: string }; Body: { bibtex?: string; bibFile?: string } }>(
   "/api/projects/:id/bib/import",
