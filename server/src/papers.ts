@@ -10,7 +10,14 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./config.js";
 import { loadSettings } from "./settings.js";
-import { readAllBibEntries, searchCrossref, searchOpenAlex, searchPapers, type PaperHit } from "./citations.js";
+import {
+  CROSSREF_MAILTO,
+  readAllBibEntries,
+  searchCrossref,
+  searchOpenAlex,
+  searchPapers,
+  type PaperHit,
+} from "./citations.js";
 import { entryDoi, type BibEntry } from "./bib.js";
 
 // ---- Persistent per-project store -----------------------------------------
@@ -155,6 +162,75 @@ export async function resolveS2Paper(entry: Pick<BibEntry, "fields">): Promise<S
   return null;
 }
 
+// ---- OpenAlex resolution ----------------------------------------------------
+// A second, keyless index (generous "polite pool" limits via the mailto
+// param below) for the open-access PDF URL and abstract — tried when S2 is
+// rate-limited, unreachable, or simply has no OA link for a work.
+
+const OPENALEX_BASE = "https://api.openalex.org/works";
+
+export interface OpenAlexPaper {
+  title?: string;
+  abstract?: string;
+  oaUrl?: string;
+}
+
+/** OpenAlex ships abstracts as a word → positions inverted index; rebuild the text. */
+function reconstructAbstract(index: unknown): string | undefined {
+  if (!index || typeof index !== "object") return undefined;
+  const words: string[] = [];
+  for (const [word, positions] of Object.entries(index as Record<string, number[]>)) {
+    for (const pos of positions) words[pos] = word;
+  }
+  const text = words.join(" ").trim();
+  return text.length > 0 ? text : undefined;
+}
+
+function openAlexPaperFromWork(work: any): OpenAlexPaper {
+  return {
+    title: work?.display_name ?? undefined,
+    abstract: reconstructAbstract(work?.abstract_inverted_index),
+    oaUrl: work?.open_access?.oa_url ?? work?.best_oa_location?.pdf_url ?? undefined,
+  };
+}
+
+/** GET an OpenAlex works endpoint. Returns null on 404 or any other non-OK status. */
+async function openAlexGet(path: string): Promise<any | null> {
+  const sep = path.includes("?") ? "&" : "?";
+  const res = await fetch(`${OPENALEX_BASE}${path}${sep}mailto=${CROSSREF_MAILTO}`, {
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+/**
+ * Resolve a bib entry on OpenAlex: DOI first, then a title search verified by
+ * title similarity. Never throws — a failed fallback must not be worse than
+ * having no fallback, so any error just means "no OpenAlex record".
+ */
+export async function resolveOpenAlexPaper(entry: Pick<BibEntry, "fields">): Promise<OpenAlexPaper | null> {
+  const doi = entry.fields.doi?.trim().replace(/^https?:\/\/(dx\.)?doi\.org\//, "");
+  if (doi) {
+    try {
+      const work = await openAlexGet(`/doi:${encodeURIComponent(doi)}`);
+      if (work) return openAlexPaperFromWork(work);
+    } catch {
+      /* fall through to a title search */
+    }
+  }
+  const title = entry.fields.title?.trim();
+  if (!title) return null;
+  try {
+    const data = await openAlexGet(`?search=${encodeURIComponent(title)}&per-page=1`);
+    const hit = data?.results?.[0];
+    if (hit?.display_name && titlesSimilar(String(hit.display_name), title)) return openAlexPaperFromWork(hit);
+  } catch {
+    /* no match */
+  }
+  return null;
+}
+
 // ---- TL;DR summaries -------------------------------------------------------
 
 function findEntry(projectPath: string, citeKey: string): BibEntry {
@@ -189,7 +265,8 @@ export interface TldrResult {
 
 /**
  * Get (or build) the persistent TL;DR for a cite key. Chain:
- * S2 tldr → agent condensation of the abstract → abstract verbatim.
+ * S2 tldr → agent condensation of the abstract (S2's, else OpenAlex's, else
+ * the bib entry's own) → abstract verbatim.
  * Stored summaries are permanent until regenerated with force.
  */
 export async function getTldr(
@@ -205,23 +282,33 @@ export async function getTldr(
 
   const entry = findEntry(projectPath, citeKey);
   let s2: S2Paper | null = null;
+  let rateLimited: RateLimitError | null = null;
   try {
     s2 = await resolveS2Paper(entry);
   } catch (err) {
-    if (err instanceof RateLimitError) throw err;
-    s2 = null; // S2 unreachable — the bib entry's own abstract may still work
+    // A rate-limited S2 must not block the OpenAlex/abstract fallbacks below.
+    if (err instanceof RateLimitError) rateLimited = err;
+    s2 = null;
   }
 
   let summary: string | undefined;
   let source: SummarySource | undefined;
+  let openAlex: OpenAlexPaper | null = null;
   const tldrText = s2?.tldr?.text?.trim();
   if (tldrText) {
     summary = tldrText;
     source = "s2-tldr";
   } else {
-    const abstract = (s2?.abstract ?? entry.fields.abstract)?.trim();
-    if (!abstract) throw new Error("no abstract available");
-    const title = s2?.title ?? entry.fields.title ?? citeKey;
+    let abstract: string | undefined = (s2?.abstract ?? entry.fields.abstract)?.trim();
+    let title = s2?.title ?? entry.fields.title ?? citeKey;
+    if (!abstract) {
+      // S2 gave nothing (rate-limited, unreachable, or no record) — OpenAlex
+      // is a second, keyless index with its own abstract before giving up.
+      openAlex = await resolveOpenAlexPaper(entry).catch(() => null);
+      abstract = openAlex?.abstract?.trim();
+      if (openAlex?.title) title = openAlex.title;
+    }
+    if (!abstract) throw rateLimited ?? new Error("no abstract available");
     try {
       summary = await (opts.summarize ?? agentSummarize)(title, abstract);
       source = "agent";
@@ -235,7 +322,7 @@ export async function getTldr(
     summary,
     source,
     s2Url: s2?.url ?? stored?.s2Url,
-    oaPdfUrl: oaPdfUrlFor(entry, s2) ?? stored?.oaPdfUrl,
+    oaPdfUrl: oaPdfUrlFor(entry, s2) ?? openAlex?.oaUrl ?? stored?.oaPdfUrl,
   });
   return { summary, source: source! };
 }
@@ -295,6 +382,15 @@ export async function ensurePaperPdf(projectId: string, projectPath: string, cit
   // The arXiv mirror is a dependable fallback even when S2 lists another URL.
   const arxivId = arxivIdFromEntry(entry);
   if (arxivId) candidates.add(`https://arxiv.org/pdf/${arxivId}`);
+  // Still nothing (S2 rate-limited/no OA link, and the paper isn't on arXiv
+  // either) — OpenAlex is a second, keyless index worth a try before giving up.
+  if (candidates.size === 0) {
+    const openAlex = await resolveOpenAlexPaper(entry).catch(() => null);
+    if (openAlex?.oaUrl) {
+      candidates.add(openAlex.oaUrl);
+      writePaperRecord(projectId, citeKey, { oaPdfUrl: openAlex.oaUrl });
+    }
+  }
   if (candidates.size === 0) throw rateLimited ?? new NoPdfError();
 
   for (const url of candidates) {
@@ -307,6 +403,153 @@ export async function ensurePaperPdf(projectId: string, projectPath: string, cit
     return join(pdfDir(projectId), filename);
   }
   throw new NoPdfError();
+}
+
+// ---- Claim verification -----------------------------------------------------
+// auditEntry/auditCitations below only confirm a reference is real (the
+// identifier resolves, the title matches) — they say nothing about whether
+// the paper actually supports whatever it is cited for. This reads the
+// paper's own content and asks.
+
+export type CitationVerdict = "supported" | "partially_supported" | "not_supported" | "unclear";
+
+export interface CitationCheckResult {
+  verdict: CitationVerdict;
+  explanation: string;
+  /** Whether the check read the full paper or fell back to its abstract. */
+  basis: "full_text" | "abstract";
+}
+
+/** Prompt + response are both capped — a 40-page paper must not blow the context. */
+const MAX_VERIFY_CHARS = 60_000;
+
+type Judge = (prompt: string) => Promise<string>;
+
+/** Default judge: a one-shot agent call (lazy import keeps tests light, mirrors agentSummarize). */
+async function defaultJudge(prompt: string): Promise<string> {
+  const { runOneShot } = await import("./agent.js");
+  return runOneShot(prompt);
+}
+
+/**
+ * Extract page text via pdfjs-dist's Node-safe "legacy" build. Lazily
+ * imported: it is a multi-MB module that only this verification path needs,
+ * not the citation pipeline every request touches.
+ */
+async function extractPdfText(path: string): Promise<string> {
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const data = new Uint8Array(readFileSync(path));
+  const doc = await getDocument({ data, useSystemFonts: true, isEvalSupported: false }).promise;
+  const pages: string[] = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    pages.push((content.items as any[]).map((item) => ("str" in item ? item.str : "")).join(" "));
+  }
+  await doc.destroy();
+  return pages.join("\n\n").replace(/[ \t]+/g, " ").trim();
+}
+
+/** The model's first line is the verdict word; substring match tolerates "Verdict: X" prefixes. */
+function parseVerdict(raw: string): { verdict: CitationVerdict; explanation: string } {
+  const lines = raw.trim().split("\n").filter((l) => l.trim());
+  const first = (lines[0] ?? "").toUpperCase().replace(/[^A-Z]+/g, "_").replace(/^_+|_+$/g, "");
+  const explanation = lines.slice(1).join(" ").trim() || raw.trim();
+  // NOT_SUPPORTED contains "SUPPORTED" as a substring, so check it (and the
+  // other multi-word verdicts) before the plain one.
+  if (first.includes("NOT_SUPPORTED") || first.includes("UNSUPPORTED") || first.includes("CONTRADICT")) {
+    return { verdict: "not_supported", explanation };
+  }
+  if (first.includes("PARTIAL")) return { verdict: "partially_supported", explanation };
+  if (first.includes("UNCLEAR") || first.includes("INSUFFICIENT")) return { verdict: "unclear", explanation };
+  if (first.includes("SUPPORTED")) return { verdict: "supported", explanation };
+  return { verdict: "unclear", explanation };
+}
+
+/**
+ * Check whether a cited paper's own content backs a specific claim attributed
+ * to it. Reads the cached open-access PDF when one can be fetched; falls back
+ * to the abstract (the bib entry's own, else S2's, else OpenAlex's) when no
+ * PDF is available. Never throws for a missing source — that case comes back
+ * as an "unclear" verdict explaining why nothing could be checked.
+ */
+export async function verifyCitationSupport(
+  projectId: string,
+  projectPath: string,
+  citeKey: string,
+  claim: string,
+  opts: { judge?: Judge } = {},
+): Promise<CitationCheckResult> {
+  const entry = findEntry(projectPath, citeKey);
+  const title = entry.fields.title?.trim() || citeKey;
+
+  let source: string | undefined;
+  let basis: CitationCheckResult["basis"] = "abstract";
+  try {
+    const pdfPath = await ensurePaperPdf(projectId, projectPath, citeKey);
+    const extracted = await extractPdfText(pdfPath);
+    if (extracted) {
+      source = extracted;
+      basis = "full_text";
+    }
+  } catch {
+    /* no open-access PDF, or extraction failed — fall back to the abstract */
+  }
+
+  if (!source) {
+    let abstract: string | undefined = entry.fields.abstract?.trim();
+    if (!abstract) abstract = (await resolveS2Paper(entry).catch(() => null))?.abstract?.trim();
+    if (!abstract) abstract = (await resolveOpenAlexPaper(entry).catch(() => null))?.abstract?.trim();
+    if (!abstract) {
+      return {
+        verdict: "unclear",
+        explanation:
+          "No open-access PDF or abstract could be found for this reference, so the claim could not be checked against its content.",
+        basis: "abstract",
+      };
+    }
+    source = abstract;
+    basis = "abstract";
+  }
+
+  const clipped =
+    source.length > MAX_VERIFY_CHARS ? `${source.slice(0, MAX_VERIFY_CHARS)}\n\n[…truncated…]` : source;
+  const sourceLabel =
+    basis === "full_text"
+      ? "the full text of the cited paper (extracted from its PDF)"
+      : "the abstract only — the full paper text was not available";
+
+  const prompt =
+    `You fact-check citations in a research paper. Below is ${sourceLabel} of a paper titled "${title}".\n\n` +
+    `${clipped}\n\n---\n\n` +
+    `Claim the citing paper attributes to this work: "${claim}"\n\n` +
+    "Does the text above actually support this claim? Reply with exactly one verdict word on the first line — " +
+    "SUPPORTED, PARTIALLY_SUPPORTED, NOT_SUPPORTED, or UNCLEAR (only if the text truly lacks enough information to " +
+    "judge) — then one or two sentences of justification on the next line, quoting or pointing to the specific part " +
+    "of the text that supports or contradicts the claim when you can.";
+  const raw = await (opts.judge ?? defaultJudge)(prompt);
+  return { ...parseVerdict(raw), basis };
+}
+
+/** Agent-facing report for a verify_citation_support call. */
+export function formatCitationCheckResult(citeKey: string, claim: string, result: CitationCheckResult): string {
+  const basisNote =
+    result.basis === "full_text"
+      ? "checked against the full paper text"
+      : "checked against the abstract only — the full paper was not available";
+  const lines = [
+    `Claim: "${claim}"`,
+    `\\cite{${citeKey}}: ${result.verdict.toUpperCase().replace(/_/g, " ")} (${basisNote})`,
+    result.explanation,
+  ];
+  if (result.verdict === "not_supported" || result.verdict === "unclear") {
+    lines.push(
+      "Do not leave this as-is: find a better source, adjust the claim to match what the paper actually says, or tell the user this citation could not be verified.",
+    );
+  } else if (result.verdict === "partially_supported") {
+    lines.push("Consider narrowing the claim so it matches exactly what the paper supports.");
+  }
+  return lines.join("\n");
 }
 
 // ---- Deterministic citation audit ------------------------------------------

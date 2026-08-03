@@ -702,4 +702,28 @@ describe("both backends expose the verification tools", () => {
     const { eventToolName } = await import("../src/backends/openai.js");
     expect(eventToolName("audit_citations")).toBe("mcp__blattbot__audit_citations");
   });
+
+  // verify_citation_support checks a paper's own content against a specific
+  // claim — a different question from audit_citations' "is this a real
+  // reference", but the same wiring properties: cataloged, read-only, stable
+  // event name. Its actual judgment logic (PDF/abstract fallback, verdict
+  // parsing) is covered in papers.test.ts via dependency-injected judges —
+  // it always ends in a one-shot LLM call, which isn't mockable through
+  // executeTool the way audit_citations' pure HTTP lookups are above.
+  it("advertises verify_citation_support in the shared tool catalog", async () => {
+    const { AGENT_TOOL_INFO } = await import("../src/backends/types.js");
+    const names = AGENT_TOOL_INFO.map((t) => t.name);
+    expect(names).toContain("verify_citation_support");
+  });
+
+  it("keeps verify_citation_support available in read-only modes (it only reads)", async () => {
+    const { toolDefinitions } = await import("../src/backends/openai.js");
+    const readOnly = toolDefinitions(true).map((t: any) => t.function.name);
+    expect(readOnly).toContain("verify_citation_support");
+  });
+
+  it("maps verify_citation_support to a stable event name for the chat UI", async () => {
+    const { eventToolName } = await import("../src/backends/openai.js");
+    expect(eventToolName("verify_citation_support")).toBe("mcp__blattbot__verify_citation_support");
+  });
 });

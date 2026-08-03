@@ -11,7 +11,13 @@ import { getProject, projectDir, updateProject } from "../config.js";
 import { attachmentBase64, chatUploadsDir, type TurnAttachment } from "../chatimages.js";
 import { compileProject } from "../compile.js";
 import { addCitation, formatAddCitationResult, readAllBibEntries, searchPapers } from "../citations.js";
-import { auditEntries, formatAuditReport, verifyEntry } from "../papers.js";
+import {
+  auditEntries,
+  formatAuditReport,
+  formatCitationCheckResult,
+  verifyCitationSupport,
+  verifyEntry,
+} from "../papers.js";
 import { checkToolPaths, projectReadRoots, secretDenyRules } from "./paths.js";
 import { loadSettings } from "../settings.js";
 import { askUserQuestions, validateQuestions, type AgentQuestion } from "../questions.js";
@@ -129,10 +135,27 @@ function buildMcpServer(projectId: string) {
     },
   );
 
+  const verifyCitationTool = tool(
+    "verify_citation_support",
+    AGENT_TOOL_INFO[5].description,
+    {
+      key: z.string().describe("The cite key (as used in \\cite{...}) of the reference to check"),
+      claim: z.string().describe("The specific statement or sentence the citation is attached to, verbatim"),
+    },
+    async ({ key, claim }) => {
+      try {
+        const result = await verifyCitationSupport(projectId, dir, key, claim);
+        return text(formatCitationCheckResult(key, claim, result));
+      } catch (err: any) {
+        return text(`verify_citation_support failed: ${err?.message ?? err}`);
+      }
+    },
+  );
+
   return createSdkMcpServer({
     name: "blattbot",
     version: "0.1.0",
-    tools: [compileTool, searchTool, addCitationTool, listCitationsTool, auditCitationsTool],
+    tools: [compileTool, searchTool, addCitationTool, listCitationsTool, auditCitationsTool, verifyCitationTool],
   });
 }
 

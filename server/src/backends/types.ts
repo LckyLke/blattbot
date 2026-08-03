@@ -119,6 +119,11 @@ export const AGENT_TOOL_INFO = [
     description:
       "Verify bibliography entries against Crossref and OpenAlex — no guessing, just record lookups. Pass keys to check specific entries (use this on any BibTeX you wrote by hand) or omit them to check the whole bibliography. Reports each entry as verified, mismatch (resolves to a different work), unresolved (no record found — possibly fabricated), or skipped (lookup unavailable).",
   },
+  {
+    name: "verify_citation_support",
+    description:
+      "Check whether a cited paper's own content actually supports a specific claim attributed to it — unlike audit_citations, which only confirms the reference is real, this reads the paper (its cached open-access PDF, or its abstract when no PDF is available) and judges the claim against it. Pass the cite key and the exact claim/sentence. Returns SUPPORTED, PARTIALLY_SUPPORTED, NOT_SUPPORTED, or UNCLEAR with an explanation.",
+  },
 ] as const;
 
 /**
@@ -213,6 +218,7 @@ Citations:
 - Use mcp__blattbot__list_citations to see what is already in the bibliography; prefer citing existing entries over adding near-duplicates.
 - add_citation verifies every new entry against Crossref/OpenAlex and reports the verdict. If an entry comes back unresolved or mismatched, fix it or tell the user — never leave an unverified reference unmentioned.
 - Use mcp__blattbot__audit_citations to re-check entries, and always run it on BibTeX you wrote by hand rather than through add_citation.
+- audit_citations and add_citation only confirm a reference is real — never that the paper says what you are citing it for. When you attach a citation to a specific factual, numeric, or methodological claim (not a generic "prior work has explored this" nod), use mcp__blattbot__verify_citation_support with the cite key and the exact sentence. On NOT_SUPPORTED or UNCLEAR, fix the claim, find a better citation, or tell the user — never leave a claim resting on a citation that does not actually back it.
 - Match the document's existing citation commands. Use plain \\cite{...} unless the preamble already loads natbib or biblatex — never introduce \\citep, \\citet, or \\autocite into a document whose preamble does not support them.
 
 Style:

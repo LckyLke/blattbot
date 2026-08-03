@@ -13,7 +13,7 @@ import {
 import { findBibFiles } from "./latex.js";
 import { loadSettings } from "./settings.js";
 
-const CROSSREF_MAILTO = "blattbot@localhost.invalid";
+export const CROSSREF_MAILTO = "blattbot@localhost.invalid";
 
 export interface PaperHit {
   /** What to pass to add_citation: a DOI, "dblp:<key>", or "arxiv:<id>". */

@@ -294,7 +294,17 @@ describe("openai backend turn loop", () => {
     expect(first.messages[1]).toEqual({ role: "user", content: "Change the greeting" });
     const toolNames = first.tools.map((t: any) => t.function.name);
     expect(toolNames).toEqual(
-      expect.arrayContaining(["list_files", "read_file", "write_file", "edit_file", "compile_latex", "search_papers", "add_citation", "list_citations"]),
+      expect.arrayContaining([
+        "list_files",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "compile_latex",
+        "search_papers",
+        "add_citation",
+        "list_citations",
+        "verify_citation_support",
+      ]),
     );
     // No Authorization header without a key.
     expect(mock.requests[0].auth).toBeUndefined();
@@ -342,6 +352,9 @@ describe("openai backend turn loop", () => {
       expect(toolNames).toContain("read_file");
       // ask_user only talks to the user — it stays available in read-only modes.
       expect(toolNames).toContain("ask_user");
+      // Read-only checks (audit, claim verification) stay available too.
+      expect(toolNames).toContain("audit_citations");
+      expect(toolNames).toContain("verify_citation_support");
 
       const result = events.find((e) => e.type === "tool_result")!;
       expect(result.isError).toBe(true);
@@ -856,6 +869,7 @@ describe("openai backend units", () => {
     expect(eventToolName("edit_file")).toBe("Edit");
     expect(eventToolName("add_citation")).toBe("mcp__blattbot__add_citation");
     expect(eventToolName("compile_latex")).toBe("mcp__blattbot__compile_latex");
+    expect(eventToolName("verify_citation_support")).toBe("mcp__blattbot__verify_citation_support");
     expect(eventToolName("something_else")).toBe("something_else");
   });
 
