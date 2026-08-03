@@ -52,6 +52,8 @@ import {
   MODEL_ALIASES,
   SYSTEM_APPEND,
   activeBackendId,
+  beginTurnPipeline,
+  endTurnPipeline,
   interruptTurn,
   isTurnActive,
   resolveBackendModel,
@@ -1625,59 +1627,68 @@ app.post<{
     };
 
     // Run the turn in the background; progress streams over the websocket.
+    // isTurnActive (the 409 guards, the polled turnActive field) must stay
+    // true for this whole pipeline, not just the backend call inside runTurn —
+    // otherwise a second /chat can start while the diff/recompile tail below
+    // is still touching the same working tree.
+    beginTurnPipeline(project.id);
     void (async () => {
-      broadcast(project.id, { type: "turn_start" });
-      // Pick up collaborator edits before the agent touches anything.
       try {
-        const result = await sync.syncIn(project);
-        if (result.detail) {
-          broadcast(project.id, { type: "sync_warning", message: result.detail });
-          persist({ type: "notice", tone: "warn", text: `Sync: ${result.detail}` });
+        broadcast(project.id, { type: "turn_start" });
+        // Pick up collaborator edits before the agent touches anything.
+        try {
+          const result = await sync.syncIn(project);
+          if (result.detail) {
+            broadcast(project.id, { type: "sync_warning", message: result.detail });
+            persist({ type: "notice", tone: "warn", text: `Sync: ${result.detail}` });
+          }
+        } catch (err: any) {
+          broadcast(project.id, { type: "sync_warning", message: err.message });
+          persist({ type: "notice", tone: "warn", text: `Sync: ${err.message}` });
         }
-      } catch (err: any) {
-        broadcast(project.id, { type: "sync_warning", message: err.message });
-        persist({ type: "notice", tone: "warn", text: `Sync: ${err.message}` });
-      }
-      // Wrap the sink so edits stream a live diff and per-edit file diffs mid-turn;
-      // persistence taps the enriched events (tool_result carries its fileDiff).
-      const turnSink = makeTurnEventSink(projectDir(project.id), (event) => {
-        broadcast(project.id, event);
-        if (!event.live) persist(event);
-      });
-      await runTurn(
-        project,
-        message,
-        turnSink.sink,
-        mode,
-        scope,
-        {
-          sessionId: activeChat.sessionId,
-          onSessionId: (sessionId) => {
-            try {
-              updateChat(project.id, chatId, { sessionId });
-            } catch {
-              /* best effort */
-            }
+        // Wrap the sink so edits stream a live diff and per-edit file diffs mid-turn;
+        // persistence taps the enriched events (tool_result carries its fileDiff).
+        const turnSink = makeTurnEventSink(projectDir(project.id), (event) => {
+          broadcast(project.id, event);
+          if (!event.live) persist(event);
+        });
+        await runTurn(
+          project,
+          message,
+          turnSink.sink,
+          mode,
+          scope,
+          {
+            sessionId: activeChat.sessionId,
+            onSessionId: (sessionId) => {
+              try {
+                updateChat(project.id, chatId, { sessionId });
+              } catch {
+                /* best effort */
+              }
+            },
           },
-        },
-        attachments,
-      );
-      // No live-diff timer may fire past this point; the broadcast below is authoritative.
-      await turnSink.close();
-      let turnDiff = "";
-      try {
-        turnDiff = await git.workingDiff(projectDir(project.id));
-        broadcast(project.id, { type: "diff", diff: turnDiff });
-      } catch (err: any) {
-        broadcast(project.id, { type: "error", message: `diff failed: ${err.message}` });
-      }
-      // Refresh the PDF preview — but only when the turn actually changed
-      // something; a purely conversational message needs no recompile.
-      if (turnDiff.trim()) {
-        broadcast(project.id, { type: "compile_start" });
-        const result = await compileProject(project.id, projectDir(project.id), project.mainTex);
-        lastCompile.set(project.id, result);
-        broadcast(project.id, { type: "compile", ...compilePublic(result) });
+          attachments,
+        );
+        // No live-diff timer may fire past this point; the broadcast below is authoritative.
+        await turnSink.close();
+        let turnDiff = "";
+        try {
+          turnDiff = await git.workingDiff(projectDir(project.id));
+          broadcast(project.id, { type: "diff", diff: turnDiff });
+        } catch (err: any) {
+          broadcast(project.id, { type: "error", message: `diff failed: ${err.message}` });
+        }
+        // Refresh the PDF preview — but only when the turn actually changed
+        // something; a purely conversational message needs no recompile.
+        if (turnDiff.trim()) {
+          broadcast(project.id, { type: "compile_start" });
+          const result = await compileProject(project.id, projectDir(project.id), project.mainTex);
+          lastCompile.set(project.id, result);
+          broadcast(project.id, { type: "compile", ...compilePublic(result) });
+        }
+      } finally {
+        endTurnPipeline(project.id);
       }
     })();
 

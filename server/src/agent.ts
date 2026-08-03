@@ -36,9 +36,23 @@ export { SYSTEM_APPEND, resolveModel };
 export type { AgentEvent } from "./backends/types.js";
 
 const activeControllers = new Map<string, AbortController>();
+// Covers the caller's post-runTurn work too (diff broadcast, recompile) — see
+// beginTurnPipeline. Without it, isTurnActive drops as soon as the backend
+// call returns, and a second /chat can start while that tail is still
+// running two git/tectonic processes against the same working tree at once.
+const pipelinesInFlight = new Set<string>();
 
 export function isTurnActive(projectId: string): boolean {
-  return activeControllers.has(projectId);
+  return activeControllers.has(projectId) || pipelinesInFlight.has(projectId);
+}
+
+/** Marks a project's whole turn pipeline (sync → runTurn → diff → recompile) busy. */
+export function beginTurnPipeline(projectId: string): void {
+  pipelinesInFlight.add(projectId);
+}
+
+export function endTurnPipeline(projectId: string): void {
+  pipelinesInFlight.delete(projectId);
 }
 
 export function interruptTurn(projectId: string): boolean {
