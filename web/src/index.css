@@ -673,3 +673,23 @@ button:hover > .tex-logo .down,
     background-color: color-mix(in srgb, var(--color-leaf) 18%, transparent);
   }
 }
+
+/* Reveal flash for a References row (a citation clicked in the PDF). Gold,
+   like the citation hotspot the click came from. */
+.ref-flash {
+  animation: ref-row-flash 1.8s ease-out forwards;
+}
+@keyframes ref-row-flash {
+  from {
+    background-color: color-mix(in srgb, var(--color-gold) 26%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ref-flash {
+    animation: none;
+    background-color: color-mix(in srgb, var(--color-gold) 16%, transparent);
+  }
+}

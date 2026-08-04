@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { GlobalWorkerOptions, TextLayer, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { tabStripKeyDown } from "../a11y";
-import type { CompileInfo } from "../api";
+import { api, type BibEntry, type CompileInfo } from "../api";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -25,6 +25,8 @@ interface Props {
   onQuoteToChat: (text: string) => void;
   /** A chat-blockquote passage to find and highlight; each new nonce runs once. */
   find?: { text: string; nonce: number } | null;
+  /** A citation was clicked: reveal that key in the References view. */
+  onOpenRef: (key: string) => void;
 }
 
 const ZOOM_MIN = 0.4;
@@ -32,6 +34,10 @@ const ZOOM_MAX = 4;
 const QUOTE_MAX = 600;
 /** How long the find-in-PDF highlight stays on the matched spans. */
 const FIND_FLASH_MS = 2000;
+/** Citation hover card: width, and the show/hide delays that keep it steady. */
+const CITE_CARD_W = 300;
+const CITE_SHOW_MS = 120;
+const CITE_HIDE_MS = 90;
 
 /**
  * Normalize text lifted from the PDF text layer: drop soft hyphens, expand
@@ -131,6 +137,45 @@ function bestRun(q: string[], src: string[]): { len: number; start: number } {
   return { len, start };
 }
 
+// ---- Citation hover: hyperref link annotations → BibTeX keys ---------------
+// Under hyperref every \cite renders as a Link annotation whose named
+// destination is "cite.<bibkey>" — one annotation per key, so each label in
+// "[3, 7]" resolves to its own entry. Documents built without hyperref carry
+// no such links; the hover is then simply inert.
+
+/** A citation link's box on a page, in CSS pixels from the page's top-left. */
+interface CiteSpot {
+  key: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The bib key behind a link destination. Named destinations carry it in the
+ * string; PDFs that inline the destination array instead are resolved through
+ * the document's name table (`named`).
+ */
+function citeKeyFromDest(dest: unknown, named: Map<string, string> | null): string | null {
+  const name = typeof dest === "string" ? dest : (named?.get(JSON.stringify(dest)) ?? null);
+  if (!name?.startsWith("cite.")) return null;
+  return name.slice(5) || null;
+}
+
+/** "Scarselli, Franco and Gori, Marco and …" → "Scarselli et al." */
+function formatAuthors(author: string | null): string | null {
+  const names = (author ?? "")
+    .split(/\s+and\s+/i)
+    .map((n) => n.replace(/[{}]/g, "").trim())
+    .filter(Boolean);
+  if (names.length === 0) return null;
+  const last = (n: string) => (n.includes(",") ? n.split(",")[0] : (n.split(/\s+/).pop() ?? n)).trim();
+  if (names.length === 1) return last(names[0]);
+  if (names.length === 2) return `${last(names[0])} & ${last(names[1])}`;
+  return `${last(names[0])} et al.`;
+}
+
 /** Where a find landed: a char range in page `page`'s joined item text. */
 interface FindHighlight {
   nonce: number;
@@ -151,6 +196,7 @@ export default function PdfPanel({
   chatVisible,
   onQuoteToChat,
   find,
+  onOpenRef,
 }: Props) {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -492,6 +538,104 @@ export default function PdfPanel({
     if (!chatVisible) setChip(null);
   }, [chatVisible]);
 
+  // ---- Citation hover ---------------------------------------------------
+  // The document's cite.* destination names, read once per document. Only PDFs
+  // that inline a link's destination array instead of naming it need this; for
+  // the usual named form the key is already in the annotation.
+  const [citeDests, setCiteDests] = useState<Map<string, string> | null>(null);
+  useEffect(() => {
+    setCiteDests(null);
+    if (!doc) return;
+    let cancelled = false;
+    void doc.getDestinations().then(
+      (all) => {
+        if (cancelled) return;
+        const named = new Map<string, string>();
+        try {
+          for (const [name, dest] of all) {
+            if (name.startsWith("cite.")) named.set(JSON.stringify(dest), name);
+          }
+        } catch {
+          /* a build that hands back a plain object — named destinations still work */
+        }
+        setCiteDests(named);
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [doc]);
+
+  // key → entry, fetched on the first hover and dropped whenever the project
+  // or the build changes (the agent may have added entries in between).
+  const [bibIndex, setBibIndex] = useState<Map<string, BibEntry> | null>(null);
+  const bibRequested = useRef(false);
+  useEffect(() => {
+    bibRequested.current = false;
+    setBibIndex(null);
+  }, [projectId, stamp]);
+
+  const [citeCard, setCiteCard] = useState<{ key: string; x: number; y: number; above: boolean } | null>(
+    null,
+  );
+  const citeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(citeTimer.current), []);
+  // A new document (recompile, build switch, other project) invalidates it.
+  useEffect(() => setCiteCard(null), [doc]);
+
+  /** A citation link entered (rect) or left (null) — both delayed, so that
+   *  crossing a citation in passing never flashes a card and moving between
+   *  two adjacent labels does not blink one out. */
+  const handleCiteHover = useCallback(
+    (key: string | null, rect: DOMRect | null) => {
+      clearTimeout(citeTimer.current);
+      if (!key || !rect) {
+        citeTimer.current = setTimeout(() => setCiteCard(null), CITE_HIDE_MS);
+        return;
+      }
+      if (!bibRequested.current) {
+        bibRequested.current = true;
+        void api.bib(projectId).then(
+          (r) => setBibIndex(new Map(r.entries.map((e) => [e.key, e]))),
+          () => {
+            // Transient failure — retry on the next hover rather than claim
+            // the key is missing from the bibliography.
+            bibRequested.current = false;
+          },
+        );
+      }
+      citeTimer.current = setTimeout(() => {
+        const w = overlayRef.current?.getBoundingClientRect();
+        if (!w) return;
+        // Under the label, unless that would run past the bottom of the pane.
+        // `y` is the label's own edge — the card's transparent bridge spans the
+        // gap from there, so the pointer never crosses dead space on its way in.
+        const above = rect.bottom - w.top + 180 > w.height;
+        setCiteCard({
+          key,
+          x: Math.min(Math.max(rect.left - w.left, 8), Math.max(8, w.width - CITE_CARD_W - 8)),
+          y: above ? rect.top - w.top : rect.bottom - w.top,
+          above,
+        });
+      }, CITE_SHOW_MS);
+    },
+    [projectId],
+  );
+
+  /** The pointer moved onto the card — keep it up so its text can be selected. */
+  const holdCiteCard = useCallback(() => clearTimeout(citeTimer.current), []);
+
+  /** Clicking a citation hands the key to the References view. */
+  const handleCiteClick = useCallback(
+    (key: string) => {
+      clearTimeout(citeTimer.current);
+      setCiteCard(null);
+      onOpenRef(key);
+    },
+    [onOpenRef],
+  );
+
   const pageWidth = Math.max(180, (containerWidth - 40) * zoom);
 
   return (
@@ -707,6 +851,15 @@ export default function PdfPanel({
           </button>
         )}
 
+        {citeCard && (
+          <CiteCard
+            card={citeCard}
+            index={bibIndex}
+            onHold={holdCiteCard}
+            onRelease={() => handleCiteHover(null, null)}
+          />
+        )}
+
         {toast && (
           <div
             role="status"
@@ -720,7 +873,13 @@ export default function PdfPanel({
           <div
             ref={scrollRef}
             data-pdf-scroll
-            onScroll={() => setChip(null)}
+            onScroll={() => {
+              setChip(null);
+              // The card is anchored to a viewport position — scrolling would
+              // leave it pointing at whatever moved under it.
+              clearTimeout(citeTimer.current);
+              setCiteCard(null);
+            }}
             className="h-full overflow-auto bg-[#3a3f4d] py-5"
           >
             {loadError && <p className="px-6 py-8 text-center text-sm text-pencil">{loadError}</p>}
@@ -733,6 +892,9 @@ export default function PdfPanel({
                   width={pageWidth}
                   onLocate={locate}
                   highlight={findHl && findHl.page === i + 1 ? findHl : undefined}
+                  citeDests={citeDests}
+                  onCiteHover={handleCiteHover}
+                  onCiteClick={handleCiteClick}
                 />
               ))}
           </div>
@@ -758,6 +920,9 @@ function PdfPage({
   width,
   onLocate,
   highlight,
+  citeDests,
+  onCiteHover,
+  onCiteClick,
 }: {
   doc: PDFDocumentProxy;
   pageNo: number;
@@ -765,6 +930,10 @@ function PdfPage({
   onLocate: (query: string) => void;
   /** A find hit on THIS page: scroll to and flash the matching spans. */
   highlight?: FindHighlight;
+  /** The document's cite.* destination names, for links that inline theirs. */
+  citeDests: Map<string, string> | null;
+  onCiteHover: (key: string | null, rect: DOMRect | null) => void;
+  onCiteClick: (key: string) => void;
 }) {
   const holderRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -773,6 +942,8 @@ function PdfPage({
   const itemsRef = useRef<{ divs: HTMLElement[]; strs: string[] }>({ divs: [], strs: [] });
   const [near, setNear] = useState(false);
   const [aspect, setAspect] = useState(Math.SQRT2); // height/width; A4 until measured
+  /** This page's citation links, laid out for the current width. */
+  const [citeSpots, setCiteSpots] = useState<CiteSpot[]>([]);
   /** A highlight waiting for the (lazily rendered) text layer. */
   const pendingHl = useRef<{ start: number; end: number } | null>(null);
 
@@ -891,6 +1062,46 @@ function PdfPage({
     };
   }, [doc, pageNo, near, width, applyHighlight]);
 
+  // Citation hotspots: this page's cite.* link annotations, converted from PDF
+  // user space to CSS pixels on the rendered page. Same laziness as the canvas,
+  // and laid out again whenever the width (zoom, resize) changes.
+  useEffect(() => {
+    if (!near || width <= 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const page = await doc.getPage(pageNo);
+        const annotations = await page.getAnnotations({ intent: "display" });
+        if (cancelled) return;
+        const base = page.getViewport({ scale: 1 });
+        const viewport = page.getViewport({ scale: width / base.width });
+        const spots: CiteSpot[] = [];
+        for (const a of annotations) {
+          if (a.subtype !== "Link" || !Array.isArray(a.rect)) continue;
+          const key = citeKeyFromDest(a.dest, citeDests);
+          if (!key) continue;
+          // Both corners through the viewport transform — that keeps rotated
+          // pages honest; normalize after, since the transform flips the y axis.
+          const [x1, y1] = viewport.convertToViewportPoint(a.rect[0], a.rect[1]);
+          const [x2, y2] = viewport.convertToViewportPoint(a.rect[2], a.rect[3]);
+          spots.push({
+            key,
+            left: Math.min(x1, x2),
+            top: Math.min(y1, y2),
+            width: Math.abs(x2 - x1),
+            height: Math.abs(y2 - y1),
+          });
+        }
+        if (!cancelled) setCiteSpots(spots);
+      } catch {
+        /* annotations unavailable or doc destroyed */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, pageNo, near, width, citeDests]);
+
   /**
    * Double-click on a word: build a query from the word plus ~10 surrounding
    * words of this page's text and ask the server for the source position.
@@ -938,6 +1149,122 @@ function PdfPage({
     >
       <canvas ref={canvasRef} className="block h-full w-full" />
       <div ref={textRef} onDoubleClick={handleDblClick} className="textLayer" />
+      {/* Above the text layer (z-index 1), so a citation label answers the
+          pointer before the selectable text underneath it does. */}
+      {citeSpots.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[2]">
+          {citeSpots.map((spot, i) => (
+            <button
+              key={`${spot.key}-${i}`}
+              type="button"
+              aria-label={`Citation ${spot.key} — open in References`}
+              style={{ left: spot.left, top: spot.top, width: spot.width, height: spot.height }}
+              onMouseEnter={(e) => onCiteHover(spot.key, e.currentTarget.getBoundingClientRect())}
+              onMouseLeave={() => onCiteHover(null, null)}
+              onFocus={(e) => onCiteHover(spot.key, e.currentTarget.getBoundingClientRect())}
+              onBlur={() => onCiteHover(null, null)}
+              onClick={() => onCiteClick(spot.key)}
+              className="pointer-events-auto absolute cursor-pointer rounded-[2px] transition-colors hover:bg-gold/25 focus-visible:bg-gold/25 focus-visible:outline-none"
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What a hovered citation actually cites: author, year and title from the
+ * project's .bib, keyed by the cite key the PDF link carries. `index` is null
+ * while the lookup table is still loading.
+ *
+ * The card is hoverable so its text can be selected and copied: the outer
+ * element carries a transparent band bridging the gap to the label (so the
+ * pointer never leaves both on the way over) and holds the card open, while
+ * leaving it hands back to the usual delayed dismiss.
+ */
+function CiteCard({
+  card,
+  index,
+  onHold,
+  onRelease,
+}: {
+  card: { key: string; x: number; y: number; above: boolean };
+  index: Map<string, BibEntry> | null;
+  onHold: () => void;
+  onRelease: () => void;
+}) {
+  const entry = index?.get(card.key);
+  const inside = useRef(false);
+  const pendingUp = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      if (pendingUp.current) window.removeEventListener("mouseup", pendingUp.current);
+    },
+    [],
+  );
+
+  const handleEnter = () => {
+    inside.current = true;
+    onHold();
+  };
+  /**
+   * Leaving dismisses the card — unless a selection drag is in flight, which
+   * routinely strays past the edge. That case waits for the button to come up
+   * and only then dismisses, and only if the pointer never came back.
+   */
+  const handleLeave = (e: React.MouseEvent) => {
+    inside.current = false;
+    if (e.buttons === 0) {
+      onRelease();
+      return;
+    }
+    const onUp = () => {
+      window.removeEventListener("mouseup", onUp);
+      pendingUp.current = null;
+      if (!inside.current) onRelease();
+    };
+    pendingUp.current = onUp;
+    window.addEventListener("mouseup", onUp);
+  };
+
+  return (
+    <div
+      style={{ left: card.x, top: card.y, width: CITE_CARD_W }}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
+      className={`absolute z-30 cursor-auto ${card.above ? "-translate-y-full pb-1.5" : "pt-1.5"}`}
+    >
+      <div
+        role="tooltip"
+        className="select-text rounded-md border border-rule bg-ink-2/97 px-3 py-2 shadow-[0_2px_14px_rgba(0,0,0,0.5)]"
+      >
+        {!index ? (
+          <p className="truncate font-mono text-[11px] text-graphite">{card.key}…</p>
+        ) : entry ? (
+          <>
+            <p className="text-[12px] text-paper">
+              {formatAuthors(entry.author) ?? "Unknown author"}
+              {entry.year && <span className="text-paper-dim"> · {entry.year}</span>}
+            </p>
+            {entry.title && (
+              <p className="mt-0.5 font-serif text-[12.5px] leading-snug text-paper-dim">{entry.title}</p>
+            )}
+            <p className="mt-1 break-all font-mono text-[10.5px] text-graphite">
+              {entry.key}
+              {entry.doi ? ` · ${entry.doi}` : ""}
+            </p>
+            <p className="mt-1.5 border-t border-rule/60 pt-1 text-[10.5px] text-graphite">
+              click to open in References
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="break-all font-mono text-[11.5px] text-paper-dim">{card.key}</p>
+            <p className="mt-0.5 text-[11px] text-graphite">no entry with this key in the project .bib</p>
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -14,7 +14,13 @@ interface Props {
   onDiff: (diff: string) => void;
   /** Hand a composed repair request to the agent (starts a turn in Edit mode). */
   onFixWithAgent: (prompt: string) => void;
+  /** Reveal request (a citation clicked in the PDF): drop the filters hiding
+   *  `key`, scroll its entry into view and flash it. Fires on nonce change. */
+  reveal?: { key: string; nonce: number };
 }
+
+/** How long a revealed entry stays flashed. */
+const REVEAL_FLASH_MS = 1800;
 
 /**
  * The repair request handed to the agent for a flagged entry. Everything the
@@ -89,7 +95,15 @@ const CLAIM_GLYPH: Record<CitationCheckResult["verdict"], string> = {
   unclear: "?",
 };
 
-export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFixWithAgent }: Props) {
+export default function RefsPanel({
+  projectId,
+  stamp,
+  busy,
+  onJump,
+  onDiff,
+  onFixWithAgent,
+  reveal,
+}: Props) {
   const [data, setData] = useState<RefsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -176,6 +190,59 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
   });
 
   const entryId = (e: RefEntry) => `${e.file}:${e.key}`;
+
+  // ---- Reveal a cite key (clicked in the PDF) ---------------------------
+  const [flashKey, setFlashKey] = useState<string | null>(null);
+  const rowRefs = useRef(new Map<string, HTMLLIElement>());
+  const pendingReveal = useRef<string | null>(null);
+  const revealNonce = useRef(0);
+  const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const flashFrame = useRef(0);
+  useEffect(
+    () => () => {
+      clearTimeout(flashTimer.current);
+      cancelAnimationFrame(flashFrame.current);
+    },
+    [],
+  );
+
+  // A request parks the key and drops the filters that could hide it. The
+  // mount-time nonce is honoured, not skipped: the click that sends one is
+  // usually what puts this panel on screen in the first place.
+  useEffect(() => {
+    if (!reveal || reveal.nonce === revealNonce.current) return;
+    revealNonce.current = reveal.nonce;
+    pendingReveal.current = reveal.key;
+    setFilter("");
+    setUnusedOnly(false);
+    setGapsOnly(false);
+  }, [reveal]);
+
+  // …and lands as soon as that row exists — the entries may still be loading,
+  // so this runs after every render until it finds its target.
+  useEffect(() => {
+    const key = pendingReveal.current;
+    if (!key) return;
+    const row = rowRefs.current.get(key);
+    if (!row) {
+      // Loaded, and no such entry: put the key in the search box so the empty
+      // list explains itself instead of looking like nothing happened.
+      if (data && !entries.some((e) => e.key === key)) {
+        pendingReveal.current = null;
+        setFilter(key);
+      }
+      return;
+    }
+    pendingReveal.current = null;
+    row.scrollIntoView({ block: "center" });
+    // Drop the class first and re-apply it next frame: re-setting the same one
+    // would not restart the animation when a citation is clicked twice over.
+    setFlashKey(null);
+    cancelAnimationFrame(flashFrame.current);
+    flashFrame.current = requestAnimationFrame(() => setFlashKey(key));
+    clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setFlashKey(null), REVEAL_FLASH_MS);
+  });
 
   function patchEntry(e: RefEntry, patch: Partial<RefEntry>) {
     setData((d) =>
@@ -740,7 +807,16 @@ export default function RefsPanel({ projectId, stamp, busy, onJump, onDiff, onFi
           const claimResult = claimResultFor(e);
           const claimIsOpen = claimOpen.has(id) || Boolean(verifyResults[id]);
           return (
-            <li key={id} className="border-b border-rule/50 py-2.5 last:border-0">
+            <li
+              key={id}
+              ref={(el) => {
+                if (el) rowRefs.current.set(e.key, el);
+                else rowRefs.current.delete(e.key);
+              }}
+              className={`border-b border-rule/50 py-2.5 last:border-0 ${
+                flashKey === e.key ? "ref-flash" : ""
+              }`}
+            >
               <div className="flex items-baseline gap-2">
                 <button
                   onClick={() => copy(e.key)}

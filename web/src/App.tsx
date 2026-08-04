@@ -284,6 +284,8 @@ function AppShell() {
   // A newer published BlattBot exists — the Sidebar footer links the release.
   const [update, setUpdate] = useState<{ current: string; latest: string } | null>(null);
   const [sourceReveal, setSourceReveal] = useState<{ file: string; line: number; nonce: number }>();
+  // A citation clicked in the PDF; each new nonce reveals it in the Refs tab.
+  const [refsReveal, setRefsReveal] = useState<{ key: string; nonce: number }>();
   // A PDF selection quoted into the chat composer; each new nonce injects once.
   const [chatQuote, setChatQuote] = useState<{ text: string; nonce: number; source?: string } | null>(
     null,
@@ -1252,6 +1254,17 @@ function AppShell() {
     setSourceReveal((r) => ({ file, line, nonce: (r?.nonce ?? 0) + 1 }));
   }, []);
 
+  // A citation clicked in the PDF → its entry in the References view. Unlike
+  // the source jump this keeps the PDF on screen: the click came from there,
+  // so the refs take whichever pane the PDF does not hold.
+  const revealInRefs = useCallback((key: string) => {
+    setPanes((prev) => {
+      if (prev.left === "refs" || prev.right === "refs") return prev;
+      return prev.left === "pdf" ? { ...prev, right: "refs" } : { ...prev, left: "refs" };
+    });
+    setRefsReveal((r) => ({ key, nonce: (r?.nonce ?? 0) + 1 }));
+  }, []);
+
   /**
    * Refs "fix" → an agent turn that repairs the flagged entry. Always Edit
    * mode (the .bib has to change) and always with chat visible, so the turn
@@ -1508,6 +1521,7 @@ function AppShell() {
             chatVisible={panes.left === "chat" || panes.right === "chat"}
             onQuoteToChat={quoteToChat}
             find={pdfFind}
+            onOpenRef={revealInRefs}
           />
         );
       case "refs":
@@ -1519,6 +1533,7 @@ function AppShell() {
             onJump={revealInSource}
             onDiff={handleManualSaveDiff}
             onFixWithAgent={fixWithAgent}
+            reveal={refsReveal}
           />
         );
     }
