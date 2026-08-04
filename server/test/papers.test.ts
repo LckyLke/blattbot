@@ -523,7 +523,7 @@ describe("verifyCitationSupport", () => {
       if (String(url).includes("/paper/search")) return jsonRes(200, { data: [] });
       return jsonRes(404, {});
     }));
-    const judge = vi.fn(async () => "PARTIALLY_SUPPORTED\nThe abstract hedges more than the claim does.");
+    const judge = vi.fn(async (prompt: string) => "PARTIALLY_SUPPORTED\nThe abstract hedges more than the claim does.");
     const result = await papers.verifyCitationSupport(
       "proj1",
       projectDir,
