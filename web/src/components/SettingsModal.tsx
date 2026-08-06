@@ -552,11 +552,15 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   onChange={(e) => setEngine(e.target.value as Settings["engine"])}
                   className="mt-1 block rounded border border-rule bg-ink px-2.5 py-2 text-xs text-paper"
                 >
-                  <option value="">auto (tectonic → latexmk → pdflatex)</option>
+                  <option value="">auto (latexmk → pdflatex → tectonic)</option>
                   <option value="tectonic">tectonic</option>
                   <option value="latexmk">latexmk</option>
                   <option value="pdflatex">pdflatex</option>
                 </select>
+                <span className="mt-1 block text-[11px] text-graphite/70">
+                  Whichever you pick is tried first; the others stay as fallbacks when it is not
+                  installed or cannot build the document.
+                </span>
               </label>
 
               <div className="mt-4 flex items-center gap-3">

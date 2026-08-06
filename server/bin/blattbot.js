@@ -124,7 +124,7 @@ if (!(await has("git"))) {
 // 2. TeX engine — offer to download tectonic into the data dir when missing.
 const manualTexHint = () => {
   console.log("  BlattBot still runs without a TeX engine, but compiles will fail until one is installed.");
-  console.log("  Install tectonic (https://tectonic-typesetting.github.io) or latexmk/pdflatex,");
+  console.log("  Install latexmk/pdflatex (a TeX distribution) or tectonic (https://tectonic-typesetting.github.io),");
   console.log(`  or drop a tectonic binary into ${short(BIN_DIR)}.`);
 };
 let engine = await detectEngine();

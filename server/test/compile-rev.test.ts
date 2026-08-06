@@ -49,7 +49,8 @@ describe("compile-rev (approval-base build cache)", () => {
   };
 
   beforeAll(async () => {
-    // Isolated data dir with a FAKE tectonic in BIN_DIR (checked before PATH),
+    // Isolated data dir with a FAKE tectonic in BIN_DIR, pinned as the engine
+    // (a real latexmk on PATH outranks tectonic otherwise — see ENGINE_PRIORITY),
     // so compiles are instant and hermetic: it writes a minimal %PDF that
     // EMBEDS the source it compiled (so tests can tell WHICH tree was built)
     // and bumps a counter file — the "did it actually recompile?" probe.
@@ -79,6 +80,7 @@ describe("compile-rev (approval-base build cache)", () => {
         mode: 0o755,
       });
     }
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify({ engine: "tectonic" }));
 
     // Boot the real server in-process; index.ts listens at import time, so
     // the env must be stubbed before the import.

@@ -17,7 +17,8 @@ export interface Settings {
   anthropicBaseUrl: string;
   /** Extra instructions appended to the agent's system prompt. */
   systemPromptAppend: string;
-  /** Preferred TeX engine. "" = auto-detect (tectonic → latexmk → pdflatex). */
+  /** Preferred TeX engine, tried first; the others stay as fallbacks.
+   *  "" = auto-detect in priority order (latexmk → pdflatex → tectonic). */
   engine: "" | "tectonic" | "latexmk" | "pdflatex";
   /** Optional Semantic Scholar API key — lifts the shared-pool rate limit on paper search. */
   s2ApiKey: string;

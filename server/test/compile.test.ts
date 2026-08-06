@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseErrors } from "../src/compile.js";
+import { ENGINE_PRIORITY, engineOrder, isEngineSpecificFailure, parseErrors } from "../src/compile.js";
 
 describe("parseErrors", () => {
   it("extracts classic TeX bang errors with context", () => {
@@ -30,5 +30,52 @@ describe("parseErrors", () => {
   it("caps the number of reported errors", () => {
     const log = Array.from({ length: 50 }, (_, i) => `! Error number ${i}.`).join("\n");
     expect(parseErrors(log).length).toBeLessThanOrEqual(20);
+  });
+});
+
+describe("engineOrder", () => {
+  it("prefers a full TeX distribution, tectonic last", () => {
+    expect(engineOrder()).toEqual(["latexmk", "pdflatex", "tectonic"]);
+  });
+
+  it("puts the configured engine first and keeps the rest as fallbacks", () => {
+    expect(engineOrder("tectonic")).toEqual(["tectonic", "latexmk", "pdflatex"]);
+    expect(engineOrder("pdflatex")).toEqual(["pdflatex", "latexmk", "tectonic"]);
+  });
+
+  it("never lists an engine twice", () => {
+    for (const name of ENGINE_PRIORITY) {
+      const order = engineOrder(name);
+      expect(new Set(order).size).toBe(order.length);
+      expect(order).toHaveLength(ENGINE_PRIORITY.length);
+    }
+  });
+});
+
+describe("isEngineSpecificFailure", () => {
+  it("retries when the engine died without reporting a TeX error", () => {
+    // tectonic on a biblatex project with no biber on PATH.
+    expect(isEngineSpecificFailure([])).toBe(true);
+  });
+
+  it("retries when the TeX tree is missing a package", () => {
+    expect(isEngineSpecificFailure(["! LaTeX Error: File `cleanthesis.sty' not found."])).toBe(true);
+  });
+
+  it("retries on an engine capability the document needs", () => {
+    expect(
+      isEngineSpecificFailure([
+        "! Package pdfx Error: CreationDate is not properly supported;\nl.1285 ...",
+      ]),
+    ).toBe(true);
+  });
+
+  it("stops at a broken document — every engine would fail the same way", () => {
+    expect(isEngineSpecificFailure(["! Undefined control sequence.\nl.42 \\badmacro"])).toBe(false);
+    expect(isEngineSpecificFailure(["! Missing $ inserted."])).toBe(false);
+  });
+
+  it("does not retry over a missing figure", () => {
+    expect(isEngineSpecificFailure(["! LaTeX Error: File `gfx/plot.png' not found."])).toBe(false);
   });
 });

@@ -32,11 +32,34 @@ export interface CompileResult {
   durationMs: number;
 }
 
-let cachedEngine: { name: string; path: string } | null | undefined;
+export interface Engine {
+  name: string;
+  path: string;
+}
 
-/** Forget the auto-detect result — call after installing an engine into BIN_DIR. */
+/**
+ * Engines to try, best first. latexmk drives a full local TeX distribution the
+ * way Overleaf does — pdfTeX primitives, biber/bibtex/makeindex reruns — so it
+ * reproduces an Overleaf build most faithfully; pdflatex is the same engine
+ * without the rerun logic. tectonic comes last: it is self-contained and
+ * fetches missing packages on demand (which rescues an incomplete TeX tree),
+ * but it is XeTeX-based, so pdfTeX-only packages break on it — pdfx, for one,
+ * cannot stamp /CreationDate without \pdfcreationdate and stops the build.
+ */
+export const ENGINE_PRIORITY = ["latexmk", "pdflatex", "tectonic"] as const;
+
+/** Engine names to try, best first: the configured one, then the rest as fallback. */
+export function engineOrder(preferred?: string): string[] {
+  const rest = ENGINE_PRIORITY.filter((name) => name !== preferred);
+  return preferred ? [preferred, ...rest] : [...rest];
+}
+
+/** name → where it lives (null = looked for, not installed here). */
+const engineCache = new Map<string, Engine | null>();
+
+/** Forget the auto-detect results — call after installing an engine into BIN_DIR. */
 export function resetEngineCache(): void {
-  cachedEngine = undefined;
+  engineCache.clear();
 }
 
 async function which(cmd: string): Promise<string | undefined> {
@@ -50,7 +73,7 @@ async function which(cmd: string): Promise<string | undefined> {
   }
 }
 
-async function findEngine(name: string): Promise<{ name: string; path: string } | undefined> {
+async function findEngine(name: string): Promise<Engine | undefined> {
   // Windows executables carry an extension; a bare name is never spawnable.
   const candidates =
     process.platform === "win32" ? [`${name}.exe`, `${name}.cmd`, `${name}.bat`, name] : [name];
@@ -74,22 +97,33 @@ function spawnEngine(path: string, args: string[], opts: Parameters<typeof execF
   return execFileP(quote(path), args.map(quote), { ...opts, shell: true });
 }
 
-export async function detectEngine(preferred?: string): Promise<{ name: string; path: string } | null> {
-  // An explicit preference (Settings → engine) bypasses the auto-detect cache.
-  if (preferred) {
-    const hit = await findEngine(preferred);
-    if (hit) return hit;
+async function resolveEngine(name: string): Promise<Engine | null> {
+  const cached = engineCache.get(name);
+  if (cached !== undefined) return cached;
+  const found = (await findEngine(name)) ?? null;
+  engineCache.set(name, found);
+  return found;
+}
+
+/**
+ * Every engine installed on this machine, best first — a compile walks down
+ * this list, so the ones after the first are the fallbacks. An explicit
+ * preference (Settings → engine) goes to the front rather than replacing the
+ * list: a preferred engine that is missing or cannot build the document still
+ * leaves the others to try.
+ */
+export async function detectEngines(preferred?: string): Promise<Engine[]> {
+  const found: Engine[] = [];
+  for (const name of engineOrder(preferred)) {
+    const hit = await resolveEngine(name);
+    if (hit) found.push(hit);
   }
-  if (cachedEngine !== undefined) return cachedEngine;
-  for (const name of ["tectonic", "latexmk", "pdflatex"]) {
-    const hit = await findEngine(name);
-    if (hit) {
-      cachedEngine = hit;
-      return cachedEngine;
-    }
-  }
-  cachedEngine = null;
-  return null;
+  return found;
+}
+
+/** The engine a compile would reach for first (health check, doctor, first run). */
+export async function detectEngine(preferred?: string): Promise<Engine | null> {
+  return (await detectEngines(preferred))[0] ?? null;
 }
 
 /** Pull error lines out of a LaTeX/tectonic log. */
@@ -120,40 +154,69 @@ export async function compileProject(projectId: string, projectPath: string, mai
   return compileTree(projectPath, buildDir(projectId), mainTex);
 }
 
-/** Run the detected engine on a source tree, PDF and logs into outDir. */
-async function compileTree(sourceDir: string, outDir: string, mainTex?: string): Promise<CompileResult> {
-  const started = Date.now();
-  const main = mainTex ?? findMainTex(sourceDir);
-  if (!main) {
-    return {
-      ok: false, engine: "none", mainTex: "", errors: ["No .tex file with \\documentclass found in the project."],
-      logTail: "", durationMs: Date.now() - started,
-    };
+function engineArgs(engine: string, outDir: string, main: string): string[] {
+  if (engine === "tectonic") return ["--outdir", outDir, "--keep-logs", "--chatter", "minimal", main];
+  if (engine === "latexmk") {
+    // -g: always reprocess. latexmk records a failed run in .fdb_latexmk and
+    // then refuses to redo anything until a source file changes ("Nothing to
+    // do ... gave an error in previous invocation"), which hides the actual
+    // TeX error from the second compile onwards. This build dir is scratch
+    // space for a verification compile, so a full run every time is the point.
+    return ["-g", "-pdf", "-interaction=nonstopmode", "-halt-on-error", `-outdir=${outDir}`, main];
   }
-  const engine = await detectEngine(loadSettings().engine || undefined);
-  if (!engine) {
-    return {
-      ok: false, engine: "none", mainTex: main,
-      errors: ["No LaTeX engine found. Install tectonic (recommended) or latexmk."],
-      logTail: "", durationMs: Date.now() - started,
-    };
-  }
+  return ["-interaction=nonstopmode", "-halt-on-error", `-output-directory=${outDir}`, main];
+}
 
-  mkdirSync(outDir, { recursive: true });
+/**
+ * Failures that mean "this engine could not build the document" rather than
+ * "the document is wrong": a style/class file the local TeX tree lacks (which
+ * tectonic downloads on demand), a helper binary the engine could not spawn,
+ * or a feature it does not have. Everything else — undefined control sequence,
+ * missing $, runaway argument — fails the same way on every engine, so trying
+ * the next one only costs the user another full compile.
+ */
+const ENGINE_SPECIFIC = [
+  /file\s+[`'"]?[^\s`'"]+\.(sty|cls|def|fd|cfg|enc)['"`]?\s+not found/i,
+  /(font|encoding)\b[^\n]*\b(not (found|loadable)|cannot be found)/i,
+  /shell[- ]?escape|write18/i,
+  /no such file or directory/i,
+  /not properly supported|requires (pdf|lua|xe)(la)?tex/i,
+];
 
-  let args: string[];
-  if (engine.name === "tectonic") {
-    args = ["--outdir", outDir, "--keep-logs", "--chatter", "minimal", main];
-  } else if (engine.name === "latexmk") {
-    args = ["-pdf", "-interaction=nonstopmode", "-halt-on-error", `-outdir=${outDir}`, main];
-  } else {
-    args = ["-interaction=nonstopmode", "-halt-on-error", `-output-directory=${outDir}`, main];
+/** Is a failed attempt worth repeating with the next engine? */
+export function isEngineSpecificFailure(errors: string[]): boolean {
+  // No TeX error at all means the engine itself fell over — crash, timeout, or
+  // a helper it could not run (tectonic exits "No such file or directory" when
+  // a biblatex project has no biber on PATH). Always worth another engine.
+  if (errors.length === 0) return true;
+  return errors.some((e) => ENGINE_SPECIFIC.some((re) => re.test(e)));
+}
+
+/** Where a compile of `main` leaves its PDF. */
+function pdfPathFor(outDir: string, main: string): string {
+  return join(outDir, main.split("/").pop()!.replace(/\.tex$/, ".pdf"));
+}
+
+/** One engine run over a source tree; the caller decides what a failure means. */
+async function runEngine(
+  engine: Engine,
+  sourceDir: string,
+  outDir: string,
+  main: string,
+): Promise<{ ok: boolean; retryable: boolean; errors: string[]; logTail: string }> {
+  // The previous attempt's log would otherwise be read back as this one's errors.
+  try {
+    for (const f of readdirSync(outDir).filter((f) => f.endsWith(".log"))) {
+      rmSync(join(outDir, f), { force: true });
+    }
+  } catch {
+    /* nothing to clean */
   }
 
   let combined = "";
   let ok = true;
   try {
-    const { stdout, stderr } = await spawnEngine(engine.path, args, {
+    const { stdout, stderr } = await spawnEngine(engine.path, engineArgs(engine.name, outDir, main), {
       cwd: sourceDir,
       maxBuffer: 64 * 1024 * 1024,
       timeout: 180_000,
@@ -173,21 +236,84 @@ async function compileTree(sourceDir: string, outDir: string, mainTex?: string):
     /* no log */
   }
 
-  const pdfName = main.split("/").pop()!.replace(/\.tex$/, ".pdf");
-  const pdfPath = join(outDir, pdfName);
-  const pdfExists = existsSync(pdfPath);
-  const errors = ok && pdfExists ? [] : parseErrors(combined);
-  if (!ok && errors.length === 0) errors.push("Compilation failed — see log tail for details.");
+  const built = ok && existsSync(pdfPathFor(outDir, main));
+  const errors = built ? [] : parseErrors(combined);
+  // Judge the retry on what TeX itself said: the placeholder below is added
+  // for the user's benefit and would otherwise read like a document error.
+  const retryable = !built && isEngineSpecificFailure(errors);
+  if (!built && errors.length === 0) {
+    errors.push(`Compilation failed (${engine.name}) — see log tail for details.`);
+  }
 
+  return { ok: built, retryable, errors, logTail: combined.split("\n").slice(-60).join("\n") };
+}
+
+/**
+ * Run the installed engines on a source tree, best first, PDF and logs into
+ * outDir. A failure that looks engine-specific (see isEngineSpecificFailure)
+ * drops through to the next engine; a broken document stops at the first one.
+ */
+async function compileTree(sourceDir: string, outDir: string, mainTex?: string): Promise<CompileResult> {
+  const started = Date.now();
+  const main = mainTex ?? findMainTex(sourceDir);
+  if (!main) {
+    return {
+      ok: false, engine: "none", mainTex: "", errors: ["No .tex file with \\documentclass found in the project."],
+      logTail: "", durationMs: Date.now() - started,
+    };
+  }
+  const engines = await detectEngines(loadSettings().engine || undefined);
+  if (engines.length === 0) {
+    return {
+      ok: false, engine: "none", mainTex: main,
+      errors: ["No LaTeX engine found. Install a TeX distribution (latexmk/pdflatex) or tectonic."],
+      logTail: "", durationMs: Date.now() - started,
+    };
+  }
+
+  mkdirSync(outDir, { recursive: true });
+
+  const tried: { engine: string; errors: string[]; logTail: string }[] = [];
+  for (const engine of engines) {
+    const attempt = await runEngine(engine, sourceDir, outDir, main);
+    if (attempt.ok) {
+      return {
+        ok: true,
+        engine: engine.name,
+        mainTex: main,
+        pdfPath: pdfPathFor(outDir, main),
+        errors: [],
+        // Explain an engine badge the user did not expect to see.
+        logTail: [...tried.map(fallbackNote), attempt.logTail].join("\n"),
+        durationMs: Date.now() - started,
+      };
+    }
+    tried.push({ engine: engine.name, ...attempt });
+    if (!attempt.retryable) break;
+  }
+
+  // Nothing built it: lead with the first engine's verdict — that is the one
+  // the user asked for — and keep every log for the details view. A stale PDF
+  // from an earlier build stays addressable so the viewer can keep showing it.
+  const [first, ...rest] = tried;
+  const pdfPath = pdfPathFor(outDir, main);
   return {
-    ok: ok && pdfExists,
-    engine: engine.name,
+    ok: false,
+    engine: first.engine,
     mainTex: main,
-    pdfPath: pdfExists ? pdfPath : undefined,
-    errors,
-    logTail: combined.split("\n").slice(-60).join("\n"),
+    pdfPath: existsSync(pdfPath) ? pdfPath : undefined,
+    errors: rest.length
+      ? [...first.errors, `Also tried ${rest.map((t) => t.engine).join(", ")} — see the log tail.`]
+      : first.errors,
+    logTail: tried.map((t) => `--- ${t.engine} ---\n${t.logTail}`).join("\n\n"),
     durationMs: Date.now() - started,
   };
+}
+
+/** One-line "why we moved on" note for an engine that could not build it. */
+function fallbackNote(t: { engine: string; errors: string[] }): string {
+  const why = t.errors[0]?.split("\n")[0] ?? "no error reported";
+  return `note: ${t.engine} could not build this document (${why}) — retried with the next engine.`;
 }
 
 /** Fixed names inside a rev-<sha> build cache dir. */

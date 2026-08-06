@@ -6,9 +6,10 @@
 import { platform, arch, homedir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { detectEngine } from "./compile.js";
+import { detectEngines } from "./compile.js";
 import { discoverProfiles } from "./overleaf/browsers.js";
 import { DATA_DIR } from "./config.js";
+import { loadSettings } from "./settings.js";
 
 const execFileP = promisify(execFile);
 
@@ -36,9 +37,14 @@ export async function runDoctor(log: (line: string) => void = console.log): Prom
   const git = await commandVersion("git");
   log(`git:       ${git ?? "NOT FOUND — required; install it from https://git-scm.com"}`);
 
-  const engine = await detectEngine();
+  // Same chain a compile walks, configured preference included.
+  const [engine, ...fallbacks] = await detectEngines(loadSettings().engine || undefined);
   log(
-    `TeX:       ${engine ? `${engine.name} (${short(engine.path)})` : "none found — run `blattbot` to download tectonic, or install tectonic/latexmk yourself"}`,
+    `TeX:       ${
+      engine
+        ? `${engine.name} (${short(engine.path)})${fallbacks.length ? `  ·  falls back to ${fallbacks.map((e) => e.name).join(", ")}` : "  ·  no fallback engine installed"}`
+        : "none found — run `blattbot` to download tectonic, or install latexmk/pdflatex yourself"
+    }`,
   );
 
   const claude = await commandVersion("claude");

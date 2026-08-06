@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npm ci *)",
+      "Bash(npx vitest *)",
+      "Bash(grep -n \"fetch\\(\\\\`/api\" /home/m505073/Projects/blattbot/web/src/components/RefsPanel.tsx)",
+      "Bash(cp /tmp/claude-1000/-home-m505073-Projects-blattbot/c28e5acc-b6cd-475e-b1a3-894bf38aa845/scratchpad/probe.mjs ./probe.tmp.mjs)",
+      "Bash(node ./probe.tmp.mjs \"/home/m505073/Projects/dice-embeddings/ilp/The Surprising Power of Graph Neural Networks with Random Node Initialization.pdf\")",
+      "Bash(node -e ' *)",
+      "Bash(npm run *)",
+      "Bash(git diff *)",
+      "Bash(tectonic --version)",
+      "Bash(command -v texlua)",
+      "Bash(command -v biber)",
+      "Bash(command -v bibtex)",
+      "Bash(echo \"TSC_EXIT=$?\")",
+      "Bash(echo \"WEB_TSC_EXIT=$?\")",
+      "Bash(node *)",
+      "Bash(timeout 420 npx tsx try-compile.mts)",
+      "Bash(npx tsx *)",
+      "Bash(dpkg -l)",
+      "Bash(awk '/texlive|^ii  lmodern/ {print $2}')",
+      "Bash(kpsewhich lmodern.sty)",
+      "Bash(kpsewhich helvet.sty)",
+      "Bash(kpsewhich cleanthesis.sty)",
+      "Bash(kpsewhich pdfx.sty)",
+      "Bash(kpsewhich scrreprt.cls)",
+      "Bash(apt-cache depends *)",
+      "Bash(apt-cache show *)",
+      "Bash(grep -iA2 \"biblatex\")",
+      "Read(//var/lib/texmf/fonts/map/pdftex/updmap/**)",
+      "Bash(kpsewhich pdftex.map)"
+    ]
+  }
+}
