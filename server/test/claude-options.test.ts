@@ -6,7 +6,7 @@
  * a turn silently).
  */
 import { describe, expect, it } from "vitest";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   contextOfUsage,
   contextWindowOf,
@@ -206,15 +206,22 @@ describe("makeFenceHook (PreToolUse)", () => {
   });
 
   it("allows reads inside an attached context directory only", async () => {
-    const hook = makeFenceHook("proj-fence", ["/srv/context"]);
+    // Native absolute paths, as the server hands them to the fence — a bare
+    // POSIX root would resolve to a drive path on Windows and never match.
+    const ctxDir = resolve("/srv/context");
+    const hook = makeFenceHook("proj-fence", [ctxDir]);
     const ok = await hook(
-      { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/srv/context/notes.md" } } as any,
+      { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: join(ctxDir, "notes.md") } } as any,
       undefined,
       hookOpts,
     );
     expect(ok).toEqual({});
     const blocked = (await hook(
-      { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/srv/elsewhere/notes.md" } } as any,
+      {
+        hook_event_name: "PreToolUse",
+        tool_name: "Read",
+        tool_input: { file_path: resolve("/srv/elsewhere/notes.md") },
+      } as any,
       undefined,
       hookOpts,
     )) as any;
