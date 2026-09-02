@@ -8,17 +8,39 @@
  * points the SDK at another `claude` binary instead — for people who would
  * rather reuse a global Claude Code install and skip the bundled one.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 
 export const EXECUTABLE_ENV = "BLATTBOT_CLAUDE_EXECUTABLE";
 
+/**
+ * The installed SDK's version. Its exports map does not expose package.json,
+ * so the manifest is read next to the resolved entry point instead.
+ */
 export function agentSdkVersion(): string | undefined {
+  const entry = resolveSdkEntry();
+  if (!entry) return undefined;
   try {
-    return (require("@anthropic-ai/claude-agent-sdk/package.json") as { version?: string }).version;
+    const pkg = JSON.parse(readFileSync(join(dirname(entry), "package.json"), "utf8")) as { version?: string };
+    return typeof pkg.version === "string" ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The SDK's entry file: CJS resolution honours its "default" export condition; ESM as the fallback. */
+function resolveSdkEntry(): string | undefined {
+  try {
+    return require.resolve("@anthropic-ai/claude-agent-sdk");
+  } catch {
+    /* fall through */
+  }
+  try {
+    return fileURLToPath(import.meta.resolve("@anthropic-ai/claude-agent-sdk"));
   } catch {
     return undefined;
   }
