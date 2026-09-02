@@ -1099,6 +1099,48 @@ async function main() {
     await page.getByRole("button", { name: "Clear scope", exact: true }).click();
     const scopeCleared = (await page.getByText("scope: main.tex").count()) === 0;
 
+    // ---- External context: browse the filesystem and link a codebase --------
+    // A browser file input cannot return a real path, so the picker walks the
+    // machine server-side; linking is what makes the folder readable to the
+    // agent, so the round trip is verified here rather than trusted.
+    const codeDir = mkdtempSync(join(tmpdir(), "blattbot-ui-code-"));
+    mkdirSync(join(codeDir, "src"));
+    writeFileSync(join(codeDir, "src", "train.py"), "lr = 3e-4\n");
+    await page.getByRole("button", { name: "Add external context" }).click();
+    await page.getByRole("button", { name: "Browse folders…" }).click();
+    // Starts at $HOME; typing the path and reopening jumps the browser there.
+    await page.getByPlaceholder("/home/…/my-experiment").fill(codeDir);
+    await page.getByRole("button", { name: "× Close folder browser" }).click();
+    await page.getByRole("button", { name: "Browse folders…" }).click();
+    // The listing arrives from the server — wait for it before counting rows.
+    await page.getByRole("button", { name: "Link this folder" }).waitFor({ timeout: 5_000 });
+    const browseSrcOk =
+      (await page.getByRole("button", { name: "src/", exact: true }).count()) === 1;
+    await shot("26b-context-browser");
+    await page.getByRole("button", { name: "Link this folder" }).click();
+    const linkedLabel = codeDir.split("/").filter(Boolean).slice(-2).join("/");
+    await page.getByTitle(codeDir, { exact: true }).waitFor({ timeout: 5_000 });
+    const contextLinkedOk = (await page.getByText(linkedLabel, { exact: true }).count()) >= 1;
+    // The browser closes on a successful link, and the agent's prompt block
+    // now describes the folder's contents (asserted server-side below).
+    const browserClosedOk =
+      (await page.getByRole("button", { name: "Link this folder" }).count()) === 0;
+    const ctxDetail = (await (await afetch(`${apiBase}/projects/${mockProjectId}/context`)).json()) as {
+      links: { path: string; kind: string }[];
+    };
+    const contextApiOk = ctxDetail.links.some((l) => l.path === codeDir && l.kind === "dir");
+    await shot("26c-context-linked");
+    // The unlink × only appears on hover over its row.
+    await page.getByTitle(codeDir, { exact: true }).hover();
+    await page.getByRole("button", { name: "Unlink " + codeDir }).click();
+    await page.getByTitle(codeDir, { exact: true }).waitFor({ state: "detached", timeout: 5_000 });
+    const contextUnlinkedOk =
+      (await (
+        await (await afetch(`${apiBase}/projects/${mockProjectId}/context`)).json()
+      ).links.length) === 0;
+    await page.getByRole("button", { name: "Close the external-context form" }).click();
+    rmSync(codeDir, { recursive: true, force: true });
+
     // ---- The right panel resizes by dragging the separator ----
     const widthBefore = await aside().evaluate((el) => el.getBoundingClientRect().width);
     const sep = page.getByRole("separator", { name: "Resize panel" });
@@ -2124,6 +2166,11 @@ async function main() {
         widthAfter,
         scopeChipOk,
         scopeCleared,
+        browseSrcOk,
+        contextLinkedOk,
+        browserClosedOk,
+        contextApiOk,
+        contextUnlinkedOk,
         rejectFileUiOk,
         rejectFileContentOk,
         proofJumpOk,
@@ -2374,6 +2421,11 @@ async function main() {
     if (Math.abs(widthAfter - widthBefore) < 100) throw new Error("panel resize had no effect");
     if (!scopeChipOk) throw new Error("scope summary did not reflect the checked file");
     if (!scopeCleared) throw new Error("scope chip did not clear");
+    if (!browseSrcOk) throw new Error("folder picker did not list the linked folder's subdirectory");
+    if (!contextLinkedOk) throw new Error("linked folder did not appear in the context list");
+    if (!browserClosedOk) throw new Error("folder picker stayed open after a successful link");
+    if (!contextApiOk) throw new Error("linked folder was not stored as a context directory");
+    if (!contextUnlinkedOk) throw new Error("unlinking left the context path behind");
     if (!rejectFileUiOk) {
       throw new Error("discarding one file did not remove only that file's diff from the proof");
     }

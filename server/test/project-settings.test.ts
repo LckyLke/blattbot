@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -139,6 +139,25 @@ describe("buildSystemAppend", () => {
         [],
       );
       expect(out).not.toContain(STYLE_LABEL);
+    }
+  });
+
+  it("describes each attached context path and asks the agent to check the text against it", () => {
+    const root = mkdtempSync(join(tmpdir(), "blattbot-ctxprompt-test-"));
+    try {
+      mkdirSync(join(root, "src"));
+      writeFileSync(join(root, "src", "train.py"), "lr = 3e-4\n");
+      const out = buildSystemAppend(proj(), editMode, undefined, { ...DEFAULT_SETTINGS }, [root]);
+
+      // The listing, not just the path — a bare path tells the agent nothing
+      // about whether grepping the codebase is worth a tool call.
+      expect(out).toContain(`${root} — 1 file (.py ×1)`);
+      expect(out).toContain("src/train.py");
+      expect(out).toMatch(/verify it against the source/);
+      expect(out).toMatch(/never silently rewrite the text to match the code/);
+      expect(out).toContain("NEVER create, modify, or delete anything inside them");
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   });
 

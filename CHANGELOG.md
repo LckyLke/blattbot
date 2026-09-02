@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Codebase as context
+- Link a whole folder — the paper's codebase, an experiment directory — through a folder browser in the sidebar instead of typing an absolute path. Directory names only; credential stores and BlattBot's own data are not browsable.
+- Every turn now hands the agent a listing of what each linked path actually contains (file counts, extensions, tree), scanned at turn start rather than when you linked it, with vendored and build directories left out and named. A linked folder is read live; nothing is copied or snapshotted.
+- The agent is instructed to use that material to *check* the manuscript — formulas, algorithms, hyperparameters, reported numbers, symbol names — to cite the evidence as `path:line`, and to report a disagreement between text and implementation rather than silently rewriting either. Edits inside linked paths remain blocked on both backends.
+
 ## 0.3.0 — 2026-07-31
 
 ### Images in chat

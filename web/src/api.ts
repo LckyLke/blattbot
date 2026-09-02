@@ -140,6 +140,14 @@ export interface ProjectContext {
   uploads: { name: string; size: number }[];
 }
 
+/** One step of the folder picker: the subdirectories of `path`. */
+export interface DirListing {
+  path: string;
+  parent: string | null;
+  entries: { name: string; path: string }[];
+  truncated: boolean;
+}
+
 export interface FileContent {
   path: string;
   size: number;
@@ -403,6 +411,8 @@ export const api = {
   file: (id: string, path: string) =>
     request<FileContent>(`/api/projects/${id}/file?path=${encodeURIComponent(path)}`),
   context: (id: string) => request<ProjectContext>(`/api/projects/${id}/context`),
+  browseDirs: (path?: string) =>
+    request<DirListing>(`/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addContextLink: (id: string, path: string) =>
     request<ProjectContext>(`/api/projects/${id}/context/link`, {
       method: "POST",

@@ -118,6 +118,7 @@ import { DATA_DIR, PROJECTS_DIR } from "./config.js";
 import { AUTH_COOKIE, getAuthToken, hostAllowed, requestAuthorized } from "./auth.js";
 import { loadSettings, publicSettings, saveSettings, type Settings } from "./settings.js";
 import {
+  browseDirectories,
   contextUploadsDir,
   deleteUpload,
   listContext,
@@ -716,6 +717,18 @@ app.put<{
 });
 
 // ---- External read-only context (code, data, literature) -------------------
+
+// Folder picker for the link form: subdirectories only, credential stores and
+// BlattBot's own data excluded (see browseDirectories). Not project-scoped —
+// it browses the machine, so it sits behind the same local-token auth as
+// everything else under /api.
+app.get<{ Querystring: { path?: string } }>("/api/fs/dirs", async (req, reply) => {
+  try {
+    return browseDirectories(req.query.path);
+  } catch (err: any) {
+    return reply.code(400).send({ error: err.message });
+  }
+});
 
 app.get<{ Params: { id: string } }>("/api/projects/:id/context", async (req, reply) => {
   const project = getProject(req.params.id);

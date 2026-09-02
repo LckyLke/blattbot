@@ -9,7 +9,7 @@ import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { projectDir, type Project, type ProjectSettings } from "./config.js";
 import { loadSettings, type Settings } from "./settings.js";
-import { contextDirectories } from "./context.js";
+import { contextDirectories, formatContextManifest } from "./context.js";
 import { abortQuestion } from "./questions.js";
 import { claudeBackend, runOneShot as runOneShotClaude } from "./backends/claude.js";
 import { openaiBackend, runOneShotOpenai } from "./backends/openai.js";
@@ -191,7 +191,7 @@ The user wants to UNDERSTAND, not change: answer questions about the project and
 - If a passage seems wrong or inconsistent, say so plainly and show why.
 - Explain in plain language first, then give the precise technical restatement.
 - If the question is ambiguous or the right depth is unclear (intuition vs. formal detail), ask with the AskUserQuestion tool.
-- When the question refers to linked context directories (papers), read them.
+- When attached context can answer the question, read it — a linked codebase settles what a formula, algorithm, or constant in the text actually does far better than reasoning about the prose.
 You must not modify any files in this mode; file-editing tools are disabled. If the user asks for changes, tell them to switch to Edit mode.`,
     readOnly: true,
   },
@@ -296,13 +296,23 @@ export function buildSystemAppend(
       `but only EDIT these files: ${scope.join(", ")}. If completing the task truly ` +
       `requires touching other files, say so instead of editing them.`;
   }
-  // External read-only context: extra directories the agent may read but never edit.
+  // External read-only context: extra directories the agent may read but never
+  // edit. The manifest is scanned at turn start (see context.ts) so a linked
+  // codebase is described as it is now, not as it was when it was linked.
   if (contextDirs.length > 0) {
     append +=
-      `\n\nExternal read-only context is attached (reference material — code, data, literature):\n` +
-      contextDirs.map((d) => `- ${d}`).join("\n") +
-      `\nRead and search these freely (Read, Grep, Glob — Read handles PDFs too), but NEVER ` +
-      `create, modify, or delete anything inside them, and never copy their content into the ` +
+      `\n\nExternal read-only context is attached (reference material — code, data, literature). ` +
+      `Contents at the start of this turn:\n` +
+      formatContextManifest(contextDirs) +
+      `\nRead and search these freely (Read, Grep, Glob — Read handles PDFs too). The listing is a ` +
+      `map, not a substitute for opening the files, and it can go stale within a turn — re-read ` +
+      `before relying on anything.\n` +
+      `Use them to CHECK the document: when the text states something this material can settle — a ` +
+      `formula, an algorithm, a hyperparameter, a dataset size, a reported number, an API or symbol ` +
+      `name — verify it against the source rather than trusting the prose, and name the evidence as ` +
+      `path:line. If the document and the implementation disagree, say so plainly and let the user ` +
+      `decide which one is wrong; never silently rewrite the text to match the code.\n` +
+      `NEVER create, modify, or delete anything inside them, and never copy their content into the ` +
       `project verbatim beyond normal quotation.`;
   }
   if (settings.systemPromptAppend.trim()) {

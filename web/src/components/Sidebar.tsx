@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, type Project, type ProjectContext } from "../api";
+import { api, type DirListing, type Project, type ProjectContext } from "../api";
 
 interface Props {
   /** All imported projects, for the quick switcher. */
@@ -78,20 +78,38 @@ export default function Sidebar({
   const [ctxErr, setCtxErr] = useState<string | null>(null);
   const [ctxBusy, setCtxBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  // Folder picker: null = closed. A browser file input cannot hand back a real
+  // path, so walking the filesystem server-side is the only way to link a repo
+  // without typing its absolute path.
+  const [browse, setBrowse] = useState<DirListing | null>(null);
 
   useEffect(() => {
     setCtx(null);
     setCtxErr(null);
+    setBrowse(null);
     api.context(project.id).then(setCtx).catch(() => setCtx({ links: [], uploads: [] }));
   }, [project.id]);
 
-  async function ctxAction(fn: () => Promise<ProjectContext>) {
+  async function openBrowse(path?: string) {
+    setCtxErr(null);
+    try {
+      setBrowse(await api.browseDirs(path));
+    } catch (err: any) {
+      setCtxErr(err.message);
+    }
+  }
+
+  /** Runs a context mutation, showing its error. Returns whether it succeeded —
+   *  a failed link must keep the typed path and the open browser. */
+  async function ctxAction(fn: () => Promise<ProjectContext>): Promise<boolean> {
     setCtxBusy(true);
     setCtxErr(null);
     try {
       setCtx(await fn());
+      return true;
     } catch (err: any) {
       setCtxErr(err.message);
+      return false;
     } finally {
       setCtxBusy(false);
     }
@@ -278,8 +296,8 @@ export default function Sidebar({
                 <button
                   disabled={ctxBusy || !linkPath.trim()}
                   onClick={() =>
-                    ctxAction(() => api.addContextLink(project.id, linkPath.trim())).then(() =>
-                      setLinkPath(""),
+                    ctxAction(() => api.addContextLink(project.id, linkPath.trim())).then(
+                      (ok) => ok && setLinkPath(""),
                     )
                   }
                   className="rounded border border-rule px-1.5 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
@@ -288,6 +306,61 @@ export default function Sidebar({
                 </button>
               </span>
             </label>
+            <button
+              onClick={() => (browse ? setBrowse(null) : void openBrowse(linkPath.trim() || undefined))}
+              aria-expanded={browse !== null}
+              className="mt-1.5 w-full rounded border border-rule px-1.5 py-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+            >
+              {browse ? "× Close folder browser" : "Browse folders…"}
+            </button>
+
+            {browse && (
+              <div className="mt-1.5 rounded border border-rule bg-ink-2 p-1">
+                <div className="flex items-center gap-1">
+                  <button
+                    disabled={!browse.parent}
+                    onClick={() => void openBrowse(browse.parent!)}
+                    aria-label="Go to the parent folder"
+                    className="rounded border border-rule px-1 text-[10.5px] leading-[1.5] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-40"
+                  >
+                    ↑
+                  </button>
+                  {/* The tail identifies the folder you are standing in — a
+                      plain truncate would cut exactly that away. Full path in
+                      the tooltip, as in the linked list below. */}
+                  <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-graphite" title={browse.path}>
+                    {browse.path.split(/[\\/]/).filter(Boolean).slice(-2).join("/") || browse.path}
+                  </span>
+                </div>
+                <ul className="mt-1 max-h-32 overflow-y-auto">
+                  {browse.entries.map((e) => (
+                    <li key={e.path}>
+                      <button
+                        onClick={() => void openBrowse(e.path)}
+                        className="w-full truncate rounded px-1 py-0.5 text-left font-mono text-[10.5px] text-paper-dim transition-colors hover:bg-ink-3/60 hover:text-leaf"
+                      >
+                        {e.name}/
+                      </button>
+                    </li>
+                  ))}
+                  {browse.entries.length === 0 && (
+                    <li className="px-1 py-0.5 text-[10px] text-graphite/70">no subfolders here</li>
+                  )}
+                </ul>
+                <button
+                  disabled={ctxBusy}
+                  onClick={() =>
+                    ctxAction(() => api.addContextLink(project.id, browse.path)).then(
+                      (ok) => ok && setBrowse(null),
+                    )
+                  }
+                  className="mt-1 w-full rounded border border-rule px-1.5 py-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                >
+                  Link this folder
+                </button>
+              </div>
+            )}
+
             <button
               disabled={ctxBusy}
               onClick={() => fileInput.current?.click()}
