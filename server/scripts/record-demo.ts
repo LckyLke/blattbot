@@ -192,7 +192,7 @@ async function main() {
 
     // The new entries in the References tab, cited and green.
     await domClick(
-      page.locator('aside[data-pane="right"]').getByRole("button", { name: "References", exact: true }),
+      page.locator('[data-pane="right"]').getByRole("button", { name: "References", exact: true }),
     );
     await page.waitForTimeout(3200);
     mark("refs");
@@ -200,7 +200,7 @@ async function main() {
 
     // Review the proof, then approve.
     await domClick(
-      page.locator('aside[data-pane="right"]').getByRole("button", { name: "Proof", exact: false }),
+      page.locator('[data-pane="right"]').getByRole("button", { name: "Proof", exact: false }),
     );
     await page.waitForTimeout(2600);
     mark("proof");
@@ -214,8 +214,8 @@ async function main() {
     // --- Figure staging (after the video's cut point) -------------------------
     // Editor figure: source (wide) beside the PDF.
     await page.evaluate(() => localStorage.setItem("blattbot.panelWidth", "560"));
-    await domClick(page.locator('main[data-pane="left"]').getByRole("button", { name: "Source", exact: true }));
-    await domClick(page.locator('aside[data-pane="right"]').getByRole("button", { name: "PDF", exact: true }));
+    await domClick(page.locator('[data-pane="left"]').getByRole("button", { name: "Source", exact: true }));
+    await domClick(page.locator('[data-pane="right"]').getByRole("button", { name: "PDF", exact: true }));
     await page.locator(".cm-content").first().waitFor({ timeout: 30_000 });
     await page.reload({ waitUntil: "networkidle" });
     await page.locator(".cm-content").first().waitFor({ timeout: 60_000 });

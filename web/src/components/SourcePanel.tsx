@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Compartment, EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
 import {
   Decoration,
@@ -32,6 +40,18 @@ import {
 import { tags as t } from "@lezer/highlight";
 import { bibtexLanguage, latexLanguage, latexTags } from "../latex-language";
 import { api, type FileContent } from "../api";
+import {
+  countDrafts,
+  dropDraft,
+  hasDraft,
+  lastOpenFile,
+  readDraft,
+  reconcileFetched,
+  rememberOpenFile,
+  stashDraft,
+  subscribeDrafts,
+} from "../drafts";
+import { merge3 } from "../merge3";
 import { useDialog } from "./Dialog";
 
 interface Props {
@@ -652,6 +672,17 @@ const editableExt = (on: boolean, complete: CompletionSource): Extension =>
       ];
 
 const WRAP_KEY = "blattbot.sourceWrap";
+const AUTOSAVE_KEY = "blattbot.sourceAutosave";
+/** Idle time after the last keystroke before an autosave (when enabled). */
+const AUTOSAVE_MS = 1500;
+const CONFLICT_MARK = "<<<<<<< yours";
+
+/**
+ * Nonce of the last reveal request acted on. Module-level on purpose: the
+ * panel remounts on a pane swap, and a remount must not re-run a jump that
+ * already happened (it would override the remembered file and flash a line).
+ */
+let handledRevealNonce = -1;
 
 export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat }: Props) {
   const dialog = useDialog();
@@ -663,7 +694,11 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
+  /** The server copy of the open file moved under an unsaved draft. */
+  const [diskChanged, setDiskChanged] = useState(false);
   const [wrap, setWrap] = useState(() => localStorage.getItem(WRAP_KEY) === "1");
+  /** Opt-in: write the file after AUTOSAVE_MS of idle typing. */
+  const [autosave, setAutosave] = useState(() => localStorage.getItem(AUTOSAVE_KEY) === "1");
   const [cursor, setCursor] = useState({ line: 1, col: 1, lines: 1 });
 
   const hostRef = useRef<HTMLDivElement>(null);
@@ -676,9 +711,12 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   const busyRef = useRef(busy);
   busyRef.current = busy;
-  const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
+  const projRef = useRef(projectId);
+  projRef.current = projectId;
   const wrapRef = useRef(wrap);
+  const autosaveRef = useRef(autosave);
+  autosaveRef.current = autosave;
+  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const savingRef = useRef(saving);
   savingRef.current = saving;
   const selRef = useRef(sel);
@@ -691,6 +729,26 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   // Compartments survive state re-creation; reconfigured on toggle.
   const comp = useRef({ editable: new Compartment(), wrap: new Compartment() }).current;
+
+  // Re-render when a draft appears or disappears (tree dots, own dirty dot).
+  const draftCount = useSyncExternalStore(subscribeDrafts, () => countDrafts(projectId));
+
+  // The instance survives a project switch (same tree position); its per-file
+  // state must not — a stale `sel` would fetch the OLD project's file from
+  // the new one. Drafts are stashed per project, so nothing is lost here.
+  const prevProjectRef = useRef(projectId);
+  useEffect(() => {
+    if (prevProjectRef.current === projectId) return;
+    prevProjectRef.current = projectId;
+    docPathRef.current = null;
+    savedRef.current = "";
+    setSel(null);
+    setFile(null);
+    setError(null);
+    setDirty(false);
+    setSaveErr(null);
+    setDiskChanged(false);
+  }, [projectId]);
 
   // Autocomplete data, cached in refs — the CodeMirror source reads them
   // synchronously mid-keystroke. Fetched on mount, refreshed on stamp changes
@@ -729,7 +787,23 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   const updateListener = useMemo(
     () =>
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) setDirty(u.state.doc.toString() !== savedRef.current);
+        if (u.docChanged) {
+          // The stash mirrors the editor: present exactly while the text
+          // differs from the last fetched/saved content (see drafts.ts).
+          const text = u.state.doc.toString();
+          const isDirty = text !== savedRef.current;
+          setDirty(isDirty);
+          const path = docPathRef.current;
+          if (path) {
+            // A draft keeps the base it started from (a merge needs it);
+            // only a fresh draft takes the current disk content as base.
+            if (isDirty) {
+              const base = readDraft(projRef.current, path)?.base ?? savedRef.current;
+              stashDraft(projRef.current, path, { content: text, base });
+            } else dropDraft(projRef.current, path);
+          }
+          if (isDirty) armAutosave();
+        }
         if (u.docChanged || u.selectionSet) {
           const head = u.state.selection.main.head;
           const line = u.state.doc.lineAt(head);
@@ -808,6 +882,30 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     }, 1300);
   }, []);
 
+  /**
+   * Autosave: an idle-timer save. Never while the agent holds the tree or a
+   * save is in flight (save() refuses those; the finally below re-arms), and
+   * never with unresolved merge conflict markers in the text — a manual save
+   * is the user's explicit decision there.
+   */
+  const armAutosave = useCallback(() => {
+    if (!autosaveRef.current) return;
+    clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(() => {
+      const view = viewRef.current;
+      if (!view || !autosaveRef.current) return;
+      const text = view.state.doc.toString();
+      if (text === savedRef.current || text.includes(CONFLICT_MARK)) return;
+      saveRef.current();
+    }, AUTOSAVE_MS);
+  }, []);
+  useEffect(() => () => clearTimeout(autosaveTimer.current), []);
+  useEffect(() => {
+    localStorage.setItem(AUTOSAVE_KEY, autosave ? "1" : "0");
+    if (autosave) armAutosave();
+    else clearTimeout(autosaveTimer.current);
+  }, [autosave, armAutosave]);
+
   const save = useCallback(async () => {
     const view = viewRef.current;
     const path = selRef.current;
@@ -818,18 +916,67 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     setSaveErr(null);
     try {
       const res = await api.saveFile(projectId, path, content);
-      savedRef.current = content;
-      setFile((f) => (f ? { ...f, content, size: new TextEncoder().encode(content).length } : f));
-      setDirty(false);
+      if (docPathRef.current === path) {
+        savedRef.current = content;
+        setFile((f) => (f ? { ...f, content, size: new TextEncoder().encode(content).length } : f));
+        // Quick save keeps the editor live: whatever was typed during the
+        // round-trip is still a draft, over the content just written.
+        const live = view.state.doc.toString();
+        setDirty(live !== content);
+        setDiskChanged(false);
+        if (live !== content) stashDraft(projectId, path, { content: live, base: content });
+        else dropDraft(projectId, path);
+      }
       onDiffRef.current(res.diff);
       onSavedRef.current?.();
     } catch (err: any) {
       setSaveErr(err.message);
     } finally {
       setSaving(false);
+      // Typed on during the round-trip: the idle timer picks it up again.
+      if (view.state.doc.toString() !== savedRef.current) armAutosave();
     }
-  }, [projectId]);
+  }, [projectId, armAutosave]);
   saveRef.current = save;
+
+  /**
+   * Three-way merge of the draft with the disk version (merge3.ts): base is
+   * what the draft was typed over, ours the editor, theirs the disk. Regions
+   * only one side touched merge silently; both-sides regions that differ are
+   * written as git-style conflict blocks, and the first one is revealed.
+   */
+  function mergeWithDisk() {
+    const view = viewRef.current;
+    const path = selRef.current;
+    if (!view || !path) return;
+    const ours = view.state.doc.toString();
+    const theirs = savedRef.current;
+    const base = readDraft(projectId, path)?.base ?? theirs;
+    const { text, conflicts } = merge3(base, ours, theirs);
+    if (text !== ours) {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+    }
+    // The merged text is now relative to the disk version.
+    if (text !== theirs) stashDraft(projectId, path, { content: text, base: theirs });
+    else dropDraft(projectId, path);
+    setDirty(text !== theirs);
+    setDiskChanged(false);
+    if (conflicts > 0) {
+      setSaveErr(
+        `${conflicts} conflict${conflicts === 1 ? "" : "s"} marked ${CONFLICT_MARK} … >>>>>>> disk — resolve them, then save`,
+      );
+      const at = text.indexOf(CONFLICT_MARK);
+      if (at >= 0) {
+        view.dispatch({
+          selection: { anchor: at },
+          effects: [EditorView.scrollIntoView(at, { y: "center" }), setFlash.of(at)],
+        });
+        window.setTimeout(() => viewRef.current?.dispatch({ effects: setFlash.of(null) }), 1300);
+      }
+    } else {
+      setSaveErr(null);
+    }
+  }
 
   const confirmDiscard = () =>
     dialog.confirm({
@@ -846,23 +993,40 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     if (view && view.state.doc.toString() !== savedRef.current) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: savedRef.current } });
     }
+    if (sel) dropDraft(projectId, sel);
     setDirty(false);
     setSaveErr(null);
+    setDiskChanged(false);
   }
 
-  async function selectFile(path: string) {
+  /**
+   * Open another file. An unsaved draft stays stashed (and marked in the
+   * tree) rather than demanding a discard: a jump from the chat or the
+   * Proof view must not cost the user their edits.
+   */
+  function selectFile(path: string) {
     if (path === sel) return;
-    if (dirty && !(await confirmDiscard())) return;
-    setDirty(false);
     setSaveErr(null);
+    rememberOpenFile(projectId, path);
     setSel(path);
   }
 
-  // Pick a sensible default file, and recover if the open file disappears.
+  // Pick a file once the list is known: the one open before (a remount after
+  // a pane swap, a project re-entered), else the main file, else the first
+  // text-like one. Also recovers if the open file disappears.
   useEffect(() => {
+    if (files.length === 0) return;
     if (sel && files.includes(sel)) return;
-    setSel(mainTex && files.includes(mainTex) ? mainTex : (files.find((f) => TEXTISH.test(f)) ?? files[0] ?? null));
-  }, [files, mainTex, sel]);
+    const remembered = lastOpenFile(projectId);
+    const pick =
+      remembered && files.includes(remembered)
+        ? remembered
+        : mainTex && files.includes(mainTex)
+          ? mainTex
+          : (files.find((f) => TEXTISH.test(f)) ?? files[0]);
+    rememberOpenFile(projectId, pick);
+    setSel(pick);
+  }, [files, mainTex, sel, projectId]);
 
   useEffect(() => {
     if (!sel) {
@@ -889,27 +1053,50 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     };
   }, [projectId, sel, stamp]);
 
-  // Sync the fetched file into the editor: fresh state on file switch,
-  // in-place content replace (scroll/selection preserved) on refetch.
+  // Sync the fetched file into the editor: fresh state on file switch (with
+  // a stashed draft restored), in-place content replace (scroll/selection
+  // preserved) on refetch — but never over text the user typed.
   useEffect(() => {
     const view = viewRef.current;
     if (!view || !file || file.binary) return;
+    const pid = projRef.current;
     if (docPathRef.current !== file.path) {
       docPathRef.current = file.path;
       savedRef.current = file.content;
-      setDirty(false);
-      view.setState(buildState(file.content, file.path));
+      const draft = readDraft(pid, file.path);
+      const restore = draft && draft.content !== file.content ? draft : undefined;
+      if (draft && !restore) dropDraft(pid, file.path); // the disk caught up with it
+      view.setState(buildState(restore ? restore.content : file.content, file.path));
+      setDirty(Boolean(restore));
+      // The draft keeps the base it was typed over — a three-way merge needs
+      // it when the disk moved meanwhile (that is what diskChanged means).
+      setDiskChanged(Boolean(restore) && restore!.base !== file.content);
       setCursor({ line: 1, col: 1, lines: view.state.doc.lines });
       applyPendingReveal(view);
       return;
     }
+    const current = view.state.doc.toString();
+    const prevBase = savedRef.current;
+    const r = reconcileFetched(current, prevBase, file.content);
     savedRef.current = file.content;
-    if (dirtyRef.current) {
-      // Underlying content changed while a draft is open — keep the draft.
-      setDirty(view.state.doc.toString() !== file.content);
-    } else if (view.state.doc.toString() !== file.content) {
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: file.content } });
+    if (r.action === "replace") {
+      if (current !== file.content) {
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: file.content } });
+      }
+      dropDraft(pid, file.path);
       setDirty(false);
+      setDiskChanged(false);
+    } else {
+      setDirty(r.dirty);
+      if (r.dirty) {
+        // Keep the base the draft started from (never re-base a live draft).
+        const base = readDraft(pid, file.path)?.base ?? prevBase;
+        stashDraft(pid, file.path, { content: current, base });
+        setDiskChanged(base !== file.content);
+      } else {
+        dropDraft(pid, file.path);
+        setDiskChanged(false);
+      }
     }
     applyPendingReveal(view);
   }, [file, buildState, applyPendingReveal]);
@@ -932,20 +1119,16 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     });
   }, [wrap, comp]);
 
-  // Reveal requests: select the file (dirty-guarded), then jump once loaded.
+  // Reveal requests: select the file (a draft in the current one stays
+  // stashed), then jump once loaded.
   useEffect(() => {
-    if (!reveal) return;
+    if (!reveal || reveal.nonce === handledRevealNonce) return;
+    handledRevealNonce = reveal.nonce;
     pendingReveal.current = { file: reveal.file, line: reveal.line };
     if (reveal.file !== selRef.current) {
-      void (async () => {
-        if (dirty && !(await confirmDiscard())) {
-          pendingReveal.current = null;
-          return;
-        }
-        setDirty(false);
-        setSaveErr(null);
-        setSel(reveal.file);
-      })();
+      setSaveErr(null);
+      rememberOpenFile(projRef.current, reveal.file);
+      setSel(reveal.file);
     } else if (viewRef.current && docPathRef.current === reveal.file) {
       applyPendingReveal(viewRef.current);
     }
@@ -986,6 +1169,11 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                 }`}
               >
                 <span className="truncate">{f.name}</span>
+                {f.path !== sel && hasDraft(projectId, f.path) && (
+                  <span className="text-gold" title="Unsaved edits">
+                    ●
+                  </span>
+                )}
                 {f.path === mainTex && (
                   <span className="rounded-sm border border-gold/40 px-1 text-[8.5px] uppercase tracking-wide text-gold">
                     main
@@ -1000,6 +1188,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   }
 
   const showEditor = file !== null && !file.binary && !error;
+  void draftCount; // subscription keeps the tree's draft dots current
 
   // A finished selection inside the editor offers a "quote in chat" chip —
   // the Source twin of the PDF panel's chip (same wording and placement), and
@@ -1070,6 +1259,24 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
             </span>
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
               {saveErr && <span className="text-[11px] text-pencil">{saveErr}</span>}
+              {dirty && diskChanged && (
+                <span
+                  className="rounded border border-pencil/40 bg-pencil/10 px-1.5 py-px text-[10.5px] text-pencil"
+                  title="This file changed on disk (an agent turn, a sync, or a rejected hunk) while you were editing. Save writes your version over it; Revert drops your edits and shows the disk version."
+                >
+                  changed on disk
+                </span>
+              )}
+              {dirty && diskChanged && !busy && (
+                <button
+                  onClick={mergeWithDisk}
+                  disabled={saving}
+                  title="Three-way merge: keep your edits and the disk changes together; passages both changed differently are marked as conflicts"
+                  className="rounded border border-rule px-2 py-0.5 text-[11.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                >
+                  Merge
+                </button>
+              )}
               {file && !file.binary && (
                 <>
                   {busy && (
@@ -1150,10 +1357,22 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
             <span>{cursor.lines} lines</span>
             <span>{fmtSize(file.size)}</span>
             <button
+              onClick={() => setAutosave((a) => !a)}
+              aria-pressed={autosave}
+              title="Autosave: write the file 1.5 s after you stop typing (never while the agent works, never with unresolved conflict markers)"
+              className={`ml-auto rounded border px-1.5 py-px transition-colors ${
+                autosave
+                  ? "border-leaf/60 text-leaf"
+                  : "border-rule text-graphite hover:border-leaf/40 hover:text-paper-dim"
+              }`}
+            >
+              autosave
+            </button>
+            <button
               onClick={() => setWrap((w) => !w)}
               aria-pressed={wrap}
               title="Toggle line wrapping"
-              className={`ml-auto rounded border px-1.5 py-px transition-colors ${
+              className={`rounded border px-1.5 py-px transition-colors ${
                 wrap
                   ? "border-leaf/60 text-leaf"
                   : "border-rule text-graphite hover:border-leaf/40 hover:text-paper-dim"

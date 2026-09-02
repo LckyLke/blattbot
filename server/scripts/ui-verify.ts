@@ -307,8 +307,8 @@ async function main() {
     const shot = (name: string) => page.screenshot({ path: `${SHOTS}/${name}.png` });
     // The project view is two panes, each with its own tab strip: the left
     // <main> (chat by default) and the resizable right <aside> (proof by default).
-    const aside = () => page.locator('aside[data-pane="right"]');
-    const leftPane = () => page.locator('main[data-pane="left"]');
+    const aside = () => page.locator('[data-pane="right"]');
+    const leftPane = () => page.locator('[data-pane="left"]');
 
     // ---- Dashboard: add an account (paste-cookie path against the mock) ----
     await page.goto(`http://127.0.0.1:${SERVER_PORT}`, { waitUntil: "networkidle" });
@@ -398,17 +398,21 @@ async function main() {
     const modelChip = page.getByRole("button", { name: "Agent model" });
     const modelChipText = await modelChip.innerText(); // expected "sonnet-5"
     await modelChip.click();
-    await page.getByRole("button", { name: "claude-opus-5", exact: true }).waitFor({ timeout: 5_000 });
+    // The popover lists the engine's own catalog when the server could ask it
+    // (ids like "claude-opus-5[1m]"), else the static list ("claude-opus-5"):
+    // pick the first Opus entry either way and expect its own id back.
+    const opusEntry = page.locator("button", { hasText: /^claude-opus-5/ }).first();
+    await opusEntry.waitFor({ timeout: 5_000 });
     await shot("23c-model-popover");
-    await page.getByRole("button", { name: "claude-opus-5", exact: true }).click();
+    const opusId = (await opusEntry.locator("span").nth(1).innerText()).trim();
+    await opusEntry.click();
     await page.waitForTimeout(500);
     const settingsAfterPick = (await (await afetch(`${apiBase}/settings`)).json()) as {
       model: string;
       resolvedModel: string;
     };
-    const modelSavedOk =
-      settingsAfterPick.model === "claude-opus-5" && settingsAfterPick.resolvedModel === "claude-opus-5";
-    const modelChipUpdated = (await modelChip.innerText()) === "opus-5";
+    const modelSavedOk = settingsAfterPick.model === opusId && settingsAfterPick.resolvedModel === opusId;
+    const modelChipUpdated = (await modelChip.innerText()) === opusId.replace(/^claude-/, "");
     // Reset to the default so the rest of the flow (and Settings) sees a clean slate.
     await afetch(`${apiBase}/settings`, {
       method: "PUT",
@@ -446,12 +450,12 @@ async function main() {
       projSettings1.styleAppend === "Use British English. Prefer \\autoref." &&
       projSettings1.model === "fable" &&
       projSettings1.defaultMode === "research" &&
-      projSettings1.resolvedModel === "claude-fable-5";
+      projSettings1.resolvedModel === "claude-fable-5-1";
     await projDlg.getByRole("button", { name: "Close project settings" }).click();
     await projDlg.waitFor({ state: "detached", timeout: 5_000 });
 
     // The chip shows the project override (alias resolved), not the global default…
-    const projChipOverrideOk = (await modelChip.innerText()) === "fable-5";
+    const projChipOverrideOk = (await modelChip.innerText()) === "fable-5-1";
     // …and the saved default mode preselects the Research pill (no manual pick stored).
     await page
       .waitForFunction(
@@ -756,6 +760,30 @@ async function main() {
     await aside().locator("span.text-gold", { hasText: "●" }).waitFor({ timeout: 5_000 });
     const quickSaveKeepsEditor =
       (await aside().locator("span.text-gold", { hasText: "●" }).count()) > 0;
+    // ---- Pane swap keeps the draft: picking Source in the LEFT pane swaps the
+    // two panes, which remounts the Source panel. The unsaved "x" must survive
+    // (drafts live outside the component tree), still marked dirty, in the
+    // same file — then swap back so the rest of the script finds Source on the right.
+    await leftPane().getByRole("tab", { name: "Source", exact: true }).click();
+    await leftPane().locator(".cm-content").first().waitFor({ timeout: 10_000 });
+    await leftPane()
+      .locator("span.text-gold", { hasText: "●" })
+      .waitFor({ timeout: 5_000 })
+      .catch(() => {});
+    const swappedText = await leftPane().locator(".cm-content").first().innerText();
+    const swapKeepsDraftOk =
+      (await leftPane().locator("span.text-gold", { hasText: "●" }).count()) > 0 &&
+      /manual tweak from ui-verify\s*x/.test(swappedText);
+    await shot("24e-pane-swap-draft");
+    await aside().getByRole("tab", { name: "Source", exact: true }).click();
+    await aside().locator(".cm-content").first().waitFor({ timeout: 10_000 });
+    await aside()
+      .locator("span.text-gold", { hasText: "●" })
+      .waitFor({ timeout: 5_000 })
+      .catch(() => {});
+    const swapBackKeepsDraftOk =
+      (await aside().locator("span.text-gold", { hasText: "●" }).count()) > 0 &&
+      /manual tweak from ui-verify\s*x/.test(await cmText());
     // …and Revert (confirm dialog) drops the stray char, back to the saved tweak.
     await aside().getByRole("button", { name: "Revert", exact: true }).click();
     const discardDlg2 = page.getByRole("dialog", { name: "Discard unsaved changes?" });
@@ -884,7 +912,7 @@ async function main() {
     await aside().getByRole("tab", { name: "Source", exact: true }).click();
     await aside().locator(".cm-content").first().waitFor({ state: "visible", timeout: 15_000 });
     await page.evaluate(() => {
-      const content = [...document.querySelectorAll('aside[data-pane="right"] .cm-content')].find(
+      const content = [...document.querySelectorAll('[data-pane="right"] .cm-content')].find(
         (c) => (c as HTMLElement).offsetParent !== null,
       );
       const line = content?.querySelector(".cm-line");
@@ -1123,6 +1151,12 @@ async function main() {
     const contextLinkedOk = (await page.getByText(linkedLabel, { exact: true }).count()) >= 1;
     // The browser closes on a successful link, and the agent's prompt block
     // now describes the folder's contents (asserted server-side below).
+    // The linked row can render before the picker's own close (two state
+    // updates from one resolved request) — give the close a moment.
+    await page
+      .getByRole("button", { name: "Link this folder" })
+      .waitFor({ state: "detached", timeout: 5_000 })
+      .catch(() => {});
     const browserClosedOk =
       (await page.getByRole("button", { name: "Link this folder" }).count()) === 0;
     const ctxDetail = (await (await afetch(`${apiBase}/projects/${mockProjectId}/context`)).json()) as {
@@ -1794,7 +1828,7 @@ async function main() {
     const textLayerSpans = await leftPane().locator(".textLayer").first().locator("span").count();
     // A programmatic selection across the layer yields a non-empty string.
     const textLayerSelection = await page.evaluate(() => {
-      const layer = document.querySelector('main[data-pane="left"] .textLayer');
+      const layer = document.querySelector('[data-pane="left"] .textLayer');
       if (!layer) return "";
       const sel = window.getSelection()!;
       sel.removeAllRanges();
@@ -1830,7 +1864,7 @@ async function main() {
     await aside().getByRole("tab", { name: "PDF", exact: true }).click();
     await aside().locator(".textLayer span").first().waitFor({ timeout: 60_000 });
     const quoteSelection = await page.evaluate(() => {
-      const layer = document.querySelector('aside[data-pane="right"] .textLayer');
+      const layer = document.querySelector('[data-pane="right"] .textLayer');
       if (!layer) return "";
       const spans = [...layer.querySelectorAll("span")].filter((s) => (s.textContent ?? "").trim());
       if (spans.length === 0) return "";
@@ -1912,18 +1946,18 @@ async function main() {
     // Text layers render lazily per visible page, so scroll to a page boundary
     // until two of them coexist — otherwise the case cannot occur in the DOM.
     for (let attempt = 0; attempt < 12; attempt++) {
-      const layerCount = await page.locator('aside[data-pane="right"] .textLayer span').evaluateAll(
+      const layerCount = await page.locator('[data-pane="right"] .textLayer span').evaluateAll(
         (spans) => new Set(spans.map((s) => s.closest(".textLayer"))).size,
       );
       if (layerCount >= 2) break;
       await page.evaluate(() => {
-        const el = document.querySelector('aside[data-pane="right"] [data-pdf-scroll]');
+        const el = document.querySelector('[data-pane="right"] [data-pdf-scroll]');
         if (el) el.scrollTop += el.clientHeight * 0.6;
       });
       await page.waitForTimeout(500);
     }
     const crossPageSelection = await page.evaluate(() => {
-      const layers = [...document.querySelectorAll('aside[data-pane="right"] .textLayer')];
+      const layers = [...document.querySelectorAll('[data-pane="right"] .textLayer')];
       if (layers.length < 2) return { spanned: false, text: "" };
       // No inner named functions here: tsx/esbuild would inject a __name helper
       // that does not exist in the page.
@@ -2095,6 +2129,8 @@ async function main() {
         editorTextOk,
         dirtyDotOk,
         quickSaveKeepsEditor,
+        swapKeepsDraftOk,
+        swapBackKeepsDraftOk,
         searchPanelOk,
         searchPanelStyled,
         acListsSection,
@@ -2227,13 +2263,13 @@ async function main() {
       throw new Error(`model chip shows '${modelChipText}' instead of the resolved default 'sonnet-5'`);
     }
     if (!modelSavedOk) throw new Error("picking a model in the popover did not save it to settings");
-    if (!modelChipUpdated) throw new Error("model chip did not refresh to 'opus-5' after saving");
+    if (!modelChipUpdated) throw new Error("model chip did not refresh to the picked model after saving");
     if (!modelResetOk) throw new Error("resetting the model to the default failed");
     if (!projSettingsSavedOk) {
       throw new Error("project settings (style/model/defaultMode) did not persist via GET");
     }
     if (!projChipOverrideOk) {
-      throw new Error("model chip does not show the project override 'fable-5'");
+      throw new Error("model chip does not show the project override 'fable-5-1'");
     }
     if (!projDefaultModeApplied) {
       throw new Error("the project's default mode did not preselect the Research pill");

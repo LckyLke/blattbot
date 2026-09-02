@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   api,
   ensureAuth,
@@ -26,6 +26,7 @@ import ProofPanel from "./components/ProofPanel";
 import PdfPanel from "./components/PdfPanel";
 import RefsPanel from "./components/RefsPanel";
 import SourcePanel from "./components/SourcePanel";
+import { countDrafts, subscribeDrafts } from "./drafts";
 
 type View = "dashboard" | "project";
 
@@ -40,6 +41,8 @@ const PANE_TABS = [
 type PaneView = (typeof PANE_TABS)[number][0];
 type PaneSide = "left" | "right";
 type Panes = { left: PaneView; right: PaneView };
+/** The two physical pane elements: "a" is the <main>, "b" the <aside>. */
+type PhysPane = "a" | "b";
 
 const isPaneView = (v: string | null): v is PaneView => PANE_TABS.some(([key]) => key === v);
 
@@ -208,6 +211,8 @@ function itemsFromEvents(
             kind: "turn_end",
             costUsd: typeof ev.costUsd === "number" ? ev.costUsd : undefined,
             durationMs: typeof ev.durationMs === "number" ? ev.durationMs : undefined,
+            contextTokens: typeof ev.contextTokens === "number" ? ev.contextTokens : undefined,
+            contextWindow: typeof ev.contextWindow === "number" ? ev.contextWindow : undefined,
             inputTokens: typeof ev.inputTokens === "number" ? ev.inputTokens : undefined,
             outputTokens: typeof ev.outputTokens === "number" ? ev.outputTokens : undefined,
           });
@@ -291,18 +296,24 @@ function AppShell() {
     null,
   );
 
-  // Which pane each panel is mounted in. A panel stays in its last pane (as a
-  // hidden wrapper) while not displayed, so tab switches within a pane never
-  // remount it; only moving a panel across panes does.
-  const paneOwner = useRef<Record<PaneView, PaneSide>>({
-    chat: "left",
-    proof: "right",
-    source: "right",
-    pdf: "right",
-    refs: "right",
+  // Which PHYSICAL pane each panel is mounted in. A panel stays in its last
+  // pane (as a hidden wrapper) while not displayed, so tab switches never
+  // remount it. Picking the other pane's view swaps the two views — and flips
+  // which physical pane sits on which side, so the panels stay where they are
+  // in the DOM: a chat draft, the PDF scroll, an editor selection all survive
+  // the swap. Only asking for a view the other pane holds hidden moves it.
+  const [flipped, setFlipped] = useState(false);
+  const physOnLeft: PhysPane = flipped ? "b" : "a";
+  const physOnRight: PhysPane = flipped ? "a" : "b";
+  const paneOwner = useRef<Record<PaneView, PhysPane>>({
+    chat: "a",
+    proof: "b",
+    source: "b",
+    pdf: "b",
+    refs: "b",
   });
-  paneOwner.current[panes.left] = "left";
-  paneOwner.current[panes.right] = "right";
+  paneOwner.current[panes.left] = physOnLeft;
+  paneOwner.current[panes.right] = physOnRight;
 
   useEffect(() => {
     localStorage.setItem("blattbot.paneLeft.v2", panes.left);
@@ -316,6 +327,8 @@ function AppShell() {
   // True when the working tree may have changed since the last compile — the
   // PDF tab auto-compiles only then (or when nothing was compiled yet).
   const dirtySinceCompile = useRef(false);
+  /** Bumped on every turn_end — lets send() tell whether "its" turn already ended. */
+  const turnEndSeq = useRef(0);
   // Debounce for mid-turn recompiles while the PDF pane is visible.
   const liveCompileTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -520,6 +533,7 @@ function AppShell() {
           );
           break;
         case "turn_end":
+          turnEndSeq.current++;
           setBusy(false);
           setActivity("idle");
           dirtySinceCompile.current = true;
@@ -546,6 +560,8 @@ function AppShell() {
                 kind: "turn_end",
                 costUsd: ev.costUsd,
                 durationMs: ev.durationMs,
+                contextTokens: ev.contextTokens,
+                contextWindow: ev.contextWindow,
                 inputTokens: ev.inputTokens,
                 outputTokens: ev.outputTokens,
               },
@@ -667,6 +683,9 @@ function AppShell() {
     setScope(loadScope(selectedId));
     setProjSettings(null);
     setProjSettingsOpen(false);
+    // The previous project's file list must not linger under the new id —
+    // the Source panel picks its file from this list.
+    setDetail(null);
     void refreshDetail(selectedId);
     api
       .diff(selectedId)
@@ -831,28 +850,42 @@ function AppShell() {
 
   const dialog = useDialog();
 
-  // Leaving the project view while the Proof holds unapproved changes: the
-  // edits stay saved on disk, but out of sight they are easy to forget — ask
-  // before the pending diff disappears from view. Resolves true on a clean
-  // diff without a dialog; approve/discard never navigate, so they are
+  // Leaving the project view while the Proof holds unapproved changes, or
+  // while the Source editor holds unsaved drafts: the edits stay (on disk,
+  // resp. in this tab), but out of sight they are easy to forget — ask
+  // before they disappear from view. Resolves true without a dialog when
+  // there is nothing pending; approve/discard never navigate, so they are
   // unaffected.
   const confirmLeave = useCallback(
     (confirmLabel: string): Promise<boolean> => {
-      if (!diff.trim()) return Promise.resolve(true);
       const project = selectedRef.current;
-      const n = parseDiff(diff).length;
-      const dest =
-        project?.kind === "overleaf"
-          ? "reach Overleaf"
-          : project?.kind === "git"
-            ? "reach the git remote"
-            : "be committed";
+      const drafts = project ? countDrafts(project.id) : 0;
+      if (!diff.trim() && drafts === 0) return Promise.resolve(true);
+      const name = project?.name ?? "this project";
+      const parts: string[] = [];
+      if (diff.trim()) {
+        const n = parseDiff(diff).length;
+        const dest =
+          project?.kind === "overleaf"
+            ? "reach Overleaf"
+            : project?.kind === "git"
+              ? "reach the git remote"
+              : "be committed";
+        parts.push(
+          `${n === 1 ? "1 file has" : `${n} files have`} changes in “${name}” that haven't ` +
+            `been approved — they stay saved locally but won't ${dest} until you approve them.`,
+        );
+      }
+      if (drafts > 0) {
+        parts.push(
+          `The Source editor holds unsaved edits in ${drafts === 1 ? "1 file" : `${drafts} files`} ` +
+            `of “${name}” — they are kept in this tab until you save or revert them, ` +
+            `but a page reload loses them.`,
+        );
+      }
       return dialog.confirm({
-        title: "Unapproved changes",
-        body:
-          `${n === 1 ? "1 file has" : `${n} files have`} changes in ` +
-          `“${project?.name ?? "this project"}” that haven't been approved — they stay ` +
-          `saved locally but won't ${dest} until you approve them.`,
+        title: diff.trim() ? "Unapproved changes" : "Unsaved edits",
+        body: parts.join(" "),
         confirmLabel,
         cancelLabel: "Stay",
       });
@@ -878,9 +911,11 @@ function AppShell() {
   }, [view, confirmLeave, refreshProjects]);
 
   // Browser-level guard on closing/reloading the tab: armed only while
-  // unapproved changes are pending or an agent turn is still running — a
-  // clean, idle state never nags.
-  const warnBeforeUnload = Boolean(diff.trim()) || busy;
+  // unapproved changes are pending, an agent turn is still running, or the
+  // Source editor holds unsaved drafts (in any project — a reload loses them
+  // all) — a clean, idle state never nags.
+  const draftTotal = useSyncExternalStore(subscribeDrafts, countDrafts);
+  const warnBeforeUnload = Boolean(diff.trim()) || busy || draftTotal > 0;
   useEffect(() => {
     if (!warnBeforeUnload) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -940,6 +975,7 @@ function AppShell() {
         ...(attachments.length > 0 ? { images: attachments } : {}),
       });
       try {
+        const endedBefore = turnEndSeq.current;
         await api.chat(
           id,
           message,
@@ -951,8 +987,12 @@ function AppShell() {
         // The server accepted the turn — reflect it immediately instead of
         // waiting for the websocket's turn_start (which a dropped socket
         // would never deliver, leaving no Stop button and no activity).
-        setBusy(true);
-        setActivity("thinking");
+        // Unless the turn is already OVER: a fast turn's turn_end can beat
+        // this response, and re-arming busy then would lock the composer.
+        if (turnEndSeq.current === endedBefore) {
+          setBusy(true);
+          setActivity("thinking");
+        }
         // The first message titles a fresh chat server-side.
         void refreshChats(id);
         return true;
@@ -1358,22 +1398,24 @@ function AppShell() {
 
   const selectView = useCallback(
     (side: PaneSide, view: PaneView) => {
-      setPanes((prev) => {
-        if (prev[side] === view) return prev;
+      const other: PaneSide = side === "left" ? "right" : "left";
+      if (panes[side] === view) return;
+      if (panes[other] === view) {
         // The two panes always show different views — picking the other
-        // pane's view swaps the two.
-        if (prev[side === "left" ? "right" : "left"] === view) {
-          return { left: prev.right, right: prev.left };
-        }
-        return { ...prev, [side]: view };
-      });
+        // pane's view swaps the two. The physical panes flip sides with
+        // them, so no panel changes its place in the DOM (see paneOwner).
+        setPanes({ left: panes.right, right: panes.left });
+        setFlipped((f) => !f);
+      } else {
+        setPanes({ ...panes, [side]: view });
+      }
       // Showing the PDF compiles automatically when the preview is missing
       // or stale — never while a compile or agent turn is already running.
       if (view === "pdf" && !busy && !compilingRef.current && (compile === null || dirtySinceCompile.current)) {
         void startCompile();
       }
     },
-    [busy, compile, startCompile],
+    [panes, busy, compile, startCompile],
   );
 
   // The default layout opens with the PDF pane visible — make sure a PDF
@@ -1432,6 +1474,15 @@ function AppShell() {
   }, []);
 
   const inProject = view === "project" && selected !== null;
+
+  // The left pane is the flexible one, the right pane fixed at panelW; CSS
+  // order places the physical panes (the sidebar keeps order 0 and comes first).
+  const paneClass = (side: PaneSide) =>
+    side === "left"
+      ? "booktabs flex min-w-0 flex-1 flex-col border-r border-rule bg-ink"
+      : "booktabs flex min-w-[320px] shrink-0 flex-col bg-ink";
+  const paneStyle = (side: PaneSide): React.CSSProperties =>
+    side === "left" ? { order: 0 } : { order: 2, width: panelW };
 
   /** One panel instance per view — rendered into whichever pane owns it. */
   const renderPanel = (key: PaneView) => {
@@ -1542,6 +1593,7 @@ function AppShell() {
   /** A pane: its compact tab strip plus the panels it currently owns. */
   const renderPane = (side: PaneSide) => {
     const active = panes[side];
+    const phys: PhysPane = side === "left" ? physOnLeft : physOnRight;
     return (
       <>
         <nav
@@ -1596,7 +1648,7 @@ function AppShell() {
           {/* Panels stay mounted (hidden) in their owning pane so drafts,
               scroll, and the loaded PDF survive tab switches. */}
           {PANE_TABS.map(([key, label]) =>
-            paneOwner.current[key] === side ? (
+            paneOwner.current[key] === phys ? (
               <div
                 key={key}
                 id={`pane-panel-${key}`}
@@ -1680,11 +1732,15 @@ function AppShell() {
               update={update}
             />
 
+            {/* Two physical panes; `flipped` decides which sits left. CSS order
+                moves them visually so their DOM subtrees (and React state)
+                never move — see paneOwner. */}
             <main
-              data-pane="left"
-              className="booktabs flex min-w-0 flex-1 flex-col border-r border-rule bg-ink"
+              data-pane={flipped ? "right" : "left"}
+              style={paneStyle(flipped ? "right" : "left")}
+              className={paneClass(flipped ? "right" : "left")}
             >
-              {renderPane("left")}
+              {renderPane(flipped ? "right" : "left")}
             </main>
 
             <div
@@ -1700,14 +1756,15 @@ function AppShell() {
               onPointerMove={onDrag}
               onPointerUp={endDrag}
               onPointerCancel={endDrag}
+              style={{ order: 1 }}
               className="w-[5px] shrink-0 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-leaf/50 active:bg-leaf/70"
             />
             <aside
-              data-pane="right"
-              style={{ width: panelW }}
-              className="booktabs flex min-w-[320px] shrink-0 flex-col bg-ink"
+              data-pane={flipped ? "left" : "right"}
+              style={paneStyle(flipped ? "left" : "right")}
+              className={paneClass(flipped ? "left" : "right")}
             >
-              {renderPane("right")}
+              {renderPane(flipped ? "left" : "right")}
             </aside>
           </>
         )}
