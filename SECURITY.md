@@ -22,7 +22,7 @@ To revoke access: log out of Overleaf in your browser (invalidates the session s
 
 ## Browser cookie import
 
-"Sign in from browser session" reads the cookie stores of browsers installed on your machine (Firefox, Chrome, Edge, Brave, Chromium, …) to find an existing Overleaf login. This runs with your own OS user's privileges and reads only what you could already read yourself — the same cookies your browser sends to Overleaf on every visit. The imported session cookie is stored locally as described above and is only ever sent to the Overleaf instance it belongs to. It never leaves your machine otherwise. The alternative "assisted login" opens a real browser window on the instance's login page and captures the session cookie when it appears (this also works with SSO).
+"Sign in from browser session" reads the cookie stores of browsers installed on your machine (Firefox, Chrome, Edge, Brave, Chromium, …) to find an existing Overleaf login. This runs with your own OS user's privileges and reads only what you could already read yourself — the same cookies your browser sends to Overleaf on every visit. The imported session cookie is stored locally as described above and is only ever sent to the Overleaf instance it belongs to. It never leaves your machine otherwise. On Linux, a Chromium-family browser encrypts its cookies with a secret from the OS keyring; BlattBot reads it from the freedesktop Secret Service (GNOME Keyring) or, on KDE, from KWallet via `kwallet-query` (set `BLATTBOT_KWALLET` to name a non-default wallet). The alternative "assisted login" opens a real Chromium or Chrome window (not Firefox) on the instance's login page and captures the session cookie when it appears (this also works with SSO).
 
 ## What is sent where
 

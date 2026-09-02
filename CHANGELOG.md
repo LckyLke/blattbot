@@ -29,6 +29,11 @@
 ### Fixes
 - A fast turn could leave the composer locked on "Stop": the send path re-armed the busy state after the server's reply, even when the turn's end had already arrived over the websocket. It now checks that first.
 
+### Browser sign-in (auto cookie import)
+- Fixed: importing an Overleaf session from a Chromium-family browser (Chrome, Chromium, Brave, Edge) returned nothing whenever the browser held real cookies. The `last_access_utc` column is microseconds since 1601 (~1.3e16), past JavaScript's safe-integer limit, so the SQLite read threw and the importer silently skipped that browser. The timestamp is now read as a double.
+- Fixed on KDE: Chromium stores its cookie-encryption secret in KWallet, which the importer never queried (it only asked the freedesktop Secret Service, which a stock KDE install does not populate for Chromium). It now falls back to `kwallet-query`; set `BLATTBOT_KWALLET` to override the wallet name. Together these two fixes are why "Sign in from browser session" found nothing and a cookie had to be pasted by hand.
+- Note: "Log in via browser" opens a Chromium or Chrome window (via playwright-core) and does not use Firefox; "Sign in from browser session" reads Firefox and every Chromium-family store and launches nothing.
+
 ### Hardening
 - The file fence (project-only writes, project-plus-context reads, credential stores off-limits) moved into a PreToolUse hook. Under the SDK's bypass permission mode ordinary tool calls never reached the permission callback that held it — verified live: a Write outside the project went through before and is refused now. Mid-turn questions keep using the callback.
 

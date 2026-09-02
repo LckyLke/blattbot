@@ -184,7 +184,7 @@ export function readFirefox(dbPath: string, host: string, names: string[]): Cook
     return (
       db
         .prepare(
-          `SELECT name, value, lastAccessed FROM moz_cookies
+          `SELECT name, value, CAST(lastAccessed AS REAL) AS lastAccessed FROM moz_cookies
            WHERE host IN (${hp}) AND name IN (${ph})`,
         )
         .all(...hosts, ...names) as any[]
@@ -192,20 +192,76 @@ export function readFirefox(dbPath: string, host: string, names: string[]): Cook
   });
 }
 
+/**
+ * kwallet-query arguments that read a Chromium browser's "Safe Storage" secret
+ * on KDE. The secret lives in the wallet folder "<Product> Keys" under the
+ * entry "<Product> Safe Storage" (e.g. folder "Chromium Keys", entry "Chromium
+ * Safe Storage"). The wallet defaults to "kdewallet"; BLATTBOT_KWALLET overrides
+ * it. Pure — exported for unit tests.
+ */
+export function kwalletArgs(service: string, wallet = process.env.BLATTBOT_KWALLET || "kdewallet"): string[] {
+  const product = service.replace(/ Safe Storage$/, "");
+  return ["-r", `${product} Safe Storage`, "-f", `${product} Keys`, wallet];
+}
+
+/** kwallet-query prints a message (exit 0) instead of a value when it misses. */
+function looksLikeKwalletMiss(out: string): boolean {
+  return out === "" || /not (found|exist)|does not exist|failed to|no such/i.test(out);
+}
+
+/**
+ * The Chromium Safe Storage secret from KWallet (KDE's default password store).
+ * On a stock KDE install Chromium does NOT register this secret with the
+ * freedesktop Secret Service, so secret-tool cannot see it — kwallet-query is
+ * the only way to reach it. Best-effort and time-bounded so a locked or absent
+ * wallet never hangs the import. Exported for unit tests.
+ */
+export function kwalletSecret(
+  service: string,
+  run: (bin: string, args: string[]) => string = defaultKwalletRun,
+): string {
+  for (const bin of ["kwallet-query", "kwallet-query5"]) {
+    try {
+      const out = run(bin, kwalletArgs(service)).trim();
+      if (!looksLikeKwalletMiss(out)) return out;
+    } catch {
+      /* not installed / wallet closed / timed out */
+    }
+  }
+  return "";
+}
+
+function defaultKwalletRun(bin: string, args: string[]): string {
+  return execFileSync(bin, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 5_000,
+  });
+}
+
 /** Fetch the OS storage secret for a Chromium browser (Linux/macOS keyring). */
 function chromiumStorageSecret(service?: string): string {
   const p = platform();
   if (p === "linux" && service) {
+    // 1) freedesktop Secret Service — GNOME libsecret, and KDE setups that
+    //    bridge kwallet to it. Reached by both GNOME Keyring and gnome-keyring.
     try {
       const out = execFileSync("secret-tool", ["lookup", "application", service.replace(/ Safe Storage$/, "").toLowerCase()], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
+        timeout: 5_000,
       }).trim();
       if (out) return out;
     } catch {
       /* keyring locked or absent */
     }
-    // Common Linux fallback secret when the keyring is unavailable ("basic" storage).
+    // 2) KWallet — the KDE default store, where Chromium keeps its secret and
+    //    which secret-tool usually cannot see. Without this, every cookie in a
+    //    KDE Chromium/Chrome/Brave profile fails to decrypt and browser
+    //    sign-in silently finds nothing (the "paste it manually" symptom).
+    const kw = kwalletSecret(service);
+    if (kw) return kw;
+    // 3) Common Linux fallback secret when no keyring is available ("basic" storage).
     return "peanuts";
   }
   if (p === "darwin" && service) {
@@ -264,8 +320,12 @@ export function readChromium(profile: BrowserProfile, host: string, names: strin
     const ph = names.map(() => "?").join(",");
     const rows = db
       .prepare(
-        `SELECT name, encrypted_value, value, last_access_utc FROM cookies
-         WHERE host_key IN (${hp}) AND name IN (${ph})`,
+        // last_access_utc is microseconds since 1601 (~1.3e16) — larger than
+        // Number.MAX_SAFE_INTEGER, so node:sqlite THROWS while materializing an
+        // INTEGER column that big. CAST it to REAL (a double, ample for the
+        // recency ordering) so reading a real profile's cookies never throws.
+        `SELECT name, encrypted_value, value, CAST(last_access_utc AS REAL) AS last_access_utc
+         FROM cookies WHERE host_key IN (${hp}) AND name IN (${ph})`,
       )
       .all(...hosts, ...names) as any[];
     const out: CookieRow[] = [];
