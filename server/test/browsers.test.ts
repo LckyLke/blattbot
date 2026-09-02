@@ -1,5 +1,5 @@
 import { createCipheriv, createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -171,5 +171,101 @@ describe("kwallet secret retrieval (KDE)", () => {
     });
     expect(tried).toEqual(["kwallet-query", "kwallet-query5"]);
     expect(secret).toBe("secret-from-query5");
+  });
+});
+
+// Under WSL the server is Linux but the user's browsers are Windows ones,
+// mounted under /mnt/<drive>/Users/<name>/AppData. BLATTBOT_WSL=1 forces
+// detection and BLATTBOT_WSL_MNT stands in for /mnt.
+describe("discoverProfiles + readers (WSL: Windows stores under /mnt)", () => {
+  const HOST = "overleaf.uni-paderborn.de";
+  let mnt: string;
+  let winHome: string;
+
+  beforeEach(() => {
+    mnt = join(sandbox, "mnt");
+    winHome = join(mnt, "c", "Users", "luke");
+    mkdirSync(join(winHome, "AppData", "Local"), { recursive: true });
+    mkdirSync(join(winHome, "AppData", "Roaming"), { recursive: true });
+    mkdirSync(join(mnt, "c", "Windows", "System32"), { recursive: true });
+    // Not user homes: must be skipped without error.
+    mkdirSync(join(mnt, "c", "Users", "Public", "AppData"), { recursive: true });
+    mkdirSync(join(mnt, "c", "Users", "Default", "AppData"), { recursive: true });
+    mkdirSync(join(mnt, "wslg"), { recursive: true });
+    process.env.BLATTBOT_WSL = "1";
+    process.env.BLATTBOT_WSL_MNT = mnt;
+  });
+
+  afterEach(() => {
+    delete process.env.BLATTBOT_WSL;
+    delete process.env.BLATTBOT_WSL_MNT;
+  });
+
+  it("finds the Windows Firefox session (plaintext) and labels its source", async () => {
+    writeFirefoxDb(
+      join(winHome, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles", "k3j9.default-release"),
+      HOST,
+      "overleaf.sid",
+      "s%3Awindows-firefox",
+    );
+    const { discoverProfiles } = await import("../src/overleaf/browsers.js");
+    const profiles = discoverProfiles();
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0]).toMatchObject({ browser: "Firefox (Windows)", family: "firefox", crypt: "windows" });
+
+    const { scanBrowsers } = await import("../src/overleaf/cookiegrab.js");
+    const scan = scanBrowsers(`https://${HOST}`);
+    expect(scan.found).toEqual([{ cookie: "overleaf.sid=s%3Awindows-firefox", source: "Firefox (Windows)" }]);
+    expect(scan.unreadable).toEqual([]);
+  });
+
+  it("still scans the Linux-side browsers alongside the Windows ones", async () => {
+    writeFirefoxDb(join(sandbox, ".mozilla", "firefox", "abc.default"), HOST, "overleaf.sid", "linux-side");
+    writeFirefoxDb(
+      join(winHome, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles", "x.default"),
+      HOST,
+      "overleaf.sid",
+      "windows-side",
+    );
+    const { importFromBrowsers } = await import("../src/overleaf/cookiegrab.js");
+    expect(importFromBrowsers(`https://${HOST}`).map((f) => f.source).sort()).toEqual([
+      "Firefox",
+      "Firefox (Windows)",
+    ]);
+  });
+
+  it("reports a Windows Chrome store whose cookies it cannot decrypt (app-bound v20)", async () => {
+    const userData = join(winHome, "AppData", "Local", "Google", "Chrome", "User Data");
+    mkdirSync(userData, { recursive: true });
+    writeFileSync(join(userData, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: "RFBBUEk=" } }));
+    writeChromiumDb(
+      join(userData, "Default", "Network", "Cookies"),
+      HOST,
+      "overleaf.sid",
+      Buffer.concat([Buffer.from("v20"), Buffer.alloc(40, 7)]),
+    );
+    const { discoverProfiles } = await import("../src/overleaf/browsers.js");
+    expect(discoverProfiles()[0]).toMatchObject({ browser: "Chrome (Windows)", crypt: "windows" });
+
+    const { scanBrowsers, noSessionMessage } = await import("../src/overleaf/cookiegrab.js");
+    const scan = scanBrowsers(`https://${HOST}`);
+    expect(scan.found).toEqual([]);
+    expect(scan.unreadable).toEqual(["Chrome (Windows)"]);
+    const msg = noSessionMessage(HOST, scan);
+    expect(msg).toContain("scanned from WSL");
+    expect(msg).toContain("Chrome (Windows)");
+    expect(msg).toContain("app-bound");
+  });
+
+  it("ignores the Windows tree when not under WSL", async () => {
+    process.env.BLATTBOT_WSL = "0";
+    writeFirefoxDb(
+      join(winHome, "AppData", "Roaming", "Mozilla", "Firefox", "Profiles", "x.default"),
+      HOST,
+      "overleaf.sid",
+      "windows-side",
+    );
+    const { discoverProfiles } = await import("../src/overleaf/browsers.js");
+    expect(discoverProfiles()).toEqual([]);
   });
 });

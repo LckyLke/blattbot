@@ -55,7 +55,7 @@ Claude Code in a folder can edit LaTeX. BlattBot adds what a bare CLI session do
 
 ## Connecting
 
-Sign in once per Overleaf instance. The easiest way is "Sign in from browser session", which imports the login you already have in Firefox, Chrome or most other browsers.
+Sign in once per Overleaf instance. The easiest way is "Sign in from browser session", which imports the login you already have in Firefox, Chrome or most other browsers. Inside WSL it reads the Windows browsers too; use Firefox there, since Chrome and Edge on Windows keep their cookies locked to the browser (app-bound encryption).
 
 Instances with the git bridge (paid overleaf.com plans, Server Pro) can also be connected through a git URL.
 

@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { detectEngines } from "./compile.js";
 import { discoverProfiles } from "./overleaf/browsers.js";
+import { isWsl, windowsUserHomes } from "./overleaf/wsl.js";
 import { DATA_DIR } from "./config.js";
 import { loadSettings } from "./settings.js";
 import { agentSdkVersion, describeEngine } from "./sdkinfo.js";
@@ -54,6 +55,12 @@ export async function runDoctor(log: (line: string) => void = console.log): Prom
   );
   log(`Engine:    Agent SDK ${agentSdkVersion() ?? "not installed"} · ${describeEngine()}`);
 
+  if (isWsl()) {
+    const homes = windowsUserHomes();
+    log(
+      `\nWSL detected — Windows user profiles reachable: ${homes.length > 0 ? homes.map(short).join(", ") : "none (is the Windows drive mounted under /mnt?)"}`,
+    );
+  }
   const profiles = discoverProfiles();
   log(`\nBrowser cookie stores discovered: ${profiles.length}`);
   for (const p of profiles) {

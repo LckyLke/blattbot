@@ -16,8 +16,11 @@ import {
   deriveCbcKey,
   LINUX_FALLBACK_KEY,
 } from "./chromium-crypto.js";
+import { isWsl, windowsExe, windowsUserHomes } from "./wsl.js";
 
 export type Family = "firefox" | "chromium";
+/** Which OS wrote a cookie store — decides the Chromium decryption scheme. */
+export type Crypt = "linux" | "darwin" | "windows";
 
 export interface BrowserProfile {
   browser: string;
@@ -28,6 +31,11 @@ export interface BrowserProfile {
   localState?: string;
   /** Chromium only: keyring/keychain service name used for the storage secret. */
   safeStorageService?: string;
+  /**
+   * The OS that wrote the store. Usually the current platform; under WSL the
+   * Windows browsers' stores are read from /mnt/<drive> with Windows crypto.
+   */
+  crypt: Crypt;
 }
 
 function homeDir(): string {
@@ -40,6 +48,23 @@ interface Spec {
   family: Family;
   dirs: string[];
   service?: string;
+  crypt: Crypt;
+}
+
+/**
+ * The Windows browser stores under one user profile. `label` suffixes the
+ * browser name ("Firefox (Windows)") when the store is read from WSL.
+ */
+function windowsSpecs(local: string, roaming: string, label = ""): Spec[] {
+  const crypt: Crypt = "windows";
+  return [
+    { browser: `Firefox${label}`, family: "firefox", dirs: [join(roaming, "Mozilla", "Firefox", "Profiles")], crypt },
+    { browser: `Chrome${label}`, family: "chromium", dirs: [join(local, "Google", "Chrome", "User Data")], crypt },
+    { browser: `Chromium${label}`, family: "chromium", dirs: [join(local, "Chromium", "User Data")], crypt },
+    { browser: `Edge${label}`, family: "chromium", dirs: [join(local, "Microsoft", "Edge", "User Data")], crypt },
+    { browser: `Brave${label}`, family: "chromium", dirs: [join(local, "BraveSoftware", "Brave-Browser", "User Data")], crypt },
+    { browser: `Vivaldi${label}`, family: "chromium", dirs: [join(local, "Vivaldi", "User Data")], crypt },
+  ];
 }
 
 function specsForPlatform(): Spec[] {
@@ -47,36 +72,42 @@ function specsForPlatform(): Spec[] {
   const p = platform();
   if (p === "darwin") {
     const app = join(home, "Library", "Application Support");
+    const crypt: Crypt = "darwin";
     return [
-      { browser: "Firefox", family: "firefox", dirs: [join(home, "Library", "Application Support", "Firefox", "Profiles")] },
-      { browser: "Chrome", family: "chromium", dirs: [join(app, "Google", "Chrome")], service: "Chrome Safe Storage" },
-      { browser: "Chromium", family: "chromium", dirs: [join(app, "Chromium")], service: "Chromium Safe Storage" },
-      { browser: "Edge", family: "chromium", dirs: [join(app, "Microsoft Edge")], service: "Microsoft Edge Safe Storage" },
-      { browser: "Brave", family: "chromium", dirs: [join(app, "BraveSoftware", "Brave-Browser")], service: "Brave Safe Storage" },
-      { browser: "Vivaldi", family: "chromium", dirs: [join(app, "Vivaldi")], service: "Vivaldi Safe Storage" },
+      { browser: "Firefox", family: "firefox", dirs: [join(home, "Library", "Application Support", "Firefox", "Profiles")], crypt },
+      { browser: "Chrome", family: "chromium", dirs: [join(app, "Google", "Chrome")], service: "Chrome Safe Storage", crypt },
+      { browser: "Chromium", family: "chromium", dirs: [join(app, "Chromium")], service: "Chromium Safe Storage", crypt },
+      { browser: "Edge", family: "chromium", dirs: [join(app, "Microsoft Edge")], service: "Microsoft Edge Safe Storage", crypt },
+      { browser: "Brave", family: "chromium", dirs: [join(app, "BraveSoftware", "Brave-Browser")], service: "Brave Safe Storage", crypt },
+      { browser: "Vivaldi", family: "chromium", dirs: [join(app, "Vivaldi")], service: "Vivaldi Safe Storage", crypt },
     ];
   }
   if (p === "win32") {
     const local = process.env.LOCALAPPDATA ?? join(home, "AppData", "Local");
     const roaming = process.env.APPDATA ?? join(home, "AppData", "Roaming");
-    return [
-      { browser: "Firefox", family: "firefox", dirs: [join(roaming, "Mozilla", "Firefox", "Profiles")] },
-      { browser: "Chrome", family: "chromium", dirs: [join(local, "Google", "Chrome", "User Data")] },
-      { browser: "Edge", family: "chromium", dirs: [join(local, "Microsoft", "Edge", "User Data")] },
-      { browser: "Brave", family: "chromium", dirs: [join(local, "BraveSoftware", "Brave-Browser", "User Data")] },
-      { browser: "Vivaldi", family: "chromium", dirs: [join(local, "Vivaldi", "User Data")] },
-    ];
+    return windowsSpecs(local, roaming);
   }
   // Linux / other unix
   const config = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
-  return [
-    { browser: "Firefox", family: "firefox", dirs: [join(home, ".mozilla", "firefox")] },
-    { browser: "Chrome", family: "chromium", dirs: [join(config, "google-chrome")], service: "Chrome Safe Storage" },
-    { browser: "Chromium", family: "chromium", dirs: [join(config, "chromium")], service: "Chromium Safe Storage" },
-    { browser: "Edge", family: "chromium", dirs: [join(config, "microsoft-edge")], service: "Microsoft Edge Safe Storage" },
-    { browser: "Brave", family: "chromium", dirs: [join(config, "BraveSoftware", "Brave-Browser")], service: "Brave Safe Storage" },
-    { browser: "Vivaldi", family: "chromium", dirs: [join(config, "vivaldi")], service: "Vivaldi Safe Storage" },
+  const crypt: Crypt = "linux";
+  const specs: Spec[] = [
+    { browser: "Firefox", family: "firefox", dirs: [join(home, ".mozilla", "firefox")], crypt },
+    { browser: "Chrome", family: "chromium", dirs: [join(config, "google-chrome")], service: "Chrome Safe Storage", crypt },
+    { browser: "Chromium", family: "chromium", dirs: [join(config, "chromium")], service: "Chromium Safe Storage", crypt },
+    { browser: "Edge", family: "chromium", dirs: [join(config, "microsoft-edge")], service: "Microsoft Edge Safe Storage", crypt },
+    { browser: "Brave", family: "chromium", dirs: [join(config, "BraveSoftware", "Brave-Browser")], service: "Brave Safe Storage", crypt },
+    { browser: "Vivaldi", family: "chromium", dirs: [join(config, "vivaldi")], service: "Vivaldi Safe Storage", crypt },
   ];
+  // Under WSL the browsers the user actually logs in with are the Windows
+  // ones; their stores sit under /mnt/<drive>/Users/<name>/AppData.
+  if (isWsl()) {
+    for (const winHome of windowsUserHomes()) {
+      specs.push(
+        ...windowsSpecs(join(winHome, "AppData", "Local"), join(winHome, "AppData", "Roaming"), " (Windows)"),
+      );
+    }
+  }
+  return specs;
 }
 
 function firstExisting(paths: string[]): string | undefined {
@@ -119,7 +150,12 @@ export function discoverProfiles(): BrowserProfile[] {
         /* none */
       }
       for (const d of dirs) {
-        profiles.push({ browser: spec.browser, family: "firefox", cookieDb: join(root, d, "cookies.sqlite") });
+        profiles.push({
+          browser: spec.browser,
+          family: "firefox",
+          cookieDb: join(root, d, "cookies.sqlite"),
+          crypt: spec.crypt,
+        });
       }
     } else {
       const localState = firstExisting([join(root, "Local State")]);
@@ -130,6 +166,7 @@ export function discoverProfiles(): BrowserProfile[] {
           cookieDb: db,
           localState,
           safeStorageService: spec.service,
+          crypt: spec.crypt,
         });
       }
     }
@@ -141,6 +178,8 @@ export interface CookieRow {
   name: string;
   value: string;
   lastAccess: number;
+  /** The cookie exists but its value could not be decrypted (value is ""). */
+  unreadable?: boolean;
 }
 
 /** Copy a sqlite db (browsers keep it locked/WAL) and open it read-only. */
@@ -239,8 +278,21 @@ function defaultKwalletRun(bin: string, args: string[]): string {
   });
 }
 
+/** Real keyring secrets, memoized per service: they never change, and a
+ *  locked-wallet probe costs seconds. The "peanuts" fallback is never cached
+ *  so an unlocked wallet is picked up on the next scan. */
+const secretCache = new Map<string, string>();
+
 /** Fetch the OS storage secret for a Chromium browser (Linux/macOS keyring). */
 function chromiumStorageSecret(service?: string): string {
+  const cached = service && secretCache.get(service);
+  if (cached) return cached;
+  const secret = lookupStorageSecret(service);
+  if (service && secret !== "peanuts") secretCache.set(service, secret);
+  return secret;
+}
+
+function lookupStorageSecret(service?: string): string {
   const p = platform();
   if (p === "linux" && service) {
     // 1) freedesktop Secret Service — GNOME libsecret, and KDE setups that
@@ -277,9 +329,20 @@ function chromiumStorageSecret(service?: string): string {
   return "peanuts";
 }
 
-/** Windows: decrypt the AES-256-GCM key stored (DPAPI-wrapped) in Local State. */
+/** Unwrapped Windows keys per Local State file (one PowerShell round-trip each). */
+const gcmKeyCache = new Map<string, Buffer>();
+
+/**
+ * Windows: decrypt the AES-256-GCM key stored (DPAPI-wrapped) in Local State.
+ * Runs on Windows itself (`powershell`) and from WSL (`powershell.exe` through
+ * interop, as the same Windows user — which is what DPAPI requires).
+ */
 function windowsGcmKey(localStatePath?: string): Buffer | null {
-  if (!localStatePath || !existsSync(localStatePath) || platform() !== "win32") return null;
+  if (!localStatePath || !existsSync(localStatePath)) return null;
+  const cached = gcmKeyCache.get(localStatePath);
+  if (cached) return cached;
+  const powershell = platform() === "win32" ? "powershell" : windowsExe(join("WindowsPowerShell", "v1.0", "powershell.exe"));
+  if (!powershell) return null;
   try {
     const state = JSON.parse(readFileSync(localStatePath, "utf8"));
     const b64 = state?.os_crypt?.encrypted_key;
@@ -287,32 +350,50 @@ function windowsGcmKey(localStatePath?: string): Buffer | null {
     let wrapped = Buffer.from(b64, "base64");
     if (wrapped.subarray(0, 5).toString("ascii") === "DPAPI") wrapped = wrapped.subarray(5);
     // Unwrap via PowerShell's ProtectedData (no native module needed).
+    // System.Security is not preloaded in Windows PowerShell 5.1.
     const b64wrapped = wrapped.toString("base64");
     const ps =
+      `Add-Type -AssemblyName System.Security; ` +
       `[Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Unprotect(` +
       `[Convert]::FromBase64String('${b64wrapped}'),$null,'CurrentUser'))`;
-    const out = execFileSync("powershell", ["-NoProfile", "-Command", ps], {
+    const out = execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", ps], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      timeout: 20_000,
     }).trim();
-    return Buffer.from(out, "base64");
+    if (!out) return null;
+    const key = Buffer.from(out, "base64");
+    gcmKeyCache.set(localStatePath, key);
+    return key;
   } catch {
     return null;
   }
 }
 
-/** Read + decrypt named cookies for a host from a Chromium Cookies db. */
+/** The decryption keys for one Chromium profile, per the OS that wrote it. */
+function chromiumKeys(profile: BrowserProfile): { cbcKey?: Buffer; gcmKey?: Buffer } {
+  switch (profile.crypt) {
+    case "windows":
+      return { gcmKey: windowsGcmKey(profile.localState) ?? undefined };
+    case "darwin":
+      return { cbcKey: deriveCbcKey(chromiumStorageSecret(profile.safeStorageService), 1003) };
+    default: {
+      const secret = chromiumStorageSecret(profile.safeStorageService);
+      return { cbcKey: secret === "peanuts" ? LINUX_FALLBACK_KEY : deriveCbcKey(secret, 1) };
+    }
+  }
+}
+
+/**
+ * Read + decrypt named cookies for a host from a Chromium Cookies db. A cookie
+ * whose value cannot be decrypted (missing key, app-bound "v20" scheme) is
+ * returned with an empty value and `unreadable`, so callers can say so.
+ */
 export function readChromium(profile: BrowserProfile, host: string, names: string[]): CookieRow[] {
-  const isWin = platform() === "win32";
-  const cbcKey = isWin
-    ? undefined
-    : platform() === "darwin"
-      ? deriveCbcKey(chromiumStorageSecret(profile.safeStorageService), 1003)
-      : (() => {
-          const secret = chromiumStorageSecret(profile.safeStorageService);
-          return secret === "peanuts" ? LINUX_FALLBACK_KEY : deriveCbcKey(secret, 1);
-        })();
-  const gcmKey = isWin ? windowsGcmKey(profile.localState) ?? undefined : undefined;
+  // Keys are fetched lazily: the keyring/DPAPI round-trip only happens when a
+  // matching encrypted row exists.
+  let keys: { cbcKey?: Buffer; gcmKey?: Buffer } | undefined;
+  const getKeys = () => (keys ??= chromiumKeys(profile));
 
   return openCopied(profile.cookieDb, (db) => {
     const hosts = cookieHostKeys(host);
@@ -334,14 +415,16 @@ export function readChromium(profile: BrowserProfile, host: string, names: strin
       const enc = r.encrypted_value as Buffer | Uint8Array | null;
       if (enc && enc.length > 0) {
         try {
-          value = decryptChromiumCookie(Buffer.from(enc), { cbcKey, gcmKey, stripDomainHash: true }) ?? "";
+          value = decryptChromiumCookie(Buffer.from(enc), { ...getKeys(), stripDomainHash: true }) ?? "";
         } catch {
           value = "";
         }
       } else if (typeof r.value === "string") {
         value = r.value;
       }
-      if (value) out.push({ name: String(r.name), value, lastAccess: Number(r.last_access_utc) });
+      const row: CookieRow = { name: String(r.name), value, lastAccess: Number(r.last_access_utc) };
+      if (!value) row.unreadable = true;
+      out.push(row);
     }
     return out;
   });

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2 — 2026-09-02
+
+### Browser sign-in under WSL
+- Fixed: running BlattBot inside WSL, neither "Sign in from browser session" nor "Log in via browser" could find a session — the server is a Linux process, so it scanned the (empty) Linux browser profiles and looked for a Linux Chromium, while the browser you are logged in with is the Windows one. A pasted cookie was the only way in.
+- "Sign in from browser session" now also reads the Windows browsers' cookie stores under `/mnt/<drive>/Users/<you>/AppData` (Firefox, Chrome, Chromium, Edge, Brave, Vivaldi), labelled e.g. "Firefox (Windows)". Firefox works out of the box. Chrome and Edge on Windows encrypt cookies with a key only the browser itself can unwrap (app-bound encryption) and lock the store while running, so a session there stays unreadable — the error now says which browser had a session it could not read, instead of a bare "nothing found".
+- "Log in via browser" under WSL (no Linux Chromium, or no display) opens the login page in your Windows default browser and watches the Windows cookie stores until the session authenticates. Log in with Firefox on Windows for this to complete; the timeout message explains the Chrome/Edge limitation.
+- The Windows cookie-key unwrap now loads `System.Security` before calling DPAPI (Windows PowerShell 5.1 does not preload it), memoizes the unwrapped key per profile, and the keyring secret on Linux/macOS is fetched only when an encrypted cookie for the host actually exists — and cached, so a locked wallet no longer costs seconds on every scan.
+- `blattbot doctor` reports WSL and the Windows user profiles it can reach. `BLATTBOT_WSL=1|0` forces detection, `BLATTBOT_WSL_MNT` overrides the `/mnt` root.
+
 ## 0.4.1 — 2026-09-02
 
 ### Claude Fable 5.1

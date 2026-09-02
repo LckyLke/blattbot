@@ -108,7 +108,7 @@ import {
 import { makeTurnEventSink } from "./livediff.js";
 import { OverleafAuthError, OverleafClient, canonicalOrigin, parseProjectUrl } from "./overleaf/olclient.js";
 import { applySnapshot, unpackZip } from "./overleaf/olsync.js";
-import { captureViaBrowser, importFromBrowsers } from "./overleaf/cookiegrab.js";
+import { captureViaBrowser, noSessionMessage, scanBrowsers } from "./overleaf/cookiegrab.js";
 import * as sync from "./sync.js";
 import {
   cookieWorks,
@@ -364,8 +364,13 @@ app.post<{ Params: { id: string }; Body: { mode?: "import" | "browser" } }>(
     try {
       if (mode === "import") {
         if (!(await refreshFromBrowsers(account))) {
+          const host = new URL(account.baseUrl).hostname;
+          const scan = scanBrowsers(account.baseUrl);
           return reply.code(422).send({
-            error: `No working session for ${new URL(account.baseUrl).hostname} in your browsers — log in there once, or use the browser login.`,
+            error:
+              scan.found.length > 0
+                ? `Found a ${host} session in ${scan.found.map((c) => c.source).join(", ")}, but the instance rejected it — log in to Overleaf again there, then retry.`
+                : noSessionMessage(host, scan),
           });
         }
       } else {
@@ -618,11 +623,10 @@ app.post<{ Body: { url: string } }>("/api/cookies/import", async (req, reply) =>
     return reply.code(400).send({ error: "url is required" });
   }
   const host = new URL(base).hostname;
-  const candidates = importFromBrowsers(base);
+  const scan = scanBrowsers(base);
+  const candidates = scan.found;
   if (candidates.length === 0) {
-    return reply.code(404).send({
-      error: `No session cookie for ${host} found in any installed browser. Log in to Overleaf once, or use the browser login.`,
-    });
+    return reply.code(404).send({ error: noSessionMessage(host, scan) });
   }
   // Return the first candidate the instance actually accepts.
   let sawExpired = false;
