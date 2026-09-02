@@ -1,6 +1,6 @@
 {
   "name": "blattbot",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Agentic LaTeX editing for Overleaf — Claude edits a synced working copy, verifies by compiling, and shows you a reviewable diff before anything is pushed. Local-first, with an integrated citation pipeline.",
   "keywords": [
     "latex",

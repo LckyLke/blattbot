@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-09-02
 
 ### Claude Fable 5.1
 - The `fable` alias now resolves to `claude-fable-5-1`; `claude-fable-5-1` heads the model pick-lists (Claude Fable 5 stays selectable by id).
