@@ -1,0 +1,51 @@
+name: Release
+
+# Cut a release by tagging the release commit and pushing the tag:
+#   git tag v0.4.2 && git push origin v0.4.2
+# The tag must match server/package.json's version and CHANGELOG.md must have
+# a "## <version>" section (its body becomes the release notes). This runs the
+# tests, builds the npm tarball with release:pack, and publishes a GitHub
+# Release with the tarball attached. Publishing to npm stays a manual step:
+#   npm publish blattbot-<version>.tgz
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+
+      - name: Tag must match the package version
+        run: |
+          pkg=$(node -p "require('./server/package.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$pkg" != "$tag" ]; then
+            echo "tag is v$tag but server/package.json says $pkg" >&2
+            exit 1
+          fi
+
+      - name: Release notes from CHANGELOG.md
+        run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md
+
+      - run: npm test
+      - run: npm run release:pack
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          extra=""
+          case "$GITHUB_REF_NAME" in *-*) extra="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" blattbot-*.tgz \
+            --title "BlattBot ${GITHUB_REF_NAME#v}" \
+            --notes-file release-notes.md $extra
