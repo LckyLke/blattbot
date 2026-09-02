@@ -75,8 +75,15 @@ import {
   questionStatus,
   validateAnswers,
 } from "./questions.js";
-import { ASK_USER_TOOL_INFO } from "./backends/types.js";
+import {
+  ASK_USER_TOOL_INFO,
+  EFFORT_LEVELS,
+  isEffortLevel,
+  resolveFallbackModel,
+} from "./backends/types.js";
 import { checkLatestVersion, currentVersion } from "./version.js";
+import { listModels, staticModelList } from "./models.js";
+import { agentSdkVersion, describeEngine } from "./sdkinfo.js";
 import {
   MAX_HISTORY_MESSAGES,
   OPENAI_SYSTEM_PROMPT,
@@ -251,9 +258,21 @@ app.get("/api/settings", async () => {
   return { ...publicSettings(s), resolvedModel: resolveBackendModel(undefined, s) };
 });
 
-app.put<{ Body: Partial<Settings> }>("/api/settings", async (req) => {
-  const s = saveSettings(req.body ?? {});
+app.put<{ Body: Partial<Settings> }>("/api/settings", async (req, reply) => {
+  const body = req.body ?? {};
+  if (body.effort !== undefined && body.effort !== "" && !isEffortLevel(body.effort)) {
+    return reply.code(400).send({ error: `effort must be one of ${EFFORT_LEVELS.join(", ")} or empty` });
+  }
+  const s = saveSettings(body);
   return { ...publicSettings(s), resolvedModel: resolveBackendModel(undefined, s) };
+});
+
+// The model pick-list for the Claude backend, from the engine's own catalog
+// when it answers (cached), else the static fallback. ?refresh=1 re-asks.
+app.get<{ Querystring: { refresh?: string } }>("/api/models", async (req) => {
+  const s = loadSettings();
+  if (activeBackendId(s) === "openai") return staticModelList();
+  return listModels(s, req.query.refresh === "1");
 });
 
 // Reflects the ACTIVE backend (Settings → Agent): id, endpoint, model, tools.
@@ -290,6 +309,11 @@ app.get("/api/agent/info", async () => {
     backendDescription: claudeBackend.description,
     model: `${resolveModel(s.model)}${s.model ? "" : " (BlattBot default)"}`,
     modelAliases: MODEL_ALIASES,
+    effort: s.effort || "(model default)",
+    engine: `Agent SDK ${agentSdkVersion() ?? "?"} · ${describeEngine()}`,
+    fallbackModel:
+      resolveFallbackModel(resolveModel(s.model), s.fallbackModel) ??
+      (s.fallbackModel.trim() ? "(none)" : "(none — automatic Opus 5 behind a Fable-family model)"),
     usingApiKey: Boolean(s.apiKey),
     endpoint: s.anthropicBaseUrl || "https://api.anthropic.com",
     anthropicBaseUrl: s.anthropicBaseUrl || "https://api.anthropic.com",

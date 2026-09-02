@@ -908,7 +908,7 @@ describe("backend settings", () => {
     const base = { ...DEFAULT_SETTINGS, model: "sonnet", openaiModel: "llama-3.3-70b" };
     // claude (default backend): aliases resolve.
     expect(resolveBackendModel(undefined, base)).toBe("claude-sonnet-5");
-    expect(resolveBackendModel({ settings: { model: "fable" } }, base)).toBe("claude-fable-5");
+    expect(resolveBackendModel({ settings: { model: "fable" } }, base)).toBe("claude-fable-5-1");
     // openai: verbatim, no alias mapping, override wins.
     const oai = { ...base, backend: "openai" as const };
     expect(resolveBackendModel(undefined, oai)).toBe("llama-3.3-70b");

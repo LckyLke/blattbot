@@ -58,7 +58,7 @@ describe("resolveModel", () => {
     expect(resolveModel("  ")).toBe("claude-sonnet-5");
     expect(resolveModel("sonnet")).toBe("claude-sonnet-5");
     expect(resolveModel("Opus")).toBe("claude-opus-5");
-    expect(resolveModel("fable")).toBe("claude-fable-5");
+    expect(resolveModel("fable")).toBe("claude-fable-5-1");
     expect(resolveModel("haiku")).toBe("claude-haiku-4-5-20251001");
     expect(resolveModel("claude-opus-4-6")).toBe("claude-opus-4-6"); // explicit ids pass through
   });

@@ -5,7 +5,7 @@
  * an SDK MCP server, and maps the SDK's stream onto the shared event contract.
  */
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
-import type { CanUseTool, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, HookCallback, OnUserDialog, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getProject, projectDir, updateProject } from "../config.js";
 import { attachmentBase64, chatUploadsDir, type TurnAttachment } from "../chatimages.js";
@@ -19,15 +19,20 @@ import {
   verifyEntry,
 } from "../papers.js";
 import { checkToolPaths, projectReadRoots, secretDenyRules } from "./paths.js";
-import { loadSettings } from "../settings.js";
+import { loadSettings, type Settings } from "../settings.js";
+import { executableOptions } from "../sdkinfo.js";
 import { askUserQuestions, validateQuestions, type AgentQuestion } from "../questions.js";
 import {
   AGENT_TOOL_INFO,
   DISALLOWED_TOOLS,
+  isEffortLevel,
+  resolveFallbackModel,
   resolveModel,
   resultHead,
   type AgentBackend,
+  type AgentEvent,
   type BackendTurnContext,
+  type EffortLevel,
   type EventSink,
 } from "./types.js";
 
@@ -160,15 +165,215 @@ function buildMcpServer(projectId: string) {
 }
 
 /**
+ * The model-related query options for a turn: the resolved model, the
+ * effort level when one is configured (the SDK ignores it on models without
+ * effort support), and the fallback model — configured, or Opus 5 behind a
+ * Fable-family primary (see resolveFallbackModel). Exported for unit tests.
+ */
+export function turnModelOptions(
+  model: string,
+  settings: Pick<Settings, "effort" | "fallbackModel">,
+): { model: string; effort?: EffortLevel; fallbackModel?: string } {
+  const fallbackModel = resolveFallbackModel(model, settings.fallbackModel);
+  return {
+    model,
+    ...(isEffortLevel(settings.effort) ? { effort: settings.effort } : {}),
+    ...(fallbackModel ? { fallbackModel } : {}),
+  };
+}
+
+/**
+ * The chat notice for the SDK's refusal system messages (Fable's safety
+ * classifiers ending a turn): `model_refusal_fallback` means the turn was
+ * retried on the fallback model, `model_refusal_no_fallback` that it ended.
+ * Undefined for every other system message. Exported for unit tests.
+ */
+export function refusalNotice(m: any): AgentEvent | undefined {
+  if (m?.type !== "system") return undefined;
+  const category = typeof m.api_refusal_category === "string" ? ` (category: ${m.api_refusal_category})` : "";
+  const explanation =
+    typeof m.api_refusal_explanation === "string" && m.api_refusal_explanation.trim()
+      ? ` ${m.api_refusal_explanation.trim()}`
+      : "";
+  if (m.subtype === "model_refusal_fallback") {
+    return {
+      type: "notice",
+      tone: "warn",
+      text:
+        `${m.original_model} declined this request${category}.${explanation} ` +
+        `The turn continued on ${m.fallback_model}` +
+        (m.scope === "local" ? " for this step only." : "; the rest of this chat runs there too."),
+    };
+  }
+  if (m.subtype === "model_refusal_no_fallback") {
+    return {
+      type: "notice",
+      tone: "error",
+      text:
+        `${m.original_model} declined this request${category}.${explanation} ` +
+        `No fallback model is configured (Settings → Agent), so the turn ended here.`,
+    };
+  }
+  return undefined;
+}
+
+/** The CLI's refusal dialog payload (kind "refusal_fallback_prompt"). */
+export interface RefusalDialogPayload {
+  originalModel: string;
+  fallbackModel: string;
+  apiRefusalCategory?: string | null;
+  guidanceText?: string;
+}
+
+export const REFUSAL_DIALOG_KIND = "refusal_fallback_prompt";
+const RETRY_LABEL = (fallback: string) => `Retry on ${fallback}`;
+const STOP_LABEL = "Stop this turn";
+
+/**
+ * The refusal dialog as a question card: the CLI asks (when a fallback is
+ * configured) whether a turn the primary model's safety classifiers declined
+ * should be retried on the fallback. An automatic retry would silently move
+ * the whole chat to another model, so the user decides. Exported for tests.
+ */
+export function refusalDialogQuestion(payload: RefusalDialogPayload): AgentQuestion {
+  const category = payload.apiRefusalCategory ? ` (category: ${payload.apiRefusalCategory})` : "";
+  const guidance = payload.guidanceText?.trim() ? ` ${payload.guidanceText.trim()}` : "";
+  return {
+    question:
+      `${payload.originalModel} declined this request${category}.${guidance} ` +
+      `Retry it on ${payload.fallbackModel}? The rest of this chat would continue there too — ` +
+      `or stop here and rephrase.`,
+    header: "Declined",
+    options: [
+      {
+        label: RETRY_LABEL(payload.fallbackModel),
+        description: "Re-run this turn on the fallback model and keep the chat there.",
+      },
+      { label: STOP_LABEL, description: "End the turn now; edit your message and send it again." },
+    ],
+    multiSelect: false,
+  };
+}
+
+/** Map the card's answer to the CLI's result: retry_fallback | edit_prompt. */
+export function refusalChoice(answer: string | undefined): "retry_fallback" | "edit_prompt" {
+  return answer && /retry/i.test(answer) ? "retry_fallback" : "edit_prompt";
+}
+
+/**
+ * The SDK's dialog callback. Only the refusal kind is declared (see
+ * supportedDialogKinds on the query); anything else is answered "cancelled",
+ * which makes the CLI apply that dialog's default. Exported for tests.
+ */
+export function makeOnUserDialog(projectId: string, emit: EventSink, signal: AbortSignal): OnUserDialog {
+  return async (request, options) => {
+    if (request.dialogKind !== REFUSAL_DIALOG_KIND) return { behavior: "cancelled" };
+    const p = request.payload as Partial<RefusalDialogPayload>;
+    const payload: RefusalDialogPayload = {
+      originalModel: typeof p.originalModel === "string" ? p.originalModel : "the model",
+      fallbackModel: typeof p.fallbackModel === "string" ? p.fallbackModel : "the fallback model",
+      apiRefusalCategory: typeof p.apiRefusalCategory === "string" ? p.apiRefusalCategory : null,
+      guidanceText: typeof p.guidanceText === "string" ? p.guidanceText : undefined,
+    };
+    const question = refusalDialogQuestion(payload);
+    let resolution;
+    try {
+      resolution = await askUserQuestions(projectId, emit, [question], [signal, options.signal]);
+    } catch (err: any) {
+      console.warn(`refusal dialog for ${projectId} could not be shown: ${err?.message ?? err}`);
+      return { behavior: "cancelled" };
+    }
+    if (resolution.kind === "answered") {
+      return { behavior: "completed", result: refusalChoice(resolution.answers[question.question]) };
+    }
+    if (resolution.kind === "dismissed") return { behavior: "completed", result: "edit_prompt" };
+    return { behavior: "cancelled" };
+  };
+}
+
+/**
+ * Chat notices for the SDK messages that explain a pause or a change the
+ * user would otherwise never see: rate-limit warnings, API retries, and
+ * context compaction. `seen` dedupes per turn (a rate-limit warning repeats
+ * on every request). Undefined for everything else. Exported for tests.
+ */
+export function sdkEventNotice(m: any, seen: Set<string>): AgentEvent | undefined {
+  if (m?.type === "rate_limit_event") {
+    const info = m.rate_limit_info ?? {};
+    if (info.status !== "allowed_warning" && info.status !== "rejected") return undefined;
+    const key = `rate:${info.status}`;
+    if (seen.has(key)) return undefined;
+    seen.add(key);
+    const win = typeof info.rateLimitType === "string" ? ` (${info.rateLimitType.replace(/_/g, " ")} window)` : "";
+    const resets =
+      typeof info.resetsAt === "number" ? `; resets ${new Date(info.resetsAt * 1000).toLocaleString()}` : "";
+    return info.status === "rejected"
+      ? { type: "notice", tone: "error", text: `Rate limit reached${win}${resets}.` }
+      : { type: "notice", tone: "warn", text: `Approaching your plan's rate limit${win}${resets}.` };
+  }
+  if (m?.type !== "system") return undefined;
+  if (m.subtype === "api_retry") {
+    const status = m.error_status != null ? `HTTP ${m.error_status}` : "a transient error";
+    const delay = typeof m.retry_delay_ms === "number" ? ` in ${(m.retry_delay_ms / 1000).toFixed(1)}s` : "";
+    return {
+      type: "notice",
+      tone: "info",
+      text: `API request failed (${status}) — retrying${delay} (attempt ${m.attempt}/${m.max_retries}).`,
+    };
+  }
+  if (m.subtype === "compact_boundary") {
+    const meta = m.compact_metadata ?? {};
+    const k = (n: unknown) => (typeof n === "number" ? `${Math.round(n / 1000)}k` : "?");
+    const after = typeof meta.post_tokens === "number" ? ` → ${k(meta.post_tokens)}` : "";
+    return {
+      type: "notice",
+      tone: "info",
+      text:
+        `Context compacted (${meta.trigger === "manual" ? "manual" : "automatic"}: ${k(meta.pre_tokens)}${after} tokens). ` +
+        `Earlier details are now a summary; the agent re-reads files as needed.`,
+    };
+  }
+  if (m.subtype === "status" && m.compact_result === "failed") {
+    return {
+      type: "notice",
+      tone: "warn",
+      text: `Context compaction failed${m.compact_error ? `: ${m.compact_error}` : ""}.`,
+    };
+  }
+  return undefined;
+}
+
+/** input + cache reads + cache writes of one API response = that request's context. */
+export function contextOfUsage(usage: any): number | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const total = n(usage.input_tokens) + n(usage.cache_read_input_tokens) + n(usage.cache_creation_input_tokens);
+  return total > 0 ? total : undefined;
+}
+
+/** The context window the SDK reports for the turn's models (largest wins). */
+export function contextWindowOf(modelUsage: unknown): number | undefined {
+  if (!modelUsage || typeof modelUsage !== "object") return undefined;
+  let best = 0;
+  for (const u of Object.values(modelUsage as Record<string, any>)) {
+    if (typeof u?.contextWindow === "number" && u.contextWindow > best) best = u.contextWindow;
+  }
+  return best > 0 ? best : undefined;
+}
+
+/**
  * Cost/token usage from the SDK's final result message. total_cost_usd is the
  * turn's dollar cost; usage carries the token counts — input tokens are the
  * sum of fresh input plus cache creation/reads, so the number reflects what
- * the model actually consumed. Absent/malformed fields simply stay undefined.
+ * the model actually consumed. `models` lists every model that served the
+ * turn (modelUsage keys — the fallback shows up here), absent when the SDK
+ * reports none. Absent/malformed fields simply stay undefined.
  */
 export function extractResultUsage(m: any): {
   costUsd?: number;
   inputTokens?: number;
   outputTokens?: number;
+  models?: string[];
 } {
   const num = (v: unknown): number | undefined =>
     typeof v === "number" && Number.isFinite(v) ? v : undefined;
@@ -180,24 +385,67 @@ export function extractResultUsage(m: any): {
     input === undefined && cacheCreate === undefined && cacheRead === undefined
       ? undefined
       : (input ?? 0) + (cacheCreate ?? 0) + (cacheRead ?? 0);
+  // modelUsage is keyed by the id the API reported; the CLI may key the same
+  // model twice (dated and undated), so prefer its canonicalModel and dedupe.
+  const models: string[] = [];
+  if (m?.modelUsage && typeof m.modelUsage === "object") {
+    for (const [key, u] of Object.entries<any>(m.modelUsage)) {
+      const id = typeof u?.canonicalModel === "string" && u.canonicalModel ? u.canonicalModel : key;
+      if (id && id !== "unknown" && !models.includes(id)) models.push(id);
+    }
+  }
   return {
     costUsd: num(m?.total_cost_usd),
     inputTokens,
     outputTokens: num(usage.output_tokens),
+    ...(models.length > 0 ? { models } : {}),
+  };
+}
+
+/**
+ * The file fence as a PreToolUse hook — the layer that IS consulted under
+ * permissionMode "bypassPermissions". The CLI auto-approves ordinary tool
+ * calls before canUseTool is ever asked (the SDK warns about exactly that:
+ * CLAUDE_SDK_CAN_USE_TOOL_SHADOWED), but hooks run first, and a "deny"
+ * decision here stops the call and hands the model the reason. Verified live
+ * against CLI 2.1.258: a Write outside the project went through with the
+ * fence in canUseTool alone, and is refused with it here. Returns an empty
+ * object (no opinion) for everything the fence allows and for every other
+ * hook event. Exported for unit tests.
+ */
+export function makeFenceHook(projectId: string, contextDirs: string[] = []): HookCallback {
+  const dir = projectDir(projectId);
+  const extraReadRoots = projectReadRoots(projectId);
+  return async (input) => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    const toolInput =
+      input.tool_input && typeof input.tool_input === "object"
+        ? (input.tool_input as Record<string, unknown>)
+        : {};
+    const fence = checkToolPaths(input.tool_name, toolInput, dir, contextDirs, extraReadRoots);
+    if (fence.ok) return {};
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: fence.message!,
+      },
+    };
   };
 }
 
 /**
  * The SDK's permission callback, wired for AskUserQuestion. Everything else is
- * a pure passthrough allow: the query runs with permissionMode
- * "bypassPermissions", under which the CLI auto-allows every ordinary tool
- * internally and never consults this callback for them — verified against the
- * bundled cli.js, whose permission pipeline returns AskUserQuestion's "ask"
- * (checkPermissions always asks + requiresUserInteraction) BEFORE the
- * bypass-mode auto-allow, so the ask reaches this callback even in bypass
- * mode. The passthrough arm is belt-and-braces for any other tool a future
- * SDK routes here; it preserves bypass-equivalent permissiveness
- * (read-only-mode/edit blocking stays enforced via disallowedTools).
+ * a passthrough allow behind a second run of the fence: the query runs with
+ * permissionMode "bypassPermissions", under which the CLI auto-allows every
+ * ordinary tool internally and never consults this callback for them (the
+ * enforced fence is the PreToolUse hook above) — but AskUserQuestion's "ask"
+ * (checkPermissions always asks + requiresUserInteraction) is returned BEFORE
+ * the bypass-mode auto-allow, so it reaches this callback even in bypass mode
+ * (verified against CLI 2.0.77 and 2.1.258). The fenced passthrough arm is
+ * belt-and-braces for any other tool a future SDK routes here; it preserves
+ * bypass-equivalent permissiveness (read-only-mode/edit blocking stays
+ * enforced via disallowedTools).
  *
  * On AskUserQuestion: validate the questions, register them as the project's
  * pending question, stream a `question` event to the UI, and block until the
@@ -218,9 +466,10 @@ export function makeCanUseTool(
   const extraReadRoots = projectReadRoots(projectId);
   return async (toolName, input, options) => {
     if (toolName !== "AskUserQuestion") {
-      // Enforce the file fence before anything runs: the SDK's own tools can
-      // otherwise reach any path the OS allows, which would leave "stay in the
-      // project" as a mere instruction against untrusted file/web content.
+      // Same fence as the PreToolUse hook, for any tool call the CLI does
+      // route here: the SDK's own tools can otherwise reach any path the OS
+      // allows, which would leave "stay in the project" as a mere instruction
+      // against untrusted file/web content.
       const fence = checkToolPaths(toolName, input, dir, contextDirs, extraReadRoots);
       if (!fence.ok) return { behavior: "deny", message: fence.message! };
       return { behavior: "allow", updatedInput: input };
@@ -390,7 +639,8 @@ export const claudeBackend: AgentBackend = {
         cwd: dir,
         ...(openDirs.length > 0 ? { additionalDirectories: openDirs } : {}),
         ...(resumeId ? { resume: resumeId } : {}),
-        model: ctx.model,
+        ...turnModelOptions(ctx.model, settings),
+        ...executableOptions(),
         env: {
           ...process.env,
           ...(settings.apiKey ? { ANTHROPIC_API_KEY: settings.apiKey } : {}),
@@ -401,6 +651,12 @@ export const claudeBackend: AgentBackend = {
         // Surfaces AskUserQuestion (which always "ask"s, even in bypass mode)
         // as an interactive question card in the chat; allows everything else.
         canUseTool: makeCanUseTool(project.id, ctx.emit, ctx.signal, ctx.contextDirs),
+        // The file fence that bypass mode actually consults (see makeFenceHook).
+        hooks: { PreToolUse: [{ hooks: [makeFenceHook(project.id, ctx.contextDirs)] }] },
+        // A safety-classifier decline asks the user (question card) whether to
+        // retry on the fallback model — never a silent model swap.
+        onUserDialog: makeOnUserDialog(project.id, ctx.emit, ctx.signal),
+        supportedDialogKinds: [REFUSAL_DIALOG_KIND],
         includePartialMessages: true,
         abortController: controller,
         systemPrompt: { type: "preset", preset: "claude_code", append: ctx.systemAppend },
@@ -414,8 +670,14 @@ export const claudeBackend: AgentBackend = {
     let thinkingNotified = false;
     // tool_use id → tool name, so results can be summarized per tool kind.
     const toolNames = new Map<string, string>();
+    // Per-turn dedupe for the informational notices (rate-limit warnings repeat).
+    const noticed = new Set<string>();
+    // The largest request context seen this turn ≈ the conversation's size.
+    let contextTokens: number | undefined;
 
     for await (const m of q as AsyncIterable<any>) {
+      const notice = sdkEventNotice(m, noticed);
+      if (notice) ctx.emit(notice);
       switch (m.type) {
         case "system": {
           if (m.subtype === "init" && m.session_id && m.session_id !== resumeId) {
@@ -425,6 +687,10 @@ export const claudeBackend: AgentBackend = {
             project.sessionId = m.session_id;
             ctx.session.onSessionId?.(m.session_id);
           }
+          // A refusal (Fable's safety classifiers) must never pass silently:
+          // the user sees which model declined and where the turn went.
+          const notice = refusalNotice(m);
+          if (notice) ctx.emit(notice);
           break;
         }
         case "stream_event": {
@@ -446,6 +712,8 @@ export const claudeBackend: AgentBackend = {
           break;
         }
         case "assistant": {
+          const ctxSize = contextOfUsage(m.message?.usage);
+          if (ctxSize && (contextTokens === undefined || ctxSize > contextTokens)) contextTokens = ctxSize;
           const blocks = m.message?.content ?? [];
           for (const block of blocks) {
             if (block.type === "text" && block.text) {
@@ -488,6 +756,8 @@ export const claudeBackend: AgentBackend = {
             isError: Boolean(m.is_error),
             ...extractResultUsage(m),
             model: ctx.model,
+            ...(contextTokens ? { contextTokens } : {}),
+            ...(contextWindowOf(m.modelUsage) ? { contextWindow: contextWindowOf(m.modelUsage) } : {}),
             durationMs: m.duration_ms,
             result: typeof m.result === "string" ? m.result : undefined,
           });
@@ -516,7 +786,8 @@ export async function runOneShot(prompt: string): Promise<string> {
       allowedTools: [],
       permissionMode: "bypassPermissions",
       settingSources: [],
-      model: resolveModel(settings.model),
+      ...turnModelOptions(resolveModel(settings.model), settings),
+      ...executableOptions(),
       env: {
         ...process.env,
         ...(settings.apiKey ? { ANTHROPIC_API_KEY: settings.apiKey } : {}),

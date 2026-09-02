@@ -30,6 +30,14 @@ export interface Settings {
   openaiApiKey: string;
   /** Model id sent VERBATIM to the OpenAI-compatible endpoint — no alias mapping. */
   openaiModel: string;
+  /** Reasoning effort for the Claude backend (adaptive thinking depth). "" = the model's default. */
+  effort: "" | "low" | "medium" | "high" | "xhigh" | "max";
+  /**
+   * Model the Claude backend falls back to when the primary is overloaded or
+   * declines a request (Fable's safety classifiers). "" = automatic: Opus 5
+   * behind a Fable-family primary, none otherwise; "none" disables it.
+   */
+  fallbackModel: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -43,6 +51,8 @@ export const DEFAULT_SETTINGS: Settings = {
   openaiBaseUrl: "",
   openaiApiKey: "",
   openaiModel: "",
+  effort: "",
+  fallbackModel: "",
 };
 
 export function loadSettings(): Settings {

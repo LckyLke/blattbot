@@ -1,3 +1,4 @@
+import { concreteModels, shortModel, useModelList } from "../models";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { parseDiff } from "../diff";
 import {
@@ -51,6 +52,9 @@ export type ChatItem =
       durationMs?: number;
       inputTokens?: number;
       outputTokens?: number;
+      /** Size of the largest request this turn (≈ the conversation) and the model's window. */
+      contextTokens?: number;
+      contextWindow?: number;
     };
 
 interface Props {
@@ -108,18 +112,6 @@ interface MdLinkProps {
   onOpenFile: (file: string, line: number) => void;
 }
 
-/** Short display label for a model id: "claude-sonnet-5" → "sonnet-5". */
-export function shortModel(model: string): string {
-  return model.replace(/^claude-/, "");
-}
-
-/** The curated picks in the model popover; anything else goes in the free-text field. */
-const MODEL_SUGGESTIONS = [
-  "claude-sonnet-5",
-  "claude-opus-5",
-  "claude-fable-5",
-  "claude-haiku-4-5-20251001",
-];
 
 /** Compact relative timestamp for the chat list. */
 export function relTime(iso: string): string {
@@ -915,6 +907,8 @@ function ModelChip({
 }) {
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState("");
+  // The engine's catalog once the server has it; the static list until then.
+  const models = concreteModels(useModelList());
 
   function pick(id: string) {
     const next = id.trim();
@@ -958,22 +952,25 @@ function ModelChip({
             <p className="px-3 pb-1 pt-1.5 text-[10.5px] uppercase tracking-wide text-graphite">
               Model — applies from the next turn
             </p>
-            {MODEL_SUGGESTIONS.map((id) => (
+            {models.map(({ id, label }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => pick(id)}
-                title="Set as the global default model"
+                title={label !== id ? `${label} — set as the global default model` : "Set as the global default model"}
                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[11.5px] transition-colors hover:bg-ink-3 ${
                   id === model ? "text-paper" : "text-paper-dim"
                 }`}
               >
                 <span
-                  className={`inline-block h-1.5 w-1.5 rounded-full ${
+                  className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
                     id === model ? "bg-leaf" : "bg-transparent"
                   }`}
                 />
-                {id}
+                <span className="truncate">{id}</span>
+                {label !== id && (
+                  <span className="ml-auto shrink-0 font-sans text-[10.5px] text-graphite">{label}</span>
+                )}
               </button>
             ))}
             <div className="mt-1 flex items-center gap-1.5 border-t border-rule px-3 pb-1.5 pt-2">
@@ -1163,7 +1160,12 @@ function ChatBubble({
             ? ` · $${item.costUsd.toFixed(3)}`
             : tokens > 0
               ? ` · ${fmtTokens(tokens)} tok`
-              : ""}{" "}
+              : ""}
+          {item.contextTokens != null && (
+            <span title="Context size of this turn's largest request, out of the model's window">
+              {` · ctx ${fmtTokens(item.contextTokens)}${item.contextWindow ? `/${fmtTokens(item.contextWindow)}` : ""}`}
+            </span>
+          )}{" "}
           —
         </div>
       );

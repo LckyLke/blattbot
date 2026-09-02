@@ -22,7 +22,9 @@ npx blattbot
 
 This starts the app on http://127.0.0.1:4560 and opens your browser. On first run BlattBot checks your environment and offers to download [tectonic](https://tectonic-typesetting.github.io) if no TeX engine is found. Run `npx blattbot --help` for flags and `npx blattbot doctor` to see what it detects.
 
-You need Node 20 or newer, git, and [Claude Code](https://claude.com/claude-code) installed and logged in. BlattBot reuses the Claude Code login, so there is no API key to configure. An OpenAI-compatible endpoint can be configured instead in Settings.
+You need Node 20 or newer, git, and a Claude login: either [Claude Code](https://claude.com/claude-code) installed and logged in (BlattBot reuses that login, so there is no API key to configure) or an Anthropic API key entered in Settings. An OpenAI-compatible endpoint can be configured instead.
+
+BlattBot runs the agent through the Claude Agent SDK, which bundles its own copy of the Claude Code engine — npm downloads a platform binary of roughly 200 MB on install. To use a `claude` binary you already have instead, set `BLATTBOT_CLAUDE_EXECUTABLE=/path/to/claude`; `npx blattbot doctor` shows which engine is in use.
 
 ## Sync without clobbering
 

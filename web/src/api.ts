@@ -48,6 +48,10 @@ export interface Settings {
   openaiBaseUrl: string;
   openaiModel: string;
   hasOpenaiApiKey: boolean;
+  /** Claude backend: reasoning effort ("" = the model's default). */
+  effort: "" | "low" | "medium" | "high" | "xhigh" | "max";
+  /** Claude backend: fallback model ("" = automatic — Opus 5 behind Fable; "none" disables). */
+  fallbackModel: string;
 }
 
 /** A persistent conversation of a project (session id stays on the server). */
@@ -101,12 +105,35 @@ export interface PendingQuestion {
   createdAt: string;
 }
 
+/** One entry of the model pick-list (GET /api/models). */
+export interface ModelOption {
+  /** The id to configure — a full model id, or an alias the engine resolves. */
+  id: string;
+  /** What an alias resolves to (absent for concrete ids). */
+  resolvesTo?: string;
+  label: string;
+  description?: string;
+  supportsEffort?: boolean;
+  effortLevels?: string[];
+}
+export interface ModelList {
+  models: ModelOption[];
+  /** "cli" when the engine answered; "static" for the built-in fallback. */
+  source: "cli" | "static";
+}
+
 export interface AgentInfo {
   /** Backend id string, e.g. "claude-agent-sdk" or "openai-compatible". */
   backend: string;
+  /** Claude backend only — the Agent SDK version and which engine binary it runs. */
+  engine?: string;
   backendLabel?: string;
   backendDescription: string;
   model: string;
+  /** Claude backend only — the configured effort level, or a "(model default)" note. */
+  effort?: string;
+  /** Claude backend only — the resolved fallback model, or a "(none …)" note. */
+  fallbackModel?: string;
   usingApiKey: boolean;
   /** The endpoint the active backend talks to. */
   endpoint?: string;
@@ -410,6 +437,8 @@ export const api = {
     }),
   file: (id: string, path: string) =>
     request<FileContent>(`/api/projects/${id}/file?path=${encodeURIComponent(path)}`),
+  /** The model pick-list for the Claude backend (engine catalog or static fallback). */
+  models: (refresh = false) => request<ModelList>(`/api/models${refresh ? "?refresh=1" : ""}`),
   context: (id: string) => request<ProjectContext>(`/api/projects/${id}/context`),
   browseDirs: (path?: string) =>
     request<DirListing>(`/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`),

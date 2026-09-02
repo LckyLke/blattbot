@@ -45,6 +45,10 @@ export function collectDisclosureFacts(projectId: string): DisclosureFacts {
       } else if (ev.type === "turn_end" && !ev.interrupted) {
         turns += 1;
         if (typeof ev.model === "string" && ev.model) models.add(ev.model);
+        // Every model that actually served the turn (a fallback shows up here).
+        if (Array.isArray(ev.models)) {
+          for (const m of ev.models) if (typeof m === "string" && m) models.add(m);
+        }
       } else if (
         ev.type === "tool_use" &&
         typeof ev.name === "string" &&

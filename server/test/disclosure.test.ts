@@ -44,7 +44,9 @@ describe("collectDisclosureFacts", () => {
       type: "turn_end",
       isError: false,
       costUsd: 0.1,
-      model: "claude-sonnet-5",
+      model: "claude-fable-5-1",
+      // Every model that served the turn — here the refusal fallback ran too.
+      models: ["claude-fable-5-1", "claude-opus-5"],
     });
 
     const b = chats.createChat(p.id);
@@ -62,7 +64,7 @@ describe("collectDisclosureFacts", () => {
     expect(facts.turns).toBe(2);
     expect(facts.chats).toBe(2);
     expect(facts.modes).toEqual(["edit", "research"]);
-    expect(facts.models).toEqual(["claude-sonnet-5", "llama-3.3-70b"]);
+    expect(facts.models).toEqual(["claude-fable-5-1", "claude-opus-5", "llama-3.3-70b"]);
     expect(facts.filesTouched).toBe(2);
     expect(facts.firstUse).toBe(a.createdAt);
     expect(typeof facts.lastUse).toBe("string");

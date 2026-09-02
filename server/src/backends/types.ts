@@ -13,7 +13,11 @@
  *   tool_result {id, isError, resultHead?}    that call finished; read-only tools
  *                                             carry a one-line result summary
  *   turn_end    {isError, costUsd?, inputTokens?, outputTokens?, model?,
- *                durationMs?, interrupted?, result?}
+ *                models?, contextTokens?, contextWindow?, durationMs?,
+ *                interrupted?, result?}
+ *   notice      {tone, text}                   informational line for the chat
+ *                                             (rate limits, retries, compaction,
+ *                                             refusals)
  *   question           {projectId, questionId, questions}   the agent asked the
  *                                             user — the turn blocks until the
  *                                             question routes resolve it
@@ -83,7 +87,7 @@ export const DEFAULT_MODEL = "claude-sonnet-5";
 export const MODEL_ALIASES: Record<string, string> = {
   sonnet: "claude-sonnet-5",
   opus: "claude-opus-5",
-  fable: "claude-fable-5",
+  fable: "claude-fable-5-1",
   haiku: "claude-haiku-4-5-20251001",
 };
 
@@ -91,6 +95,43 @@ export function resolveModel(configured: string): string {
   const c = configured.trim();
   if (!c) return DEFAULT_MODEL;
   return MODEL_ALIASES[c.toLowerCase()] ?? c;
+}
+
+/** Effort levels the Agent SDK accepts (adaptive-thinking depth). */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+export function isEffortLevel(v: unknown): v is EffortLevel {
+  return typeof v === "string" && (EFFORT_LEVELS as readonly string[]).includes(v);
+}
+
+/**
+ * Fable-family models (Fable, Mythos) run safety classifiers that can end a
+ * turn with a refusal; the Agent SDK retries such a turn on the fallback
+ * model, which is also what serves an overloaded primary.
+ */
+export function isFableFamily(model: string): boolean {
+  return /^claude-(fable|mythos)/.test(model);
+}
+
+/** Fallback behind a Fable-family primary when nothing is configured. */
+export const AUTO_FABLE_FALLBACK = "claude-opus-5";
+
+/**
+ * The fallback model for a turn on `model`: the configured one (aliases
+ * resolved; "none"/"off" disables), else Opus 5 behind a Fable-family
+ * primary, else none. Never the primary itself.
+ */
+export function resolveFallbackModel(model: string, configured: string): string | undefined {
+  const c = configured.trim();
+  let fallback: string | undefined;
+  if (c) {
+    if (/^(none|off)$/i.test(c)) return undefined;
+    fallback = resolveModel(c);
+  } else if (isFableFamily(model)) {
+    fallback = AUTO_FABLE_FALLBACK;
+  }
+  return fallback && fallback !== model ? fallback : undefined;
 }
 
 /** Descriptions of the project-specific tools, also served by /api/agent/info. */

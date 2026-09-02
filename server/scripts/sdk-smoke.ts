@@ -1,9 +1,11 @@
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { mkdirSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const dir = "/tmp/claude-1000/-home-lukef-Documents-GitHub-blattbot/0a1fa056-d11b-45c5-9661-066ecca60b7c/scratchpad/smoke-cwd";
-mkdirSync(dir, { recursive: true });
+// A throwaway cwd: the smoke turn never touches project files.
+const dir = mkdtempSync(join(tmpdir(), "blattbot-sdk-smoke-"));
 
 const ping = tool("ping", "Returns pong plus the given tag. Call this when asked to ping.", { tag: z.string() }, async ({ tag }) => {
   return { content: [{ type: "text" as const, text: `pong:${tag}` }] };
@@ -21,6 +23,8 @@ const q = query({
     mcpServers: { smoke: server },
     settingSources: [],
     maxTurns: 3,
+    // Cheapest model that can run the tool round-trip; a real turn costs cents.
+    model: process.env.SMOKE_MODEL ?? "claude-haiku-4-5",
   },
 });
 

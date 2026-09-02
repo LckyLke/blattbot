@@ -229,7 +229,7 @@ describe("askUserQuestions flow", () => {
 });
 
 describe("claude canUseTool", () => {
-  const OPTIONS = { signal: new AbortController().signal, toolUseID: "tu-1" };
+  const OPTIONS = { signal: new AbortController().signal, toolUseID: "tu-1", requestId: "req-1" };
 
   it("passes an in-project tool call through as an unmodified allow", async () => {
     const { makeCanUseTool } = await import("../src/backends/claude.js");

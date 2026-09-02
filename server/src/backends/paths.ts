@@ -72,7 +72,7 @@ export function secretRoots(): string[] {
  * Deny rules for the SDK's `disallowedTools`. This is the layer that is
  * actually enforced under permissionMode "bypassPermissions": the CLI's
  * permission pipeline evaluates deny rules FIRST and only then applies the
- * bypass auto-allow (verified against the bundled cli.js), so a rule here
+ * bypass auto-allow (verified against the bundled CLI), so a rule here
  * stops the tool call, while the canUseTool fence below never sees it.
  *
  * It is a blocklist of the paths that must never be readable — credentials and

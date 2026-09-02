@@ -10,6 +10,7 @@ import { detectEngines } from "./compile.js";
 import { discoverProfiles } from "./overleaf/browsers.js";
 import { DATA_DIR } from "./config.js";
 import { loadSettings } from "./settings.js";
+import { agentSdkVersion, describeEngine } from "./sdkinfo.js";
 
 const execFileP = promisify(execFile);
 
@@ -49,8 +50,9 @@ export async function runDoctor(log: (line: string) => void = console.log): Prom
 
   const claude = await commandVersion("claude");
   log(
-    `Claude:    ${claude ? `${claude} — agent turns ready` : "claude CLI not found — agent turns need Claude Code (https://claude.com/claude-code), the rest works without it"}`,
+    `Claude:    ${claude ? `${claude} — logged-in Claude Code found` : "claude CLI not found — log in with Claude Code (https://claude.com/claude-code) or set an API key in Settings"}`,
   );
+  log(`Engine:    Agent SDK ${agentSdkVersion() ?? "not installed"} · ${describeEngine()}`);
 
   const profiles = discoverProfiles();
   log(`\nBrowser cookie stores discovered: ${profiles.length}`);

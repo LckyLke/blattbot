@@ -176,7 +176,7 @@ describe("buildSystemAppend", () => {
 
 describe("resolveProjectModel", () => {
   it("prefers the project override and resolves aliases", () => {
-    expect(resolveProjectModel(proj({ model: "fable" }), "claude-opus-5")).toBe("claude-fable-5");
+    expect(resolveProjectModel(proj({ model: "fable" }), "claude-opus-5")).toBe("claude-fable-5-1");
     expect(resolveProjectModel(proj({ model: "claude-opus-4-6" }), "sonnet")).toBe("claude-opus-4-6");
   });
 

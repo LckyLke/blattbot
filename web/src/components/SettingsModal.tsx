@@ -1,3 +1,4 @@
+import { useModelList } from "../models";
 import { useEffect, useState } from "react";
 import { api, type Account, type AgentInfo, type ProjectStats, type Settings } from "../api";
 import AccountSignIn from "./AccountSignIn";
@@ -14,17 +15,6 @@ interface Props {
 }
 
 type Tab = "accounts" | "agent" | "transparency";
-
-const MODEL_SUGGESTIONS = [
-  "claude-sonnet-5",
-  "claude-opus-5",
-  "claude-fable-5",
-  "claude-haiku-4-5-20251001",
-  "sonnet",
-  "opus",
-  "fable",
-  "haiku",
-];
 
 export default function SettingsModal({ onClose, onAccountsChanged, projectId, projectName }: Props) {
   const dialog = useDialog();
@@ -49,6 +39,9 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
   const [clearOaiKey, setClearOaiKey] = useState(false);
   const [promptAppend, setPromptAppend] = useState("");
   const [engine, setEngine] = useState<Settings["engine"]>("");
+  const [effort, setEffort] = useState<Settings["effort"]>("");
+  const modelList = useModelList();
+  const [fallbackModel, setFallbackModel] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +64,8 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
       setOaiModel(s.openaiModel);
       setPromptAppend(s.systemPromptAppend);
       setEngine(s.engine);
+      setEffort(s.effort ?? "");
+      setFallbackModel(s.fallbackModel ?? "");
     });
     api.agentInfo().then(setInfo).catch(() => setInfo(null));
   }, []);
@@ -129,6 +124,8 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
         openaiModel: oaiModel.trim(),
         systemPromptAppend: promptAppend,
         engine,
+        effort,
+        fallbackModel: fallbackModel.trim(),
       };
       if (apiKey.trim()) patch.apiKey = apiKey.trim();
       else if (clearKey) patch.apiKey = "";
@@ -391,7 +388,8 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   <label className="block text-[11px] text-graphite">
                     Model{" "}
                     <span className="text-graphite/60">
-                      (empty = claude-sonnet-5; aliases sonnet/opus/fable/haiku map to the newest of each tier)
+                      (empty = claude-sonnet-5; aliases sonnet/opus/fable/haiku map to the newest of each tier
+                      {modelList.source === "cli" ? "; suggestions come from the engine's own catalog" : ""})
                     </span>
                     <input
                       value={model}
@@ -401,11 +399,42 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                       className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                     />
                     <datalist id="blattbot-models">
-                      {MODEL_SUGGESTIONS.map((m) => (
-                        <option key={m} value={m} />
-                      ))}
+                      {modelList.models.map((m) => (
+                    <option key={m.id} value={m.id} label={m.label !== m.id ? m.label : undefined} />
+                  ))}
                     </datalist>
                   </label>
+
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <label className="block text-[11px] text-graphite">
+                      Effort{" "}
+                      <span className="text-graphite/60">(reasoning depth; empty = the model's default)</span>
+                      <select
+                        value={effort}
+                        onChange={(e) => setEffort(e.target.value as Settings["effort"])}
+                        className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper"
+                      >
+                        <option value="">model default</option>
+                        <option value="low">low — quick, routine edits</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                        <option value="xhigh">xhigh — long agentic work</option>
+                        <option value="max">max — correctness over cost</option>
+                      </select>
+                    </label>
+                    <label className="block text-[11px] text-graphite">
+                      Fallback model{" "}
+                      <span className="text-graphite/60">(overload, or a Fable safety decline)</span>
+                      <input
+                        value={fallbackModel}
+                        onChange={(e) => setFallbackModel(e.target.value)}
+                        list="blattbot-models"
+                        placeholder="automatic: claude-opus-5 behind Fable"
+                        title="Empty = automatic: Opus 5 when the model is a Fable-family model, none otherwise. Type “none” to disable."
+                        className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                      />
+                    </label>
+                  </div>
 
                   <label className="mt-3 block text-[11px] text-graphite">
                     API key{" "}
@@ -622,6 +651,24 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                     </dd>
                     <dt className="text-graphite">model</dt>
                     <dd className="text-paper-dim">{info.model}</dd>
+                    {info.effort && (
+                      <>
+                        <dt className="text-graphite">effort</dt>
+                        <dd className="text-paper-dim">{info.effort}</dd>
+                      </>
+                    )}
+                    {info.fallbackModel && (
+                      <>
+                        <dt className="text-graphite">fallback</dt>
+                        <dd className="text-paper-dim">{info.fallbackModel}</dd>
+                      </>
+                    )}
+                    {info.engine && (
+                      <>
+                        <dt className="text-graphite">engine</dt>
+                        <dd className="break-all text-paper-dim">{info.engine}</dd>
+                      </>
+                    )}
                     <dt className="text-graphite">endpoint</dt>
                     <dd className="break-all text-paper-dim">
                       {info.endpoint ?? info.anthropicBaseUrl}

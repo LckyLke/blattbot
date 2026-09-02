@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Claude Fable 5.1
+- The `fable` alias now resolves to `claude-fable-5-1`; `claude-fable-5-1` heads the model pick-lists (Claude Fable 5 stays selectable by id).
+- The Claude Agent SDK is upgraded from 0.1.x to 0.3.x. Its CLI ships as a platform-specific native binary (an ~200 MB optional dependency npm picks for your OS) and knows the Claude 5 models: turns on Fable 5.1, Opus 5, and Sonnet 5 are now priced correctly (the January CLI billed unknown models at a default rate) and get their full 1M context instead of a 200K assumption. Requires zod 4.
+- New **Effort** setting (Settings → Agent): low / medium / high / xhigh / max, passed to the SDK as the adaptive-thinking depth; empty keeps the model's default.
+- New **Fallback model** setting. Empty means automatic: Opus 5 behind a Fable-family primary (none otherwise), so an overloaded Fable, or one whose safety classifiers decline a request, hands the turn over instead of failing it; `none` disables it. A decline is never silent: the chat shows which model declined (with the API's category and explanation when given) and where the turn continued, and the AI-use disclosure lists every model that actually served a turn.
+
+### Source editor: unsaved edits are safe
+- Text typed while a quick save (Ctrl+S) was still in flight was replaced by the saved copy when the save returned — the dirty flag was reset on the save result and the refetch then overwrote the editor. The editor now decides from its own text, never from a flag: a fetched copy only replaces a clean editor.
+- Drafts survive a pane swap (picking Source in the other pane remounts the panel) and leaving and re-entering a project: they live outside the component tree, per project and file, and the last open file is restored. Switching files no longer demands a discard — the draft stays stashed, marked with a dot in the file tree — so a jump from the chat or the Proof view never costs you your edits.
+- When the file on disk changes under a draft (an agent turn, a sync, a rejected hunk) the header says so; Save writes your version, Revert takes the disk version.
+- The leave dialogs and the tab-close guard now know about unsaved editor drafts (a reload would lose them).
+
+### Panes, drafts, and merges
+- Picking the other pane's view swaps the two panes physically (CSS order) instead of moving panels between them, so no panel ever remounts: a half-typed chat message, the PDF scroll position, an editor selection all survive a swap.
+- Drafts persist in the browser's storage (debounced), so a reload or a discarded tab does not lose them; the next time the file opens, the draft is restored — with the "changed on disk" notice if the file moved meanwhile.
+- **Merge** button when the disk changed under a draft: a line-based three-way merge (base = what you typed over, yours, disk). Regions only one side touched merge silently; passages both changed differently become `<<<<<<< yours` / `>>>>>>> disk` blocks, the first one is revealed, and autosave stays off until they are resolved.
+- **autosave** toggle in the editor footer (off by default): writes the file 1.5 s after you stop typing, never while the agent works. A save still changes the review diff and triggers a recompile when the PDF is visible, which is why it is opt-in.
+
+### Transparency
+- Rate-limit warnings, API retries, and context compaction now show as chat notices instead of an unexplained pause; each turn's line shows the context size against the model's window (e.g. `ctx 42.0k/1.0M`).
+- A Fable safety decline shows a question card — retry on the fallback model (the rest of the chat continues there) or stop and rephrase — rather than a silent model swap.
+- The model pick-lists (chat chip, Settings, project settings) come from the engine's own catalog: display names, descriptions, effort support, with BlattBot's tier aliases appended; the built-in list remains the fallback. One shared list instead of three copies.
+- `blattbot doctor` and Settings → Transparency report the Agent SDK version and which engine binary runs; `BLATTBOT_CLAUDE_EXECUTABLE` points the SDK at another `claude` binary for people who would rather skip the bundled one.
+
+### Fixes
+- A fast turn could leave the composer locked on "Stop": the send path re-armed the busy state after the server's reply, even when the turn's end had already arrived over the websocket. It now checks that first.
+
+### Hardening
+- The file fence (project-only writes, project-plus-context reads, credential stores off-limits) moved into a PreToolUse hook. Under the SDK's bypass permission mode ordinary tool calls never reached the permission callback that held it — verified live: a Write outside the project went through before and is refused now. Mid-turn questions keep using the callback.
+
 ### Codebase as context
 - Link a whole folder — the paper's codebase, an experiment directory — through a folder browser in the sidebar instead of typing an absolute path. Directory names only; credential stores and BlattBot's own data are not browsable.
 - Every turn now hands the agent a listing of what each linked path actually contains (file counts, extensions, tree), scanned at turn start rather than when you linked it, with vendored and build directories left out and named. A linked folder is read live; nothing is copied or snapshotted.

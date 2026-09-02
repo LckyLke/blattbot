@@ -1,3 +1,4 @@
+import { useModelList } from "../models";
 import { useEffect, useState } from "react";
 import { api, type Project, type ProjectSettings as ProjectSettingsData } from "../api";
 
@@ -7,17 +8,6 @@ interface Props {
   /** Called with the fresh settings after every successful save. */
   onSaved: (settings: ProjectSettingsData) => void;
 }
-
-const MODEL_SUGGESTIONS = [
-  "claude-sonnet-5",
-  "claude-opus-5",
-  "claude-fable-5",
-  "claude-haiku-4-5-20251001",
-  "sonnet",
-  "opus",
-  "fable",
-  "haiku",
-];
 
 /** Mirrors AGENT_MODES on the server (which validates the id). */
 const MODE_OPTIONS = [
@@ -41,6 +31,7 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
   const [model, setModel] = useState("");
   const [defaultMode, setDefaultMode] = useState("");
   const [saving, setSaving] = useState(false);
+  const modelList = useModelList();
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -148,8 +139,8 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                   className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                 />
                 <datalist id="blattbot-project-models">
-                  {MODEL_SUGGESTIONS.map((m) => (
-                    <option key={m} value={m} />
+                  {modelList.models.map((m) => (
+                    <option key={m.id} value={m.id} label={m.label !== m.id ? m.label : undefined} />
                   ))}
                 </datalist>
               </label>
