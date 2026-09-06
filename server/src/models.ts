@@ -11,7 +11,8 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { DEFAULT_MODEL, MODEL_ALIASES } from "./backends/types.js";
 import { executableOptions } from "./sdkinfo.js";
-import type { Settings } from "./settings.js";
+import { selectedBackend, type Settings, type BackendId } from "./settings.js";
+import { codexStatus } from "./codexinfo.js";
 
 export interface ModelOption {
   /** The id to configure — a full model id, or an alias the CLI resolves. */
@@ -26,6 +27,8 @@ export interface ModelOption {
 
 export interface ModelList {
   models: ModelOption[];
+  backend?: BackendId;
+  defaultModel?: string;
   /** "cli" when the engine answered; "static" for the built-in fallback. */
   source: "cli" | "static";
 }
@@ -125,13 +128,22 @@ async function askCli(settings: Settings): Promise<ModelList> {
  * asked, else the static fallback. Never throws. `refresh` bypasses the cache.
  */
 export async function listModels(settings: Settings, refresh = false): Promise<ModelList> {
+  const backend = selectedBackend(settings);
+  if (backend === "codex") {
+    const status = await codexStatus(refresh);
+    return { backend, models: status.models, defaultModel: status.defaultModel, source: status.models.length ? "cli" : "static" };
+  }
+  if (backend === "openai") {
+    const id = settings.openaiModel.trim();
+    return { backend, models: id ? [{ id, label: id }] : [], source: "static" };
+  }
   const key = `${settings.apiKey ? "key" : "login"}|${settings.anthropicBaseUrl}`;
-  if (!refresh && cache && cache.key === key && Date.now() - cache.at < CACHE_MS) return cache.list;
+  if (!refresh && cache && cache.key === key && Date.now() - cache.at < CACHE_MS) return { ...await cache.list, backend };
   const list = askCli(settings).catch((err) => {
     console.warn(`model list: falling back to the static list (${err?.message ?? err})`);
     cache = undefined; // a failure is not worth caching for 10 minutes
     return staticModelList();
   });
   cache = { key, at: Date.now(), list };
-  return list;
+  return { ...await list, backend };
 }

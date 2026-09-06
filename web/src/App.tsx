@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { modelSettingPatch } from "./models";
 import {
   api,
   ensureAuth,
@@ -878,7 +879,7 @@ function AppShell() {
       }
       if (drafts > 0) {
         parts.push(
-          `The Source editor holds unsaved edits in ${drafts === 1 ? "1 file" : `${drafts} files`} ` +
+          `The editors hold unsaved edits in ${drafts === 1 ? "1 file" : `${drafts} files`} ` +
             `of “${name}” — they are kept in this tab until you save or revert them, ` +
             `but a page reload loses them.`,
         );
@@ -1122,7 +1123,8 @@ function AppShell() {
   const changeModel = useCallback(
     async (model: string) => {
       try {
-        setAppSettings(await api.saveSettings({ model }));
+        const settings = await api.settings();
+        setAppSettings(await api.saveSettings(modelSettingPatch(settings.backend, model)));
         // A global change shifts the project's effective model too (unless overridden).
         if (selectedId) api.projectSettings(selectedId).then(setProjSettings).catch(() => {});
       } catch (err: any) {
@@ -1265,6 +1267,7 @@ function AppShell() {
   const handleManualSaveDiff = useCallback((d: string) => {
     dirtySinceCompile.current = true;
     setDiff(d);
+    setSourceStamp((s) => s + 1);
   }, []);
 
   // After a source save: if the PDF is on screen, refresh it immediately.
@@ -1527,10 +1530,14 @@ function AppShell() {
       case "proof":
         return (
           <ProofPanel
+            key={selectedId!}
             diff={diff}
             busy={busy}
             conflicts={approveConflicts}
             projectId={selectedId!}
+            sourceStamp={sourceStamp}
+            onDiff={handleManualSaveDiff}
+            onSaved={handleSourceSaved}
             compile={compile}
             compiling={compiling}
             pdfStamp={pdfStamp}

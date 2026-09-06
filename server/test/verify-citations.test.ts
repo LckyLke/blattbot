@@ -594,7 +594,7 @@ describe("preprints and non-Crossref venues (the false-positive class)", () => {
 
 describe("backend wiring (the seam that actually runs it)", () => {
   /** A ctx shaped like the OpenAI backend's turn context. */
-  const ctxFor = (dir: string) => ({ dir, contextDirs: [], readOnly: false, project: { id: "proj1" } }) as any;
+  const ctxFor = (dir: string) => ({ dir, contextDirs: [], readOnly: false, project: { id: "proj1" }, signal: new AbortController().signal }) as any;
 
   it("add_citation verifies the entry it just wrote and says so in the tool result", async () => {
     vi.stubGlobal(

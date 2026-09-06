@@ -22,8 +22,12 @@ export interface Settings {
   engine: "" | "tectonic" | "latexmk" | "pdflatex";
   /** Optional Semantic Scholar API key — lifts the shared-pool rate limit on paper search. */
   s2ApiKey: string;
-  /** Agent backend running the turns. "" = the Claude Agent SDK (the default). */
-  backend: "" | "claude" | "openai";
+  /** Agent backend running the turns. "" = Codex (the default). */
+  backend: "" | "codex" | "claude" | "openai";
+  /** Empty uses the model configured in the local Codex CLI. */
+  codexModel: string;
+  /** Empty uses Codex's configured reasoning effort. */
+  codexEffort: "" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   /** OpenAI-compatible endpoint base URL, e.g. http://127.0.0.1:11434/v1 (llama.cpp, Ollama, vLLM, OpenRouter, …). */
   openaiBaseUrl: string;
   /** API key for the OpenAI-compatible endpoint. "" = none (fine for most local servers). */
@@ -48,12 +52,20 @@ export const DEFAULT_SETTINGS: Settings = {
   engine: "",
   s2ApiKey: "",
   backend: "",
+  codexModel: "",
+  codexEffort: "",
   openaiBaseUrl: "",
   openaiApiKey: "",
   openaiModel: "",
   effort: "",
   fallbackModel: "",
 };
+
+export type BackendId = "codex" | "claude" | "openai";
+
+export function selectedBackend(settings: Pick<Settings, "backend">): BackendId {
+  return settings.backend === "claude" || settings.backend === "openai" ? settings.backend : "codex";
+}
 
 export function loadSettings(): Settings {
   if (!existsSync(SETTINGS_PATH)) return { ...DEFAULT_SETTINGS };

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Agentic LaTeX editing for Overleaf — Claude Code over the Overleaf git bridge, with a compile-verify loop and an integrated citation pipeline.",
+  "description": "Agentic LaTeX editing for Overleaf — Codex by default, with a compile-verify loop and an integrated citation pipeline.",
   "workspaces": [
     "server",
     "web"

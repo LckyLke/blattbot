@@ -6,7 +6,7 @@
  * page and offers the static list until it arrives.
  */
 import { useEffect, useState } from "react";
-import { api, type ModelList, type ModelOption } from "./api";
+import { api, type ModelList, type ModelOption, type BackendId, type Settings } from "./api";
 
 /** What the UI shows before the server answers (and if it never does). */
 export const STATIC_MODELS: ModelOption[] = [
@@ -26,40 +26,61 @@ export function shortModel(model: string): string {
   return model.replace(/^claude-/, "");
 }
 
-let cached: ModelList | null = null;
-let inflight: Promise<ModelList> | null = null;
+const cached = new Map<string, ModelList>();
+const inflight = new Map<string, Promise<ModelList>>();
+let generation = 0;
 
-export function fetchModelList(refresh = false): Promise<ModelList> {
-  if (cached && !refresh) return Promise.resolve(cached);
-  if (inflight && !refresh) return inflight;
-  inflight = api
-    .models(refresh)
+export function modelSettingPatch(backend: Settings["backend"], model: string): Partial<Settings> {
+  return backend === "claude" ? { model } : backend === "openai" ? { openaiModel: model } : { codexModel: model };
+}
+
+function fallback(backend?: BackendId): ModelList {
+  return { backend, models: backend === "claude" ? STATIC_MODELS : [], source: "static" };
+}
+
+export function fetchModelList(refresh = false, backend?: BackendId): Promise<ModelList> {
+  const key = backend ?? "active";
+  if (cached.has(key) && !refresh) return Promise.resolve(cached.get(key)!);
+  if (inflight.has(key) && !refresh) return inflight.get(key)!;
+  const current = generation;
+  const promise = api
+    .models(refresh, backend)
     .then((list) => {
-      cached = list.models.length > 0 ? list : { models: STATIC_MODELS, source: "static" };
-      return cached;
+      if (current === generation) cached.set(key, list);
+      return list;
     })
-    .catch(() => {
-      cached = cached ?? { models: STATIC_MODELS, source: "static" };
-      return cached;
-    })
+    .catch(() => cached.get(key) ?? fallback(backend))
     .finally(() => {
-      inflight = null;
+      if (inflight.get(key) === promise) inflight.delete(key);
     });
-  return inflight;
+  inflight.set(key, promise);
+  return promise;
 }
 
 /** The current list (static until the server answers) and its source. */
-export function useModelList(): ModelList {
-  const [list, setList] = useState<ModelList>(cached ?? { models: STATIC_MODELS, source: "static" });
+export function useModelList(backend?: BackendId): ModelList {
+  const [revision, setRevision] = useState(0);
+  const [list, setList] = useState<ModelList>(cached.get(backend ?? "active") ?? fallback(backend));
+  useEffect(() => {
+    const changed = () => {
+      generation++;
+      cached.clear();
+      inflight.clear();
+      setRevision((n) => n + 1);
+    };
+    window.addEventListener("blattbot:settings-changed", changed);
+    return () => window.removeEventListener("blattbot:settings-changed", changed);
+  }, []);
   useEffect(() => {
     let stale = false;
-    void fetchModelList().then((l) => {
+    setList(cached.get(backend ?? "active") ?? fallback(backend));
+    void fetchModelList(false, backend).then((l) => {
       if (!stale) setList(l);
     });
     return () => {
       stale = true;
     };
-  }, []);
+  }, [backend, revision]);
   return list;
 }
 

@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, lstatSync } from "node:fs";
 import { join, relative } from "node:path";
 
 /** Recursively list files under dir, skipping dot-directories and common junk. */
@@ -17,7 +17,10 @@ export function listFiles(root: string, subdir = ""): string[] {
     // Always "/"-separated: these are protocol paths (Overleaf, git, scope),
     // not OS paths — join() would leak backslashes on Windows.
     const rel = subdir ? `${subdir}/${name}` : name;
-    const st = statSync(join(root, rel));
+    let st;
+    try { st = lstatSync(join(root, rel)); } catch { continue; }
+    // A symlink can escape the mirror or create an infinite traversal loop.
+    if (st.isSymbolicLink()) continue;
     if (st.isDirectory()) out.push(...listFiles(root, rel));
     else out.push(rel);
   }

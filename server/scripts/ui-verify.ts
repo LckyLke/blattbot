@@ -17,7 +17,8 @@ import { startMockOverleaf } from "./mock-overleaf.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SHOTS = process.env.UI_SHOTS_DIR ?? "/tmp/blattbot-ui-shots";
-const EXECUTABLE = `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
+const EXECUTABLE = process.env.BLATTBOT_BROWSER_EXECUTABLE ||
+  ["/usr/bin/chromium", "/usr/bin/google-chrome"].find(existsSync) || undefined;
 const SERVER_PORT = 4570;
 const MOCK_PORT = 4571;
 const ASK_PORT = 4572;
@@ -291,6 +292,13 @@ async function main() {
   let downloads = 0;
   try {
     await waitFor(`http://127.0.0.1:${SERVER_PORT}/api/bootstrap`);
+    // Fresh installations use Codex. The existing model/alias checks below
+    // explicitly exercise Claude; Codex's full loop has its own mock tests.
+    const fresh = await (await afetch(`http://127.0.0.1:${SERVER_PORT}/api/agent/info`)).json() as { backend: string };
+    if (fresh.backend !== "codex") throw new Error("Codex is not the default harness");
+    await afetch(`http://127.0.0.1:${SERVER_PORT}/api/settings`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ backend: "claude" }),
+    });
 
     browser = await chromium.launch({ executablePath: EXECUTABLE, headless: true });
     const page = await browser.newPage({ viewport: { width: 1500, height: 920 } });
@@ -649,6 +657,7 @@ async function main() {
     const acListsSection =
       (await acTooltip.locator("li .cm-completionLabel", { hasText: "\\section" }).count()) > 0;
     await shot("24c1-autocomplete-commands");
+    await page.waitForTimeout(100); // CodeMirror's keyboard interaction delay is 75 ms.
     await page.keyboard.press("Enter");
     await page.keyboard.type("Intro", { delay: 20 });
     const acSectionInserted = (await cmText()).includes("\\section{Intro}");
@@ -664,6 +673,7 @@ async function main() {
     await citeItem.waitFor({ timeout: 5_000 });
     const acCiteDetail = (await citeItem.innerText()).includes("Attention is All You Need");
     await shot("24c2-autocomplete-cite");
+    await page.waitForTimeout(100);
     await page.keyboard.press("Enter");
     const acCiteInserted = (await cmText()).includes("\\cite{vaswani2017attention}");
 
@@ -674,6 +684,7 @@ async function main() {
     await page.keyboard.type("\\begin{itemi", { delay: 50 });
     await acTooltip.locator("li[aria-selected]", { hasText: "itemize" }).waitFor({ timeout: 5_000 });
     await shot("24c3-autocomplete-env");
+    await page.waitForTimeout(100);
     await page.keyboard.press("Enter");
     const envText = await cmText();
     const acEnvPaired =
@@ -800,6 +811,99 @@ async function main() {
       .first()
       .waitFor({ timeout: 10_000 });
     await shot("25-proof-manual-edit");
+
+    // ---- Edit directly in Proof: shared drafts, recovery and an in-flight save ----
+    const proof = () => page.locator("#pane-panel-proof");
+    const proofEditor = () => proof().getByRole("tabpanel", { name: "Proof editor", exact: true });
+    const proofSavedBefore = await getFile("main.tex");
+    await proof().getByRole("button", { name: /^Edit main\.tex lines? .+ in Proof$/ }).first().click();
+    await proofEditor().locator(".cm-content").waitFor({ state: "visible" });
+    const proofInlineOpenOk = await aside().getByRole("tab", { name: "Proof", exact: false }).getAttribute("aria-selected") === "true";
+    await proofEditor().locator(".cm-content").click();
+    await page.keyboard.press("Control+End");
+    await page.keyboard.type("% edited directly in Proof\n");
+    if (!(await proof().getByRole("button", { name: "Approve & push" }).isDisabled())) {
+      throw new Error("Proof allowed approval with an unsaved edit");
+    }
+    await proofEditor().getByRole("button", { name: "Back to diff", exact: false }).click();
+    await proof().getByRole("button", { name: "Resume main.tex", exact: true }).click();
+    await proofEditor().locator(".cm-content").waitFor({ state: "visible" });
+    if (!(await proofEditor().locator(".cm-content").innerText()).includes("edited directly in Proof")) {
+      throw new Error("closing the Proof editor lost its draft");
+    }
+    // Save writes to disk, but hold the response while typing more. The
+    // eventual response must keep those keystrokes dirty in both editors.
+    let releaseProofSave!: () => void;
+    let proofSaveWritten!: () => void;
+    const proofSaveGate = new Promise<void>((resolve) => { releaseProofSave = resolve; });
+    const proofSaveStarted = new Promise<void>((resolve) => { proofSaveWritten = resolve; });
+    const proofSaveRoute = async (route: import("playwright-core").Route) => {
+      if (route.request().method() !== "PUT") return route.continue();
+      const response = await route.fetch();
+      proofSaveWritten();
+      await proofSaveGate;
+      await route.fulfill({ response });
+    };
+    await page.route("**/api/projects/*/file", proofSaveRoute);
+    await proofEditor().locator(".cm-content").click();
+    await page.keyboard.press("Control+s");
+    await proofSaveStarted;
+    // Returning to the previous saved text removes the draft temporarily,
+    // but the pending save must still prevent approval.
+    await page.keyboard.press("Control+a");
+    await page.keyboard.insertText(proofSavedBefore);
+    if (!(await proof().getByRole("button", { name: "Approve & push" }).isDisabled())) {
+      throw new Error("Proof allowed approval while a save response was pending");
+    }
+    await page.keyboard.press("Control+End");
+    await page.keyboard.type("% edited directly in Proof\n");
+    await page.keyboard.type("% typed while Proof was saving\n");
+    releaseProofSave();
+    await proofEditor().getByRole("button", { name: "Save", exact: true }).waitFor();
+    await page.unroute("**/api/projects/*/file", proofSaveRoute);
+    const proofSaveKeepsTypingOk =
+      (await proofEditor().locator(".cm-content").innerText()).includes("typed while Proof was saving") &&
+      (await proof().getByRole("button", { name: "Approve & push" }).isDisabled());
+    await shot("25-proof-inline-editor");
+    // Source holds the same draft and can save it. Proof stays open, so
+    // checking it again also covers the live save notification.
+    await aside().getByRole("tab", { name: "Source", exact: true }).click();
+    await page.locator("#pane-panel-source .cm-content").waitFor({ state: "visible" });
+    await page.locator("#pane-panel-source .cm-content").click();
+    await page.keyboard.press("Control+End");
+    const proofSharedDraftOk = (await cmText()).includes("typed while Proof was saving");
+    await page.keyboard.type("% continued in Source\n");
+    await page.keyboard.press("Control+s");
+    await page.locator("#pane-panel-source").getByRole("button", { name: "Save", exact: true }).waitFor();
+    await page.waitForFunction(() => {
+      const save = [...document.querySelectorAll("#pane-panel-source button")].find((b) => b.textContent?.trim() === "Save") as HTMLButtonElement | undefined;
+      return save?.disabled;
+    });
+    await aside().getByRole("tab", { name: "Proof", exact: false }).click();
+    const proofSharedSaveOk =
+      (await proofEditor().locator(".cm-content").innerText()).includes("continued in Source") &&
+      (await proofEditor().getByRole("button", { name: "Save", exact: true }).isDisabled()) &&
+      !(await proof().getByRole("button", { name: "Approve & push" }).isDisabled());
+    await proofEditor().getByRole("button", { name: "Back to diff", exact: false }).click();
+    await proof().getByText("% continued in Source", { exact: true }).waitFor();
+    const proofInlineSaveOk = (await getFile("main.tex")) === proofSavedBefore +
+      "% edited directly in Proof\n% typed while Proof was saving\n% continued in Source\n";
+    if (!proofInlineOpenOk || !proofSaveKeepsTypingOk || !proofSharedDraftOk || !proofSharedSaveOk || !proofInlineSaveOk) {
+      throw new Error(`Proof editing failed: ${JSON.stringify({ proofInlineOpenOk, proofSaveKeepsTypingOk, proofSharedDraftOk, proofSharedSaveOk, proofInlineSaveOk })}`);
+    }
+    // Restore the fixture through the Proof editor so the following discard
+    // tests still exercise their original, single pending hunk.
+    await proof().getByRole("button", { name: "Edit main.tex in Proof", exact: true }).click();
+    await proofEditor().locator(".cm-content").waitFor({ state: "visible" });
+    await proofEditor().locator(".cm-content").click();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.insertText(proofSavedBefore);
+    await page.keyboard.press("Control+s");
+    await page.waitForFunction(() => {
+      const save = [...document.querySelectorAll("#pane-panel-proof button")].find((b) => b.textContent?.trim() === "Save") as HTMLButtonElement | undefined;
+      return save?.disabled;
+    });
+    await proofEditor().getByRole("button", { name: "Back to diff", exact: false }).click();
 
     // ---- Leave warning: with the manual tweak still unapproved, the tab-close
     // guard is armed (a synthetic beforeunload comes back defaultPrevented)…
@@ -1199,14 +1303,23 @@ async function main() {
     await page.getByRole("button", { name: "Open settings" }).click();
     await page.getByText("mock@example.org").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
     await shot("28-settings-accounts");
-    await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Agent" }).click();
+    await page.getByRole("dialog", { name: "Settings" }).getByRole("tab", { name: "Agent" }).click();
     await page.getByText("API base URL").waitFor({ timeout: 5_000 });
     await shot("29-settings-agent");
 
     // ---- Backend picker: two radio cards; switching persists via /api/settings ----
     const settingsDlg = page.getByRole("dialog", { name: "Settings" });
+    const codexRadio = settingsDlg.getByRole("radio", { name: "Codex", exact: true });
+    await codexRadio.check();
+    await settingsDlg.getByLabel("Codex model").fill("codex-ui-model");
+    await settingsDlg.getByRole("button", { name: "Save settings" }).click();
+    await settingsDlg.getByText("Saved.", { exact: true }).waitFor();
+    const codexSaved = await (await afetch(`${apiBase}/settings`)).json() as { backend: string; codexModel: string };
+    if (codexSaved.backend !== "codex" || codexSaved.codexModel !== "codex-ui-model") throw new Error("Codex settings did not persist");
+    await shot("29a-settings-codex");
     const claudeRadio = settingsDlg.getByRole("radio", { name: "Claude Code (Agent SDK)" });
     const openaiRadio = settingsDlg.getByRole("radio", { name: "OpenAI-compatible API" });
+    await claudeRadio.check();
     const backendPickerOk =
       (await claudeRadio.count()) === 1 &&
       (await openaiRadio.count()) === 1 &&
@@ -1228,17 +1341,17 @@ async function main() {
     await settingsDlg.getByRole("button", { name: "Save settings" }).click();
     await settingsDlg.getByText("Saved.").waitFor({ timeout: 5_000 });
     const backendAfterClaude = await getBackend();
-    // Reset to the stored default ("" = claude) so the rest of the flow is untouched.
+    // Keep the remaining Claude-specific checks on their explicit backend.
     await afetch(`${apiBase}/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ backend: "" }),
+      body: JSON.stringify({ backend: "claude" }),
     });
     const backendReset = await getBackend();
     const backendSwitchOk =
-      backendAfterOpenai === "openai" && backendAfterClaude === "claude" && backendReset === "";
+      backendAfterOpenai === "openai" && backendAfterClaude === "claude" && backendReset === "claude";
 
-    await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Transparency" }).click();
+    await page.getByRole("dialog", { name: "Settings" }).getByRole("tab", { name: "Transparency" }).click();
     await page.getByText("compile_latex").filter({ visible: true }).first().waitFor({ timeout: 5_000 });
     const transparencyText = await page.getByRole("dialog", { name: "Settings" }).innerText();
     const settingsOk =
@@ -1254,7 +1367,7 @@ async function main() {
     // actionable question card that survives a reload while pending.
     await page.getByRole("button", { name: "Open settings" }).click();
     const askDlg = page.getByRole("dialog", { name: "Settings" });
-    await askDlg.getByRole("button", { name: "Agent" }).click();
+    await askDlg.getByRole("tab", { name: "Agent" }).click();
     await askDlg.getByRole("radio", { name: "OpenAI-compatible API" }).check();
     await askDlg.getByPlaceholder("http://127.0.0.1:11434/v1").fill(`http://127.0.0.1:${ASK_PORT}/v1`);
     await askDlg.getByPlaceholder(/llama3\.3:70b/).fill("ask-verify-model");
@@ -1394,6 +1507,7 @@ async function main() {
       (await leftPane().locator("a", { hasText: "nonexistent.tex" }).count()) === 0;
     await fileLink.first().click();
     await aside().locator(".cm-flash-line").first().waitFor({ timeout: 10_000 });
+    await aside().getByText("Ln 3, Col 1", { exact: true }).waitFor({ timeout: 5_000 });
     const linkJumpOk =
       (await aside()
         .getByRole("tab", { name: "Source", exact: true })
@@ -1778,7 +1892,7 @@ async function main() {
     await afetch(`${apiBase}/settings`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ backend: "", openaiBaseUrl: "", openaiModel: "" }),
+      body: JSON.stringify({ backend: "claude", openaiBaseUrl: "", openaiModel: "" }),
     });
 
     // ---- Opening the PDF tab auto-compiles, with a visible progress indicator ----
@@ -2210,6 +2324,11 @@ async function main() {
         rejectFileUiOk,
         rejectFileContentOk,
         proofJumpOk,
+        proofInlineOpenOk,
+        proofInlineSaveOk,
+        proofSaveKeepsTypingOk,
+        proofSharedDraftOk,
+        proofSharedSaveOk,
         rejectHunkContentOk,
         leaveWarnShownOk,
         leaveWarnStayOk,

@@ -12,6 +12,8 @@ import { isWsl, windowsUserHomes } from "./overleaf/wsl.js";
 import { DATA_DIR } from "./config.js";
 import { loadSettings } from "./settings.js";
 import { agentSdkVersion, describeEngine } from "./sdkinfo.js";
+import { codexStatus } from "./codexinfo.js";
+import { selectedBackend } from "./settings.js";
 
 const execFileP = promisify(execFile);
 
@@ -35,6 +37,10 @@ export async function runDoctor(log: (line: string) => void = console.log): Prom
 
   log(`Platform:  ${platform()} ${arch()}  ·  Node ${process.version}`);
   log(`Data dir:  ${short(DATA_DIR)}`);
+  log(`Backend:   ${selectedBackend(loadSettings())}`);
+  const codex = await codexStatus();
+  log(`Codex:     ${codex.message}`);
+  log(`           ${codex.executable}${codex.defaultModel ? ` · default model: ${codex.defaultModel}` : ""}`);
 
   const git = await commandVersion("git");
   log(`git:       ${git ?? "NOT FOUND — required; install it from https://git-scm.com"}`);
@@ -51,7 +57,7 @@ export async function runDoctor(log: (line: string) => void = console.log): Prom
 
   const claude = await commandVersion("claude");
   log(
-    `Claude:    ${claude ? `${claude} — logged-in Claude Code found` : "claude CLI not found — log in with Claude Code (https://claude.com/claude-code) or set an API key in Settings"}`,
+    `Claude:    ${claude ? `${claude} — installed (login not checked)` : "optional — install Claude Code or set an Anthropic API key to use the Claude backend"}`,
   );
   log(`Engine:    Agent SDK ${agentSdkVersion() ?? "not installed"} · ${describeEngine()}`);
 

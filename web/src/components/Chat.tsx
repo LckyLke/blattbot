@@ -908,7 +908,9 @@ function ModelChip({
   const [open, setOpen] = useState(false);
   const [custom, setCustom] = useState("");
   // The engine's catalog once the server has it; the static list until then.
-  const models = concreteModels(useModelList());
+  const modelList = useModelList();
+  const models = concreteModels(modelList);
+  const defaultLabel = modelList.backend === "codex" ? "Codex default" : "model";
 
   function pick(id: string) {
     const next = id.trim();
@@ -934,7 +936,7 @@ function ModelChip({
         onClick={() => setOpen((o) => !o)}
         className="rounded-full border border-rule px-2.5 py-0.5 font-mono text-[11px] text-graphite transition-colors hover:border-leaf/40 hover:text-paper-dim"
       >
-        {shortModel(model) || "model"}
+        {shortModel(model) || defaultLabel}
       </button>
       {open && (
         <>
@@ -952,6 +954,13 @@ function ModelChip({
             <p className="px-3 pb-1 pt-1.5 text-[10.5px] uppercase tracking-wide text-graphite">
               Model — applies from the next turn
             </p>
+            {modelList.backend !== "openai" && (
+              <button type="button" onClick={() => { setOpen(false); onChange(""); }}
+                className="w-full px-3 py-1.5 text-left text-[11.5px] text-graphite hover:bg-ink-3 hover:text-paper">
+                Use {modelList.backend === "codex" ? "Codex" : "harness"} default
+                {modelList.defaultModel && <span className="ml-1 text-[10px]">({modelList.defaultModel})</span>}
+              </button>
+            )}
             {models.map(({ id, label }) => (
               <button
                 key={id}

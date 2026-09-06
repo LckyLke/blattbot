@@ -626,7 +626,7 @@ export const claudeBackend: AgentBackend = {
     // switching backends mid-chat starts a fresh SDK session instead of
     // failing on an unknown resume id.
     const raw = ctx.session.sessionId;
-    const resumeId = raw && !raw.startsWith("oai-") ? raw : undefined;
+    const resumeId = raw && !raw.startsWith("oai-") && !raw.startsWith("codex-") ? raw : undefined;
 
     // The SDK wants an AbortController of its own; relay the dispatcher's signal.
     const controller = new AbortController();

@@ -32,6 +32,17 @@ export interface Account {
   projectCount: number;
 }
 
+export type BackendId = "codex" | "claude" | "openai";
+
+export interface CodexStatus {
+  available: boolean;
+  authenticated: boolean;
+  authMethod?: string;
+  executable: string;
+  message: string;
+  defaultModel?: string;
+}
+
 export interface Settings {
   model: string;
   /** What the ACTIVE backend actually runs: "" and tier aliases resolved for
@@ -43,8 +54,10 @@ export interface Settings {
   systemPromptAppend: string;
   engine: "" | "tectonic" | "latexmk" | "pdflatex";
   settingsPath: string;
-  /** Agent backend: "" = Claude Agent SDK (the default). */
-  backend: "" | "claude" | "openai";
+  /** Agent backend: "" = Codex (the default). */
+  backend: "" | BackendId;
+  codexModel: string;
+  codexEffort: "" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   openaiBaseUrl: string;
   openaiModel: string;
   hasOpenaiApiKey: boolean;
@@ -118,6 +131,8 @@ export interface ModelOption {
 }
 export interface ModelList {
   models: ModelOption[];
+  backend?: BackendId;
+  defaultModel?: string;
   /** "cli" when the engine answered; "static" for the built-in fallback. */
   source: "cli" | "static";
 }
@@ -135,6 +150,7 @@ export interface AgentInfo {
   /** Claude backend only — the resolved fallback model, or a "(none …)" note. */
   fallbackModel?: string;
   usingApiKey: boolean;
+  authLabel?: string;
   /** The endpoint the active backend talks to. */
   endpoint?: string;
   /** Claude backend only (legacy field, same value as endpoint). */
@@ -421,8 +437,12 @@ export const api = {
       openaiApiKey?: string;
     },
   ) =>
-    request<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }),
+    request<Settings>("/api/settings", { method: "PUT", body: JSON.stringify(patch) }).then((settings) => {
+      window.dispatchEvent(new Event("blattbot:settings-changed"));
+      return settings;
+    }),
   agentInfo: () => request<AgentInfo>("/api/agent/info"),
+  codexStatus: (refresh = false) => request<CodexStatus>(`/api/agent/codex/status${refresh ? "?refresh=1" : ""}`),
   updateCookie: (id: string, cookie: string) =>
     request<{ ok: boolean }>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify({ cookie }) }),
   cookieImport: (url: string) =>
@@ -438,7 +458,9 @@ export const api = {
   file: (id: string, path: string) =>
     request<FileContent>(`/api/projects/${id}/file?path=${encodeURIComponent(path)}`),
   /** The model pick-list for the Claude backend (engine catalog or static fallback). */
-  models: (refresh = false) => request<ModelList>(`/api/models${refresh ? "?refresh=1" : ""}`),
+  models: (refresh = false, backend?: BackendId) => request<ModelList>(
+    `/api/models?refresh=${refresh ? "1" : "0"}${backend ? `&backend=${backend}` : ""}`,
+  ),
   context: (id: string) => request<ProjectContext>(`/api/projects/${id}/context`),
   browseDirs: (path?: string) =>
     request<DirListing>(`/api/fs/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`),

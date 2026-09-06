@@ -52,6 +52,7 @@ import {
   subscribeDrafts,
 } from "../drafts";
 import { merge3 } from "../merge3";
+import { isFileSaving, notifyEditors, startFileSave, subscribeEditors } from "../editor-sync";
 import { useDialog } from "./Dialog";
 
 interface Props {
@@ -72,6 +73,8 @@ interface Props {
   chatVisible?: boolean;
   /** Push a selected passage (with its file/line) into the chat composer. */
   onQuoteToChat?: (text: string, source: string) => void;
+  /** A focused editor inside Proof, without the file tree. */
+  embedded?: { path: string; line: number };
 }
 
 interface DirNode {
@@ -684,7 +687,7 @@ const CONFLICT_MARK = "<<<<<<< yours";
  */
 let handledRevealNonce = -1;
 
-export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat }: Props) {
+export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded }: Props) {
   const dialog = useDialog();
   const tree = useMemo(() => buildTree(files), [files]);
   const [sel, setSel] = useState<string | null>(null);
@@ -708,6 +711,8 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   /** Path of the document currently loaded into the editor. */
   const docPathRef = useRef<string | null>(null);
   const pendingReveal = useRef<{ file: string; line: number } | null>(null);
+  const editorId = useRef(Symbol("editor")).current;
+  const receiving = useRef(false);
 
   const busyRef = useRef(busy);
   busyRef.current = busy;
@@ -794,15 +799,19 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
           const isDirty = text !== savedRef.current;
           setDirty(isDirty);
           const path = docPathRef.current;
-          if (path) {
+          if (path && !receiving.current) {
             // A draft keeps the base it started from (a merge needs it);
             // only a fresh draft takes the current disk content as base.
             if (isDirty) {
               const base = readDraft(projRef.current, path)?.base ?? savedRef.current;
               stashDraft(projRef.current, path, { content: text, base });
             } else dropDraft(projRef.current, path);
+            notifyEditors({
+              projectId: projRef.current, path, origin: editorId,
+              kind: "document", content: text, saved: savedRef.current,
+            });
           }
-          if (isDirty) armAutosave();
+          if (isDirty && !receiving.current) armAutosave();
         }
         if (u.docChanged || u.selectionSet) {
           const head = u.state.selection.main.head;
@@ -866,6 +875,39 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Both panes can show the same file. Mirror edits, undo and saves without
+  // creating a second draft or moving the other editor's cursor to EOF.
+  useEffect(() => subscribeEditors((update) => {
+    if (update.origin === editorId || update.projectId !== projRef.current ||
+        update.path !== docPathRef.current) return;
+    if (update.kind === "saving") {
+      savingRef.current = update.saving;
+      setSaving(update.saving);
+      return;
+    }
+    const view = viewRef.current;
+    if (!view) return;
+    savedRef.current = update.saved;
+    const current = view.state.doc.toString();
+    const next = update.content;
+    if (current !== next) {
+      let from = 0;
+      while (from < current.length && from < next.length && current[from] === next[from]) from++;
+      let end = 0;
+      while (end < current.length - from && end < next.length - from &&
+             current[current.length - end - 1] === next[next.length - end - 1]) end++;
+      receiving.current = true;
+      try {
+        view.dispatch({ changes: { from, to: current.length - end, insert: next.slice(from, next.length - end) } });
+      } finally {
+        receiving.current = false;
+      }
+    }
+    setDirty(next !== update.saved);
+    setDiskChanged(next !== update.saved && readDraft(update.projectId, update.path)?.base !== update.saved);
+    setSaveErr(null);
+  }), [editorId]);
+
   const applyPendingReveal = useCallback((view: EditorView) => {
     const p = pendingReveal.current;
     if (!p || docPathRef.current !== p.file) return;
@@ -877,6 +919,10 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
       selection: { anchor: pos },
       effects: [EditorView.scrollIntoView(pos, { y: "center" }), setFlash.of(pos)],
     });
+    view.focus();
+    // File switches also reset the status readout. Keep the navigation's
+    // destination authoritative even when the editor was just re-created.
+    setCursor({ line: ln, col: 1, lines: doc.lines });
     window.setTimeout(() => {
       viewRef.current?.dispatch({ effects: setFlash.of(null) });
     }, 1300);
@@ -912,31 +958,45 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     if (!view || !path || savingRef.current || busyRef.current) return;
     const content = view.state.doc.toString();
     if (content === savedRef.current) return; // clean doc — nothing to save
+    const finishSave = startFileSave(projectId, path, editorId);
+    if (!finishSave) return;
+    let live = content;
+    const stopTracking = subscribeEditors((update) => {
+      if (update.kind === "document" && update.projectId === projectId && update.path === path) {
+        live = update.content;
+      }
+    });
+    savingRef.current = true;
     setSaving(true);
     setSaveErr(null);
     try {
       const res = await api.saveFile(projectId, path, content);
-      if (docPathRef.current === path) {
+      // The draft is shared: it also includes typing in the other pane and
+      // survives closing this editor or selecting a different file mid-save.
+      if (live !== content) stashDraft(projectId, path, { content: live, base: content });
+      else dropDraft(projectId, path);
+      if (projRef.current === projectId && docPathRef.current === path) {
         savedRef.current = content;
         setFile((f) => (f ? { ...f, content, size: new TextEncoder().encode(content).length } : f));
         // Quick save keeps the editor live: whatever was typed during the
         // round-trip is still a draft, over the content just written.
-        const live = view.state.doc.toString();
         setDirty(live !== content);
         setDiskChanged(false);
-        if (live !== content) stashDraft(projectId, path, { content: live, base: content });
-        else dropDraft(projectId, path);
       }
+      notifyEditors({ projectId, path, origin: editorId, kind: "document", content: live, saved: content });
       onDiffRef.current(res.diff);
       onSavedRef.current?.();
     } catch (err: any) {
       setSaveErr(err.message);
     } finally {
+      stopTracking();
+      finishSave();
+      savingRef.current = false;
       setSaving(false);
       // Typed on during the round-trip: the idle timer picks it up again.
       if (view.state.doc.toString() !== savedRef.current) armAutosave();
     }
-  }, [projectId, armAutosave]);
+  }, [projectId, armAutosave, editorId]);
   saveRef.current = save;
 
   /**
@@ -961,6 +1021,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     else dropDraft(projectId, path);
     setDirty(text !== theirs);
     setDiskChanged(false);
+    notifyEditors({ projectId, path, origin: editorId, kind: "document", content: text, saved: theirs });
     if (conflicts > 0) {
       setSaveErr(
         `${conflicts} conflict${conflicts === 1 ? "" : "s"} marked ${CONFLICT_MARK} … >>>>>>> disk — resolve them, then save`,
@@ -1015,6 +1076,13 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   // a pane swap, a project re-entered), else the main file, else the first
   // text-like one. Also recovers if the open file disappears.
   useEffect(() => {
+    if (embedded) {
+      if (sel !== embedded.path) {
+        pendingReveal.current = { file: embedded.path, line: embedded.line };
+        setSel(embedded.path);
+      }
+      return;
+    }
     if (files.length === 0) return;
     if (sel && files.includes(sel)) return;
     const remembered = lastOpenFile(projectId);
@@ -1026,7 +1094,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
           : (files.find((f) => TEXTISH.test(f)) ?? files[0]);
     rememberOpenFile(projectId, pick);
     setSel(pick);
-  }, [files, mainTex, sel, projectId]);
+  }, [files, mainTex, sel, projectId, embedded]);
 
   useEffect(() => {
     if (!sel) {
@@ -1062,6 +1130,8 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     const pid = projRef.current;
     if (docPathRef.current !== file.path) {
       docPathRef.current = file.path;
+      savingRef.current = isFileSaving(pid, file.path);
+      setSaving(savingRef.current);
       savedRef.current = file.content;
       const draft = readDraft(pid, file.path);
       const restore = draft && draft.content !== file.content ? draft : undefined;
@@ -1242,22 +1312,22 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   return (
     <div className="flex h-full">
-      <aside className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
+      {!embedded && <aside className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
         {files.length === 0 ? (
           <p className="px-3 py-2 text-xs text-graphite">No files.</p>
         ) : (
           renderDir(tree, 0)
         )}
-      </aside>
+      </aside>}
 
       <div className="flex min-w-0 flex-1 flex-col">
         {sel && (
-          <div className="flex shrink-0 items-center gap-2 border-b border-rule px-4 py-1">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-rule px-4 py-1">
             <span className="truncate font-mono text-[11.5px] text-paper-dim">
               {sel}
               {dirty && <span className="ml-1.5 align-middle text-gold">●</span>}
             </span>
-            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            <span className="ml-auto flex flex-wrap items-center gap-1.5">
               {saveErr && <span className="text-[11px] text-pencil">{saveErr}</span>}
               {dirty && diskChanged && (
                 <span

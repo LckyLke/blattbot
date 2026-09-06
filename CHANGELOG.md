@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Edit files and passages directly inside Proof with the full source editor, shared live drafts, autocomplete, undo, and save shortcuts. Saves refresh the review diff and visible PDF; approval and discard wait for unsaved drafts to be saved or reverted.
+- Codex is the default background harness, using the installed CLI and its login. Includes streamed replies, resumable chats, images, questions, compile/citation tools, read-only modes, interruption, token usage, and one-shot helpers. Claude and OpenAI-compatible endpoints remain selectable.
+- Settings checks Codex connectivity and offers its model catalog and reasoning efforts. Model picks now save to the active backend's own field; cached suggestions refresh after settings changes. New project overrides are scoped to their backend, and legacy Claude overrides do not leak into Codex.
+- Settings has keyboard-navigable tabs, focus containment, announced save/error states, and a persistent save action while scrolling.
+- Source-link navigation keeps the cursor readout in sync. PDF search shows a pending state for new queries and prevents old document text from entering a new document's search cache.
+- Shared file tools reject symlink escapes and `.git` reads. Listings skip symlinks and tolerate disappearing files. Misconfigured helper calls no longer fall back to another provider.
+- Added a real CLI protocol check (`npm run codex:check --workspace=server`) and automated Codex integration tests using a local mock process.
+
 ## 0.4.2 — 2026-09-02
 
 ### Browser sign-in under WSL

@@ -27,6 +27,8 @@ export interface ProjectSettings {
   styleAppend?: string;
   /** Model override for this project — takes precedence over the global setting. */
   model?: string;
+  /** The harness this override belongs to; older projects may omit it. */
+  modelBackend?: "codex" | "claude" | "openai";
   /** Mode preselected for new chats in this project (a client-side concern). */
   defaultMode?: string;
 }

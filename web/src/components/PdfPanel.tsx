@@ -353,6 +353,7 @@ export default function PdfPanel({
   const [searchHits, setSearchHits] = useState<{ page: number; start: number; end: number }[]>([]);
   const [searchIdx, setSearchIdx] = useState(0);
   const [searching, setSearching] = useState(false);
+  const [searchedQuery, setSearchedQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   /** Per-page joined text, rebuilt when the document changes. */
   const pageTextCache = useRef(new Map<number, string>());
@@ -360,15 +361,19 @@ export default function PdfPanel({
     pageTextCache.current = new Map();
     setSearchHits([]);
     setSearchIdx(0);
+    setSearchedQuery("");
   }, [doc]);
 
   const pageText = useCallback(
     async (p: number): Promise<string> => {
-      const cached = pageTextCache.current.get(p);
+      // Retain this document's cache across the await: a late page from an
+      // old document must not populate the replacement document's cache.
+      const cache = pageTextCache.current;
+      const cached = cache.get(p);
       if (cached !== undefined) return cached;
       const content = await (await doc!.getPage(p)).getTextContent();
       const joined = content.items.map((it) => ("str" in it ? it.str : "")).join(" ");
-      pageTextCache.current.set(p, joined);
+      cache.set(p, joined);
       return joined;
     },
     [doc],
@@ -415,6 +420,7 @@ export default function PdfPanel({
           if (cancelled) return;
           setSearchHits(hits);
           setSearchIdx(0);
+          setSearchedQuery(q);
           setSearching(false);
           if (hits.length > 0) {
             setFindHl((prev) => ({ nonce: (prev?.nonce ?? 0) + 1, ...hits[0] }));
@@ -422,6 +428,7 @@ export default function PdfPanel({
         } catch {
           if (!cancelled) {
             setSearchHits([]);
+            setSearchedQuery(q);
             setSearching(false);
           }
         }
@@ -740,10 +747,10 @@ export default function PdfPanel({
                 className="w-36 rounded border border-rule bg-ink-2 px-2 py-0.5 text-[11.5px] text-paper placeholder:text-graphite/60"
               />
               <span className="w-14 text-center font-mono text-[10.5px] text-graphite" role="status">
-                {searching
-                  ? "…"
-                  : searchQuery.trim().length < 2
-                    ? ""
+                {searchQuery.trim().length < 2
+                  ? ""
+                  : searching || searchedQuery !== searchQuery.trim()
+                    ? "…"
                     : searchHits.length === 0
                       ? "no hits"
                       : `${searchIdx + 1}/${searchHits.length}`}

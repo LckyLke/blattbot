@@ -1,7 +1,7 @@
 /**
  * Agent turns: mode/scope/prompt assembly, model resolution, and dispatch to
- * the configured backend (backends/claude.ts — the default — or
- * backends/openai.ts). The event contract the backends emit is documented in
+ * the configured backend (Codex by default, Claude, or an OpenAI-compatible
+ * endpoint). The event contract the backends emit is documented in
  * backends/types.ts; this module owns per-project turn bookkeeping
  * (isTurnActive/interruptTurn) and the error → turn_end mapping.
  */
@@ -13,6 +13,8 @@ import { contextDirectories, formatContextManifest } from "./context.js";
 import { abortQuestion } from "./questions.js";
 import { claudeBackend, runOneShot as runOneShotClaude } from "./backends/claude.js";
 import { openaiBackend, runOneShotOpenai } from "./backends/openai.js";
+import { codexBackend, runOneShotCodex } from "./backends/codex.js";
+import { selectedBackend, type BackendId } from "./settings.js";
 import {
   SYSTEM_APPEND,
   attachmentNote,
@@ -64,14 +66,15 @@ export function interruptTurn(projectId: string): boolean {
 
 // ---- Backends ---------------------------------------------------------------
 
-export const BACKENDS: Record<"claude" | "openai", AgentBackend> = {
+export const BACKENDS: Record<BackendId, AgentBackend> = {
+  codex: codexBackend,
   claude: claudeBackend,
   openai: openaiBackend,
 };
 
-/** The backend id settings select ("" = claude, the default). */
-export function activeBackendId(settings: Settings = loadSettings()): "claude" | "openai" {
-  return settings.backend === "openai" ? "openai" : "claude";
+/** The backend id settings select ("" = Codex, the default). */
+export function activeBackendId(settings: Settings = loadSettings()): BackendId {
+  return selectedBackend(settings);
 }
 
 export function activeBackend(settings: Settings = loadSettings()): AgentBackend {
@@ -79,16 +82,11 @@ export function activeBackend(settings: Settings = loadSettings()): AgentBackend
 }
 
 /**
- * Which backend a one-shot call (paper TL;DRs, disclosure polish, …) runs on:
- * the openai backend only when it is active AND fully configured; otherwise
- * the Claude SDK — the default and the fallback for half-configured setups.
+ * One-shot helpers use the selected backend too. Configuration errors must
+ * not silently send manuscript text to another provider.
  */
-export function oneShotBackendId(settings: Settings = loadSettings()): "claude" | "openai" {
-  return activeBackendId(settings) === "openai" &&
-    settings.openaiBaseUrl.trim() &&
-    settings.openaiModel.trim()
-    ? "openai"
-    : "claude";
+export function oneShotBackendId(settings: Settings = loadSettings()): BackendId {
+  return activeBackendId(settings);
 }
 
 /**
@@ -98,6 +96,7 @@ export function oneShotBackendId(settings: Settings = loadSettings()): "claude" 
  */
 export async function runOneShot(prompt: string): Promise<string> {
   const settings = loadSettings();
+  if (oneShotBackendId(settings) === "codex") return runOneShotCodex(prompt, settings);
   if (oneShotBackendId(settings) === "openai") return runOneShotOpenai(prompt, settings);
   return runOneShotClaude(prompt);
 }
@@ -117,9 +116,21 @@ export function resolveBackendModel(
   project: Pick<Project, "settings"> | undefined,
   settings: Settings,
 ): string {
-  const override = project?.settings?.model?.trim() ?? "";
+  const override = projectModelOverride(project, settings);
+  if (activeBackendId(settings) === "codex") return override || settings.codexModel.trim();
   if (activeBackendId(settings) === "openai") return override || settings.openaiModel.trim();
   return resolveModel(override || settings.model);
+}
+
+/** A project model choice is local to its harness. Legacy Claude overrides
+ * must not be sent to Codex when the installation adopts the new default. */
+export function projectModelOverride(project: Pick<Project, "settings"> | undefined, settings: Settings): string {
+  const override = project?.settings?.model?.trim() ?? "";
+  const backend = activeBackendId(settings);
+  const owner = project?.settings?.modelBackend;
+  if (owner && owner !== backend) return "";
+  if (!owner && backend === "codex" && /^(claude-|sonnet$|opus$|fable$|haiku$)/i.test(override)) return "";
+  return override;
 }
 
 // ---- Modes ------------------------------------------------------------------

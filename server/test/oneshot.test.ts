@@ -1,8 +1,7 @@
 /**
- * runOneShot backend parity: the dispatch decision (Claude default, openai
- * only when active AND configured) and the openai one-shot path against a
- * stubbed global fetch — the Claude path spawns the real SDK and is not
- * exercised here.
+ * runOneShot dispatch: Codex by default, with explicit provider choices
+ * honored even when incomplete. The OpenAI path uses a stubbed fetch;
+ * Codex's process protocol is covered in codex-backend.test.ts.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -24,7 +23,7 @@ afterEach(() => {
 });
 
 describe("oneShotBackendId", () => {
-  it("is claude by default and openai only when active AND configured", async () => {
+  it("defaults to Codex and honors explicit provider choices even when incomplete", async () => {
     const { oneShotBackendId } = await import("../src/agent.js");
     const { DEFAULT_SETTINGS } = await import("../src/settings.js");
     const configured = {
@@ -32,12 +31,13 @@ describe("oneShotBackendId", () => {
       openaiBaseUrl: "http://127.0.0.1:9999/v1",
       openaiModel: "m1",
     };
-    expect(oneShotBackendId({ ...DEFAULT_SETTINGS })).toBe("claude");
-    expect(oneShotBackendId(configured)).toBe("claude"); // configured but not active
+    expect(oneShotBackendId({ ...DEFAULT_SETTINGS })).toBe("codex");
+    expect(oneShotBackendId(configured)).toBe("codex"); // configured but not active
+    expect(oneShotBackendId({ ...configured, backend: "claude" })).toBe("claude");
     expect(oneShotBackendId({ ...configured, backend: "openai" })).toBe("openai");
-    // Half-configured openai falls back to Claude instead of erroring.
-    expect(oneShotBackendId({ ...configured, backend: "openai", openaiModel: "" })).toBe("claude");
-    expect(oneShotBackendId({ ...configured, backend: "openai", openaiBaseUrl: " " })).toBe("claude");
+    // Incomplete configuration must not silently switch providers.
+    expect(oneShotBackendId({ ...configured, backend: "openai", openaiModel: "" })).toBe("openai");
+    expect(oneShotBackendId({ ...configured, backend: "openai", openaiBaseUrl: " " })).toBe("openai");
   });
 });
 

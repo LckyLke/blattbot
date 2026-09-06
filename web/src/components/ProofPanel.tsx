@@ -1,10 +1,13 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { tabStripKeyDown } from "../a11y";
 import { buildHunkPatch, parseDiff, type DiffFile, type DiffHunk } from "../diff";
 import type { CompileInfo, SyncConflict } from "../api";
 import { useDialog } from "./Dialog";
 import { HunkLines } from "./DiffView";
 import RenderedDiff from "./RenderedDiff";
+import SourcePanel from "./SourcePanel";
+import { countDrafts, draftPaths, subscribeDrafts } from "../drafts";
+import { countFileSaves, subscribeFileSaves } from "../editor-sync";
 
 interface Props {
   diff: string;
@@ -12,6 +15,9 @@ interface Props {
   /** Approve was blocked: Overleaf changed these files while they also carry local edits. */
   conflicts: SyncConflict[] | null;
   projectId: string;
+  sourceStamp: number;
+  onDiff: (diff: string) => void;
+  onSaved: () => void;
   /** Local build state (App-owned) — the rendered diff's "current" side. */
   compile: CompileInfo | null;
   compiling: boolean;
@@ -33,6 +39,9 @@ export default function ProofPanel({
   busy,
   conflicts,
   projectId,
+  sourceStamp,
+  onDiff,
+  onSaved,
   compile,
   compiling,
   pdfStamp,
@@ -51,7 +60,16 @@ export default function ProofPanel({
   const [mode, setMode] = useState<"text" | "rendered">("text");
   /** In-flight approve/discard — buttons lock and the footer shows a sweep. */
   const [acting, setActing] = useState<"push" | "discard" | null>(null);
+  const [editing, setEditing] = useState<{ path: string; line: number } | null>(null);
+  const draftCount = useSyncExternalStore(subscribeDrafts, () => countDrafts(projectId));
+  const saveCount = useSyncExternalStore(subscribeFileSaves, () => countFileSaves(projectId));
+  const actionsLocked = busy || acting !== null || draftCount > 0 || saveCount > 0;
   const dialog = useDialog();
+
+  function edit(path: string, line: number) {
+    setConfirmDiscard(false);
+    setEditing({ path, line });
+  }
 
   const totals = files.reduce(
     (acc, f) => ({ add: acc.add + f.additions, del: acc.del + f.deletions }),
@@ -59,7 +77,7 @@ export default function ProofPanel({
   );
 
   async function approve(force = false) {
-    if (acting) return;
+    if (actionsLocked || files.length === 0) return;
     setActing("push");
     try {
       await onApprove(message.trim() || "BlattBot edit", force);
@@ -70,7 +88,7 @@ export default function ProofPanel({
 
   /** Conflict banner: replace Overleaf's versions with ours, after a warning. */
   async function overwriteRemote() {
-    if (acting) return;
+    if (actionsLocked) return;
     const ok = await dialog.confirm({
       title: "Overwrite Overleaf?",
       body: "Your versions of the conflicting files will replace the ones on Overleaf. Overleaf's current versions are backed up locally first.",
@@ -81,7 +99,7 @@ export default function ProofPanel({
   }
 
   async function discard() {
-    if (acting) return;
+    if (actionsLocked) return;
     setConfirmDiscard(false);
     setActing("discard");
     try {
@@ -93,7 +111,7 @@ export default function ProofPanel({
 
   /** Conflict banner: keep Overleaf's versions by dropping the local edits. */
   async function discardMine() {
-    if (acting || !conflicts) return;
+    if (actionsLocked || !conflicts) return;
     setActing("discard");
     try {
       await onDiscardConflicts(conflicts.map((c) => c.path));
@@ -102,7 +120,7 @@ export default function ProofPanel({
     }
   }
 
-  if (files.length === 0) {
+  if (files.length === 0 && !editing && draftCount === 0 && saveCount === 0) {
     return (
       <div className="flex h-full items-center justify-center px-8">
         <p className="max-w-xs text-center font-serif text-sm leading-relaxed text-graphite">
@@ -134,14 +152,14 @@ export default function ProofPanel({
           <div className="mt-2 flex flex-wrap gap-2">
             <button
               onClick={() => void discardMine()}
-              disabled={busy || acting !== null}
+              disabled={actionsLocked}
               className="rounded border border-rule px-2.5 py-1 text-[11.5px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
             >
               Discard my changes to these files
             </button>
             <button
               onClick={() => void overwriteRemote()}
-              disabled={busy || acting !== null}
+              disabled={actionsLocked}
               className="rounded bg-pencil/90 px-2.5 py-1 text-[11.5px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
             >
               Overwrite Overleaf
@@ -197,6 +215,30 @@ export default function ProofPanel({
             onEnsureCurrent={onEnsureCurrentPdf}
           />
         </div>
+      ) : editing ? (
+        <div role="tabpanel" aria-label="Proof editor" className="flex min-h-0 flex-1 flex-col">
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-rule px-4 py-2">
+            <button
+              onClick={() => setEditing(null)}
+              className="rounded border border-rule px-2 py-1 text-xs text-paper-dim transition-colors hover:border-gold hover:text-gold"
+            >
+              ← Back to diff
+            </button>
+            <span className="text-[11px] text-graphite">Save locally, then review and approve below.</span>
+          </div>
+          <div className="min-h-0 flex-1">
+            <SourcePanel
+              key={editing.path}
+              projectId={projectId}
+              files={[editing.path]}
+              embedded={editing}
+              stamp={sourceStamp}
+              busy={busy || acting !== null}
+              onDiff={onDiff}
+              onSaved={onSaved}
+            />
+          </div>
+        </div>
       ) : (
         <div
           role="tabpanel"
@@ -207,18 +249,41 @@ export default function ProofPanel({
             <FileDiff
               key={file.path}
               file={file}
-              busy={busy}
+              busy={actionsLocked}
+              canEdit={!busy && acting === null}
+              onEdit={edit}
               onRejectFile={onRejectFile}
               onRejectHunk={onRejectHunk}
               onJump={onJump}
             />
           ))}
+          {files.length === 0 && (
+            <p className="py-6 text-center text-sm text-graphite">Save your edits to see them in the diff.</p>
+          )}
         </div>
       )}
 
       <div className="booktabs relative shrink-0 bg-ink-2 px-4 py-3">
         {/* Pushing/discarding feedback: a slim gold sweep over the footer's rule. */}
         {acting !== null && <div className="compile-bar absolute inset-x-0 top-0 z-10 h-[3px]" />}
+        {saveCount > 0 && <p role="status" className="mb-2 text-xs text-gold">Saving your edits…</p>}
+        {draftCount > 0 && (
+          <div className="mb-2 text-xs text-gold">
+            <p role="status">
+              Unsaved edits in {draftCount} file{draftCount === 1 ? "" : "s"}. Save or revert them before approving or discarding.
+            </p>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+              {draftPaths(projectId).map((path) => (
+                <button key={path} disabled={busy || acting !== null}
+                  onClick={() => { setMode("text"); edit(path, 1); }}
+                  className="underline decoration-gold/40 underline-offset-2 hover:decoration-gold disabled:opacity-50"
+                >
+                  Resume {path}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="mb-2 flex items-center justify-between text-xs">
           <span className="text-graphite">
             {files.length} file{files.length === 1 ? "" : "s"} ·{" "}
@@ -236,7 +301,7 @@ export default function ProofPanel({
           />
           <button
             onClick={() => void approve()}
-            disabled={busy || acting !== null}
+            disabled={actionsLocked || files.length === 0}
             className="flex items-center gap-1.5 rounded bg-leaf-deep px-4 py-2 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
           >
             {acting === "push" && (
@@ -247,7 +312,7 @@ export default function ProofPanel({
           {confirmDiscard ? (
             <button
               onClick={() => void discard()}
-              disabled={busy || acting !== null}
+              disabled={actionsLocked || files.length === 0}
               className="rounded bg-pencil/90 px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
             >
               Really discard?
@@ -255,7 +320,7 @@ export default function ProofPanel({
           ) : (
             <button
               onClick={() => setConfirmDiscard(true)}
-              disabled={busy || acting !== null}
+              disabled={actionsLocked || files.length === 0}
               className="flex items-center gap-1.5 rounded border border-rule px-3 py-2 text-[13px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
             >
               {acting === "discard" && (
@@ -280,12 +345,16 @@ const STATUS_BADGE: Record<DiffFile["status"], { label: string; cls: string }> =
 function FileDiff({
   file,
   busy,
+  canEdit,
+  onEdit,
   onRejectFile,
   onRejectHunk,
   onJump,
 }: {
   file: DiffFile;
   busy: boolean;
+  canEdit: boolean;
+  onEdit: (file: string, line: number) => void;
   onRejectFile: (path: string) => void;
   onRejectHunk: (patch: string) => void;
   onJump?: (file: string, line: number) => void;
@@ -309,6 +378,16 @@ function FileDiff({
             <span className="text-pencil">−{file.deletions}</span>
           </span>
         </button>
+        {file.status !== "deleted" && file.hunks.length > 0 && (
+          <button
+            onClick={() => onEdit(file.path, hunkJumpLine(file.hunks[0]) ?? 1)}
+            disabled={!canEdit}
+            aria-label={`Edit ${file.path} in Proof`}
+            className="rounded border border-rule px-2 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+          >
+            Edit
+          </button>
+        )}
         {confirmFile ? (
           <button
             onClick={() => {
@@ -342,7 +421,7 @@ function FileDiff({
       </div>
       {!collapsed &&
         file.hunks.map((hunk, hi) => (
-          <HunkBlock key={hi} file={file} hunk={hunk} busy={busy} onRejectHunk={onRejectHunk} onJump={onJump} />
+          <HunkBlock key={hi} file={file} hunk={hunk} busy={busy} canEdit={canEdit} onEdit={onEdit} onRejectHunk={onRejectHunk} onJump={onJump} />
         ))}
     </section>
   );
@@ -382,12 +461,16 @@ function HunkBlock({
   file,
   hunk,
   busy,
+  canEdit,
+  onEdit,
   onRejectHunk,
   onJump,
 }: {
   file: DiffFile;
   hunk: DiffHunk;
   busy: boolean;
+  canEdit: boolean;
+  onEdit: (file: string, line: number) => void;
   onRejectHunk: (patch: string) => void;
   onJump?: (file: string, line: number) => void;
 }) {
@@ -402,6 +485,17 @@ function HunkBlock({
       <div className="flex items-center gap-2 border-b border-rule px-3 py-1">
         <span className="shrink-0 font-mono text-[11px] text-graphite/80">{range}</span>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
+          {file.status !== "deleted" && (
+            <button
+              onClick={() => onEdit(file.path, jumpLine ?? 1)}
+              disabled={!canEdit}
+              aria-label={`Edit ${file.path} ${range} in Proof`}
+              title="Edit this passage here in Proof"
+              className="rounded px-2 py-1 text-[11.5px] text-paper-dim transition-colors hover:bg-ink-3 hover:text-leaf disabled:opacity-50"
+            >
+              Edit
+            </button>
+          )}
           {canJump && (
             <button
               onClick={() => onJump!(file.path, jumpLine!)}

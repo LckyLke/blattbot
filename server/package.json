@@ -1,11 +1,12 @@
 {
   "name": "blattbot",
   "version": "0.4.2",
-  "description": "Agentic LaTeX editing for Overleaf — Claude edits a synced working copy, verifies by compiling, and shows you a reviewable diff before anything is pushed. Local-first, with an integrated citation pipeline.",
+  "description": "Agentic LaTeX editing for Overleaf — Codex edits a synced working copy, verifies by compiling, and shows you a reviewable diff before anything is pushed. Local-first, with an integrated citation pipeline.",
   "keywords": [
     "latex",
     "overleaf",
     "claude",
+    "codex",
     "agent",
     "tex",
     "tectonic",
@@ -40,6 +41,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
+    "codex:check": "tsx scripts/codex-check.ts",
+    "test:ui": "tsx scripts/ui-verify.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"
   },

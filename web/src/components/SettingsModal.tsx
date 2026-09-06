@@ -1,6 +1,7 @@
 import { useModelList } from "../models";
-import { useEffect, useState } from "react";
-import { api, type Account, type AgentInfo, type ProjectStats, type Settings } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, type Account, type AgentInfo, type ProjectStats, type Settings, type BackendId, type CodexStatus } from "../api";
+import { tabStripKeyDown } from "../a11y";
 import AccountSignIn from "./AccountSignIn";
 import { useDialog } from "./Dialog";
 
@@ -27,7 +28,12 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
   const [disclosureBusy, setDisclosureBusy] = useState(false);
 
   // Agent form state
-  const [backend, setBackend] = useState<"claude" | "openai">("claude");
+  const [backend, setBackend] = useState<BackendId>("codex");
+  const [codexModel, setCodexModel] = useState("");
+  const [codexEffort, setCodexEffort] = useState<Settings["codexEffort"]>("");
+  const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
+  const [checkingCodex, setCheckingCodex] = useState(false);
+  const modalRef = useRef<HTMLDivElement>(null);
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
@@ -40,7 +46,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
   const [promptAppend, setPromptAppend] = useState("");
   const [engine, setEngine] = useState<Settings["engine"]>("");
   const [effort, setEffort] = useState<Settings["effort"]>("");
-  const modelList = useModelList();
+  const modelList = useModelList(backend);
   const [fallbackModel, setFallbackModel] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
@@ -57,7 +63,9 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
     void refreshAccounts();
     api.settings().then((s) => {
       setSettings(s);
-      setBackend(s.backend === "openai" ? "openai" : "claude");
+      setBackend(s.backend || "codex");
+      setCodexModel(s.codexModel ?? "");
+      setCodexEffort(s.codexEffort ?? "");
       setModel(s.model);
       setBaseUrl(s.anthropicBaseUrl);
       setOaiBaseUrl(s.openaiBaseUrl);
@@ -66,9 +74,26 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
       setEngine(s.engine);
       setEffort(s.effort ?? "");
       setFallbackModel(s.fallbackModel ?? "");
-    });
+    }).catch((err) => setError(`Could not load settings: ${err.message}`));
     api.agentInfo().then(setInfo).catch(() => setInfo(null));
   }, []);
+
+  useEffect(() => {
+    if (tab !== "agent" || backend !== "codex") return;
+    let stale = false;
+    setCheckingCodex(true);
+    api.codexStatus().then((status) => { if (!stale) setCodexStatus(status); })
+      .catch((err) => { if (!stale) setError(err.message); })
+      .finally(() => { if (!stale) setCheckingCodex(false); });
+    return () => { stale = true; };
+  }, [tab, backend]);
+
+  async function checkCodex() {
+    setCheckingCodex(true);
+    try { setCodexStatus(await api.codexStatus(true)); }
+    catch (err: any) { setError(err.message); }
+    finally { setCheckingCodex(false); }
+  }
 
   useEffect(() => {
     if (!projectId) return;
@@ -85,11 +110,27 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
   }, [projectId]);
 
   useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    modalRef.current?.querySelector<HTMLElement>('button[aria-label="Close settings"]')?.focus();
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       if (e.key === "Escape") onClose();
+      if (e.key === "Tab") {
+        const stops = Array.from(modalRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]',
+        ) ?? []).filter((el) => el.tabIndex >= 0 && el.getClientRects().length > 0);
+        const first = stops[0], last = stops.at(-1);
+        if (first && last && (e.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (previous?.isConnected) previous.focus();
+    };
   }, [onClose]);
 
   /** POST the disclosure endpoint and show the text in a copyable dialog. */
@@ -118,6 +159,8 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
     try {
       const patch: any = {
         backend,
+        codexModel: codexModel.trim(),
+        codexEffort,
         model: model.trim(),
         anthropicBaseUrl: baseUrl.trim(),
         openaiBaseUrl: oaiBaseUrl.trim(),
@@ -202,13 +245,15 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
       }}
     >
       <div
+        ref={modalRef}
         role="dialog"
+        aria-modal="true"
         aria-label="Settings"
         className="flex max-h-[88vh] w-[720px] max-w-full flex-col rounded-lg border border-rule bg-ink-2 shadow-[0_24px_64px_rgba(0,0,0,0.5)]"
       >
-        <header className="booktabs flex items-center gap-4 px-5 pb-3 pt-4">
+        <header className="booktabs flex flex-wrap items-center gap-2 px-5 pb-3 pt-4 sm:gap-4">
           <h2 className="font-serif text-[17px] font-semibold text-paper">Settings</h2>
-          <nav className="flex gap-1">
+          <nav className="flex gap-1" role="tablist" aria-label="Settings sections">
             {(
               [
                 ["accounts", "Accounts"],
@@ -218,6 +263,12 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
             ).map(([key, label]) => (
               <button
                 key={key}
+                role="tab"
+                id={`settings-tab-${key}`}
+                aria-selected={tab === key}
+                aria-controls="settings-panel"
+                tabIndex={tab === key ? 0 : -1}
+                onKeyDown={tabStripKeyDown}
                 onClick={() => setTab(key)}
                 className={`rounded px-2.5 py-1 text-[12.5px] transition-colors ${
                   tab === key ? "bg-ink-3 text-paper" : "text-graphite hover:text-paper-dim"
@@ -236,8 +287,8 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
           </button>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          {error && <p className="mb-3 text-[12px] leading-snug text-pencil">{error}</p>}
+        <div id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${tab}`} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {error && <p role="alert" className="mb-3 text-[12px] leading-snug text-pencil">{error}</p>}
           {accountMsg && <p className="mb-3 text-[12px] leading-snug text-leaf">{accountMsg}</p>}
 
           {tab === "accounts" && (
@@ -324,10 +375,22 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                 tools, review flow — stays the same.
               </p>
 
-              {/* Backend picker: two radio cards. */}
+              {/* Backend picker */}
               <fieldset className="mb-4">
                 <legend className="sr-only">Agent backend</legend>
                 <div className="flex flex-col gap-2">
+                  <label className={`flex cursor-pointer items-start gap-2.5 rounded-md border p-3 transition-colors ${backend === "codex" ? "border-leaf/60 bg-leaf/5" : "border-rule hover:border-leaf/30"}`}>
+                    <input type="radio" name="agent-backend" value="codex" checked={backend === "codex"}
+                      onChange={() => setBackend("codex")} className="mt-0.5 accent-[#8fb573]" aria-label="Codex" />
+                    <span>
+                      <span className="block text-[13px] font-medium text-paper">Codex
+                        <span className="ml-2 rounded border border-leaf/40 px-1.5 py-px text-[9.5px] uppercase tracking-wide text-leaf">default</span>
+                      </span>
+                      <span className="mt-0.5 block text-[11.5px] leading-snug text-graphite">
+                        Uses your local Codex login, with conversation memory, citations, and compile verification.
+                      </span>
+                    </span>
+                  </label>
                   <label
                     className={`flex cursor-pointer items-start gap-2.5 rounded-md border p-3 transition-colors ${
                       backend === "claude" ? "border-leaf/60 bg-leaf/5" : "border-rule hover:border-leaf/30"
@@ -345,9 +408,6 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                     <span>
                       <span className="block text-[13px] font-medium text-paper">
                         Claude Code (Agent SDK)
-                        <span className="ml-2 rounded border border-rule px-1.5 py-px text-[9.5px] uppercase tracking-wide text-graphite">
-                          default
-                        </span>
                       </span>
                       <span className="mt-0.5 block text-[11.5px] leading-snug text-graphite">
                         Runs locally via the Claude Agent SDK — reuses your Claude Code login unless
@@ -382,6 +442,46 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   </label>
                 </div>
               </fieldset>
+
+              <p className="mb-4 text-[11px] leading-relaxed text-graphite">
+                Changes apply to the next turn. Switching backends starts a new conversation; earlier messages remain visible in your chat.
+              </p>
+
+              {backend === "codex" && (
+                <div className="space-y-3">
+                  <div className="rounded-md border border-rule bg-ink p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <p role="status" className={`text-[12px] leading-relaxed ${codexStatus?.authenticated ? "text-leaf" : "text-paper-dim"}`}>
+                        {checkingCodex ? "Checking Codex…" : codexStatus?.message ?? "Check your local Codex installation."}
+                      </p>
+                      <button type="button" onClick={() => void checkCodex()} disabled={checkingCodex}
+                        className="shrink-0 rounded border border-rule px-2 py-1 text-[11px] text-paper-dim hover:border-leaf disabled:opacity-50">Check again</button>
+                    </div>
+                    {!codexStatus?.authenticated && (
+                      <div className="mt-2 text-[11px] leading-relaxed text-graphite">
+                        <p>Install and sign in once in your terminal:</p>
+                        <pre className="mt-1 select-all rounded border border-rule p-2 font-mono text-paper-dim">{"npm install -g @openai/codex\ncodex login"}</pre>
+                        <p className="mt-1">BlattBot reuses that login. No API key is needed here.</p>
+                      </div>
+                    )}
+                  </div>
+                  <label className="block text-[11px] text-graphite">Codex model <span className="text-graphite/60">(empty = your Codex default)</span>
+                    <input value={codexModel} onChange={(e) => setCodexModel(e.target.value)} list="blattbot-codex-models"
+                      placeholder={modelList.defaultModel || codexStatus?.defaultModel || "Use Codex CLI default"}
+                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60" />
+                    <datalist id="blattbot-codex-models">{modelList.models.map((m) => <option key={m.id} value={m.id} label={m.label} />)}</datalist>
+                  </label>
+                  <label className="block text-[11px] text-graphite">Codex reasoning effort
+                    <select value={codexEffort} onChange={(e) => setCodexEffort(e.target.value as Settings["codexEffort"])}
+                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper">
+                      <option value="">Codex default</option>
+                      {[...new Set([...(modelList.models.find((m) => m.id === (codexModel || modelList.defaultModel))?.effortLevels ?? ["low", "medium", "high", "xhigh"]), ...(codexEffort ? [codexEffort] : [])])]
+                        .map((level) => <option key={level} value={level}>{level}</option>)}
+                    </select>
+                  </label>
+                  <p className="text-[11px] leading-relaxed text-graphite">Codex reports token usage. Dollar costs are unavailable for these turns.</p>
+                </div>
+              )}
 
               {backend === "claude" && (
                 <>
@@ -592,8 +692,8 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                 </span>
               </label>
 
-              <div className="mt-4 flex items-center gap-3">
-                {savedMsg && <span className="text-[12px] text-leaf">{savedMsg}</span>}
+              <div className="sticky -bottom-4 mt-4 flex items-center gap-3 border-t border-rule bg-ink-2 py-3">
+                {savedMsg && <span role="status" className="text-[12px] text-leaf">{savedMsg}</span>}
                 <button
                   onClick={save}
                   disabled={saving}
@@ -672,7 +772,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                     <dt className="text-graphite">endpoint</dt>
                     <dd className="break-all text-paper-dim">
                       {info.endpoint ?? info.anthropicBaseUrl}
-                      {info.usingApiKey
+                      {info.authLabel ? ` (${info.authLabel})` : info.usingApiKey
                         ? " (API key)"
                         : info.systemPromptPreset
                           ? " (Claude Code login)"

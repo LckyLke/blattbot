@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BlattBot · an agentic LaTeX editor</title>
-  <meta name="description" content="BlattBot is a LaTeX editor with a Claude agent built in. Projects live and compile on your machine. It syncs with any Overleaf when you want it to. Agent edits land as diffs you approve.">
+  <meta name="description" content="BlattBot is a LaTeX editor with Codex built in as its default agent harness. Projects live and compile on your machine. It syncs with any Overleaf when you want it to. Agent edits land as diffs you approve.">
   <link rel="icon" type="image/svg+xml" href="logo.svg">
   <meta property="og:type" content="website">
   <meta property="og:title" content="BlattBot · an agentic LaTeX editor">
@@ -44,7 +44,7 @@
     </button>
     <p class="visually-hidden" role="status" id="copy-status"></p>
 
-    <p class="subline">Runs on your machine with your Claude Code or other LLMs.</p>
+    <p class="subline">Runs on your machine with Codex, Claude Code, or your own model endpoint.</p>
 
     <figure class="shot hero-shot">
       <video autoplay muted loop playsinline preload="auto"
@@ -138,7 +138,7 @@
   <section class="how" id="how" aria-labelledby="how-h">
     <p class="eyebrow">\begin{enumerate}</p>
     <h2 id="how-h">How it works</h2>
-    <pre class="pipeline" aria-label="Data flow diagram">Overleaf (optional) ⇄ local project ⇄ Claude agent (edit → compile → verify)
+    <pre class="pipeline" aria-label="Data flow diagram">Overleaf (optional) ⇄ local project ⇄ Codex agent (edit → compile → verify)
                              ⇩
                you review the diff → approve → push</pre>
     <ol class="steps">
@@ -156,7 +156,7 @@
       </li>
     </ol>
     <p class="eyebrow end">\end{enumerate}</p>
-    <p class="requirements">Requires <strong>Node&nbsp;20+</strong>, <strong>git</strong>, and <strong>Claude&nbsp;Code</strong> (logged in). A TeX engine is auto-installable.</p>
+    <p class="requirements">Requires <strong>Node&nbsp;20+</strong>, <strong>git</strong>, and <strong>Codex&nbsp;CLI</strong> (logged in). Claude Code and custom endpoints are also supported. A TeX engine is auto-installable.</p>
   </section>
 
 </main>

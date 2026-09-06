@@ -9,7 +9,7 @@ Every change, whether you typed it or the built-in agent made it, lands as a rev
 *A real agent session: literature search, citations added to the bibliography and cited in the text, then approved and pushed. Sped up.*
 
 ```
-Overleaf (any instance) ⇄ local git mirror ⇄ editor + Claude agent
+Overleaf (any instance) ⇄ local git mirror ⇄ editor + Codex agent
                         ⇩
           you review the diff → approve → push
 ```
@@ -22,9 +22,18 @@ npx blattbot
 
 This starts the app on http://127.0.0.1:4560 and opens your browser. On first run BlattBot checks your environment and offers to download [tectonic](https://tectonic-typesetting.github.io) if no TeX engine is found. Run `npx blattbot --help` for flags and `npx blattbot doctor` to see what it detects.
 
-You need Node 20 or newer, git, and a Claude login: either [Claude Code](https://claude.com/claude-code) installed and logged in (BlattBot reuses that login, so there is no API key to configure) or an Anthropic API key entered in Settings. An OpenAI-compatible endpoint can be configured instead.
+You need Node 20 or newer, git, and the current [Codex CLI](https://developers.openai.com/codex/cli) installed and signed in:
 
-BlattBot runs the agent through the Claude Agent SDK, which bundles its own copy of the Claude Code engine — npm downloads a platform binary of roughly 200 MB on install. To use a `claude` binary you already have instead, set `BLATTBOT_CLAUDE_EXECUTABLE=/path/to/claude`; `npx blattbot doctor` shows which engine is in use.
+```bash
+npm install -g @openai/codex
+codex login
+```
+
+**Codex is the default background harness.** BlattBot reuses your Codex login and configured model. Settings → Agent checks the connection and lets you choose a model or reasoning effort. Set `BLATTBOT_CODEX_EXECUTABLE=/path/to/codex` to use a custom installation. The integration uses the [Codex app-server protocol](https://developers.openai.com/codex/app-server), including its experimental dynamic-tool interface; keep the CLI up to date. Codex reports token usage, but does not supply a dollar cost.
+
+You can also select **Claude Code** (your existing login or an Anthropic API key) or an **OpenAI-compatible API** in Settings → Agent. Explicit backend choices are preserved; an empty backend setting now selects Codex. Changing backends starts a separate model conversation while keeping earlier messages visible in the chat. Global model settings and new project overrides are scoped to their harness. Background helpers such as paper summaries use the selected backend too; an incomplete configuration produces an error instead of silently switching providers.
+
+The optional Claude backend runs through the Claude Agent SDK, which is included with BlattBot and bundles its own copy of the Claude Code engine — npm downloads a platform binary of roughly 200 MB on install. To use a `claude` binary you already have instead, set `BLATTBOT_CLAUDE_EXECUTABLE=/path/to/claude`; `npx blattbot doctor` shows which engine is in use.
 
 ## Sync without clobbering
 
@@ -38,6 +47,7 @@ The agent works in the local git mirror and every turn ends in a diff you approv
 
 - **Citations.** A pipeline searches OpenAlex, Semantic Scholar, DBLP, and Crossref, fetches BibTeX, dedupes against your bibliography (by DOI and title), normalizes entries, upgrades arXiv preprints to the published version when one exists, and inserts the right cite keys. A deterministic audit checks every entry against Crossref/OpenAlex and badges it verified, unresolved, or mismatched.
 - **Rendered PDF diff.** Besides the text diff, the Proof tab can render the current and pre-change PDFs and highlight the pages and regions that visually changed — the latexdiff use case, without Perl.
+- **Edit in Proof.** Click **Edit** on a file or passage to revise it inside the Proof pane. The full editor supports autocomplete, undo, and Ctrl/Cmd+S; drafts stay in sync with Source. Save locally, return to the diff, then approve when ready.
 - **External context.** Link the paper's codebase, an experiment folder, or a stack of PDFs (sidebar → External context → *Browse folders…*). The agent may read and grep them but never edit them, and they never sync to Overleaf. Each turn starts from a fresh listing of what those folders contain, so the agent can check the manuscript against the thing it describes — a formula against the implementation, a stated hyperparameter against the config, a reported number against the results — and is told to report a disagreement rather than quietly rewrite the text.
 - **Cost transparency.** Every turn shows its cost (or token count), each project shows a running total, and a disclosure generator writes an AI-use statement from your actual usage logs — useful for venue and institutional AI policies.
 - **Review mode.** A structured referee-report mode with a venue-style rubric; file edits are blocked in it.
@@ -47,11 +57,11 @@ The agent works in the local git mirror and every turn ends in a diff you approv
 
 - The local compile is a **preflight** using Tectonic (or your local TeX). Overleaf runs its own TeX Live, which can differ — the "Verify on Overleaf" button runs Overleaf's own compiler on the pushed state and shows you that PDF.
 - Cookie-session sync drives Overleaf's internal web API, which is unofficial. It is primarily intended for Community Edition and self-hosted servers that have no git bridge; see [SECURITY.md](SECURITY.md).
-- Your project text and the context you attach are sent to the model provider you configure (Anthropic via Claude Code, or an OpenAI-compatible endpoint). Check your venue's and institution's AI policy — the disclosure generator helps with that.
+- Your project text and the context you attach are sent to the model provider you configure (Codex, Anthropic via Claude Code, or an OpenAI-compatible endpoint). Check your venue's and institution's AI policy — the disclosure generator helps with that.
 
-## Why not just Claude Code?
+## Why not just Codex or Claude Code?
 
-Claude Code in a folder can edit LaTeX. BlattBot adds what a bare CLI session doesn't have: sync with Overleaf instances that have no git bridge, a review/approval gate so no agent output reaches your document unchecked, entity-preserving pushes that keep comments and tracked changes alive, a compile preflight plus verification on Overleaf's own compiler, rendered PDF diffs, and a citation pipeline with deterministic auditing instead of model-remembered BibTeX.
+Codex or Claude Code in a folder can edit LaTeX. BlattBot adds what a bare CLI session doesn't have: sync with Overleaf instances that have no git bridge, a review/approval gate so no agent output reaches your document unchecked, entity-preserving pushes that keep comments and tracked changes alive, a compile preflight plus verification on Overleaf's own compiler, rendered PDF diffs, and a citation pipeline with deterministic auditing instead of model-remembered BibTeX.
 
 ## Connecting
 
@@ -84,6 +94,8 @@ npm install
 npm run dev                            # server on :4560
 npm run dev:web                        # Vite dev server on :4561
 npm test                               # unit tests
+npm run codex:check --workspace=server # installed Codex protocol check, no model turn
+npm run test:ui --workspace=server     # browser verification (local mocks)
 npx tsx server/scripts/ui-verify.ts    # browser UI verification without agent turns
 npx tsx server/scripts/e2e.ts          # full loop with a real agent turn
 npm run release:pack                   # build and pack the npm tarball

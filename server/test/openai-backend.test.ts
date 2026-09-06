@@ -833,6 +833,7 @@ describe("openai backend units", () => {
       contextDirs: [],
       readOnly: false,
       project: { id: "p" },
+      signal: new AbortController().signal,
     } as any;
     // Not unique.
     let out = await executeTool(ctx, "edit_file", { path: "a.tex", old_string: "one", new_string: "1" });
@@ -905,7 +906,7 @@ describe("backend settings", () => {
   it("resolveBackendModel: aliases for claude, verbatim for openai, override applies to both", async () => {
     const { resolveBackendModel } = await import("../src/agent.js");
     const { DEFAULT_SETTINGS } = await import("../src/settings.js");
-    const base = { ...DEFAULT_SETTINGS, model: "sonnet", openaiModel: "llama-3.3-70b" };
+    const base = { ...DEFAULT_SETTINGS, backend: "claude" as const, model: "sonnet", openaiModel: "llama-3.3-70b" };
     // claude (default backend): aliases resolve.
     expect(resolveBackendModel(undefined, base)).toBe("claude-sonnet-5");
     expect(resolveBackendModel({ settings: { model: "fable" } }, base)).toBe("claude-fable-5-1");
@@ -918,10 +919,11 @@ describe("backend settings", () => {
     expect(resolveBackendModel(undefined, { ...DEFAULT_SETTINGS, backend: "openai" })).toBe("");
   });
 
-  it("activeBackendId treats anything but 'openai' as claude", async () => {
+  it("activeBackendId defaults to Codex and preserves explicit backend choices", async () => {
     const { activeBackendId, BACKENDS } = await import("../src/agent.js");
     const { DEFAULT_SETTINGS } = await import("../src/settings.js");
-    expect(activeBackendId({ ...DEFAULT_SETTINGS })).toBe("claude");
+    expect(activeBackendId({ ...DEFAULT_SETTINGS })).toBe("codex");
+    expect(activeBackendId({ ...DEFAULT_SETTINGS, backend: "codex" })).toBe("codex");
     expect(activeBackendId({ ...DEFAULT_SETTINGS, backend: "claude" })).toBe("claude");
     expect(activeBackendId({ ...DEFAULT_SETTINGS, backend: "openai" })).toBe("openai");
     expect(BACKENDS.claude.id).toBe("claude");

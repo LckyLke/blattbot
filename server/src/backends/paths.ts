@@ -12,7 +12,8 @@
  * (resolveReadPath / resolveWritePath) — this brings the two backends level.
  */
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { lstatSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DATA_DIR } from "../config.js";
 import { chatUploadsDir } from "../chatimages.js";
 
@@ -25,6 +26,21 @@ const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 export function isInside(abs: string, root: string): boolean {
   return abs === root || abs.startsWith(root + sep);
+}
+
+/** Refuse symlinks below an allowed root, including dangling links and
+ * symlinked parents of files that do not exist yet. */
+export function assertNoSymlinkPath(root: string, abs: string): void {
+  let current = root;
+  for (const part of relative(root, abs).split(sep).filter(Boolean)) {
+    current = join(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) throw new Error("symbolic links are not allowed in agent file paths");
+    } catch (e: any) {
+      if (e.code === "ENOENT") continue;
+      throw e;
+    }
+  }
 }
 
 /**
@@ -65,6 +81,7 @@ export function secretRoots(): string[] {
     join(home, ".netrc"),
     join(home, ".git-credentials"),
     join(home, ".claude"),
+    join(home, ".codex"),
   ];
 }
 

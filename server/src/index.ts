@@ -82,7 +82,7 @@ import {
   resolveFallbackModel,
 } from "./backends/types.js";
 import { checkLatestVersion, currentVersion } from "./version.js";
-import { listModels, staticModelList } from "./models.js";
+import { listModels } from "./models.js";
 import { agentSdkVersion, describeEngine } from "./sdkinfo.js";
 import {
   MAX_HISTORY_MESSAGES,
@@ -91,6 +91,10 @@ import {
   openaiBackend,
 } from "./backends/openai.js";
 import { claudeBackend } from "./backends/claude.js";
+import { codexBackend, CODEX_EFFORT_LEVELS, CODEX_SYSTEM_PROMPT } from "./backends/codex.js";
+import { codexStatus } from "./codexinfo.js";
+import { codexExecutable } from "./backends/codex-client.js";
+import { projectModelOverride } from "./agent.js";
 import { broadcast, subscribe } from "./events.js";
 import {
   appendEvent,
@@ -260,6 +264,12 @@ app.get("/api/settings", async () => {
 
 app.put<{ Body: Partial<Settings> }>("/api/settings", async (req, reply) => {
   const body = req.body ?? {};
+  if (body.backend !== undefined && !["", "codex", "claude", "openai"].includes(body.backend)) {
+    return reply.code(400).send({ error: "backend must be codex, claude, openai, or empty" });
+  }
+  if (body.codexEffort !== undefined && body.codexEffort !== "" && !(CODEX_EFFORT_LEVELS as readonly unknown[]).includes(body.codexEffort)) {
+    return reply.code(400).send({ error: `codexEffort must be one of ${CODEX_EFFORT_LEVELS.join(", ")} or empty` });
+  }
   if (body.effort !== undefined && body.effort !== "" && !isEffortLevel(body.effort)) {
     return reply.code(400).send({ error: `effort must be one of ${EFFORT_LEVELS.join(", ")} or empty` });
   }
@@ -267,12 +277,20 @@ app.put<{ Body: Partial<Settings> }>("/api/settings", async (req, reply) => {
   return { ...publicSettings(s), resolvedModel: resolveBackendModel(undefined, s) };
 });
 
-// The model pick-list for the Claude backend, from the engine's own catalog
-// when it answers (cached), else the static fallback. ?refresh=1 re-asks.
-app.get<{ Querystring: { refresh?: string } }>("/api/models", async (req) => {
+// Model suggestions for the selected harness. Settings can preview another
+// backend without saving it. ?refresh=1 re-asks its CLI.
+app.get<{ Querystring: { refresh?: string; backend?: string } }>("/api/models", async (req, reply) => {
   const s = loadSettings();
-  if (activeBackendId(s) === "openai") return staticModelList();
+  if (req.query.backend !== undefined) {
+    if (!["codex", "claude", "openai"].includes(req.query.backend)) return reply.code(400).send({ error: "Unknown backend" });
+    s.backend = req.query.backend as Settings["backend"];
+  }
   return listModels(s, req.query.refresh === "1");
+});
+
+app.get<{ Querystring: { refresh?: string } }>("/api/agent/codex/status", async (req) => {
+  const { models, ...status } = await codexStatus(req.query.refresh === "1");
+  return status;
 });
 
 // Reflects the ACTIVE backend (Settings → Agent): id, endpoint, model, tools.
@@ -284,6 +302,15 @@ app.get("/api/agent/info", async () => {
     dataDir: DATA_DIR,
     projectsDir: PROJECTS_DIR,
   };
+  if (activeBackendId(s) === "codex") {
+    return { ...common, backend: "codex", backendLabel: codexBackend.label,
+      backendDescription: codexBackend.description, model: s.codexModel.trim() || "Codex CLI default",
+      engine: codexExecutable(), effort: s.codexEffort || "Codex default", usingApiKey: false,
+      endpoint: "Configured in your local Codex CLI", authLabel: "Codex login / CLI credentials",
+      systemPromptAppend: CODEX_SYSTEM_PROMPT, tools: OPENAI_TOOL_INFO, disallowedTools: [],
+      sessionNote: "Codex conversations resume per chat. Switching backends starts a new conversation; earlier chat messages stay visible. Token usage is reported; dollar cost is not supplied by Codex.",
+    };
+  }
   if (activeBackendId(s) === "openai") {
     const base = s.openaiBaseUrl.trim().replace(/\/+$/, "");
     return {
@@ -710,9 +737,11 @@ app.get<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
  *  runs under the ACTIVE backend (override → global, aliases resolved for
  *  claude, verbatim for openai). */
 function projectSettingsView(project: Project) {
+  const settings = loadSettings();
   return {
     ...(project.settings ?? {}),
-    resolvedModel: resolveBackendModel(project, loadSettings()),
+    model: projectModelOverride(project, settings),
+    resolvedModel: resolveBackendModel(project, settings),
   };
 }
 
@@ -737,6 +766,10 @@ app.put<{
   // updateProject merges top-level keys only — always write the WHOLE settings
   // object. An empty string clears its field (kept out of projects.json).
   const merged: ProjectSettings = { ...(project.settings ?? {}), ...patch };
+  if (patch.model !== undefined) {
+    if (patch.model.trim()) merged.modelBackend = activeBackendId(loadSettings());
+    else delete merged.modelBackend;
+  }
   for (const key of Object.keys(merged) as (keyof ProjectSettings)[]) {
     if (!merged[key]?.trim()) delete merged[key];
   }

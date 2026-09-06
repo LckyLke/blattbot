@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { DATA_DIR, getProject } from "../config.js";
+import { assertNoSymlinkPath } from "./paths.js";
 import type { Settings } from "../settings.js";
 import { compileProject } from "../compile.js";
 import { addCitation, formatAddCitationResult, readAllBibEntries, searchPapers } from "../citations.js";
@@ -175,6 +176,7 @@ export function saveHistory(sessionId: string, messages: OaiMessage[]): void {
 // ---- Path validation --------------------------------------------------------
 
 function insideOf(abs: string, root: string): boolean {
+  if (process.platform === "win32") { abs = abs.toLowerCase(); root = root.toLowerCase(); }
   return abs === root || abs.startsWith(root + sep);
 }
 
@@ -194,17 +196,22 @@ export function resolveReadPath(
 ): string {
   if (typeof raw !== "string" || !raw.trim()) throw new Error("path is required");
   const p = raw.trim();
+  const checked = (root: string, abs: string) => {
+    if (insideOf(abs, join(dir, ".git"))) throw new Error("the .git directory is off-limits");
+    assertNoSymlinkPath(root, abs);
+    return abs;
+  };
   if (isAbsolute(p)) {
     const abs = resolve(p);
-    if (insideOf(abs, dir)) return abs;
+    if (insideOf(abs, dir)) return checked(dir, abs);
     for (const c of [...contextDirs, ...extraRoots]) {
-      if (insideOf(abs, c)) return abs;
+      if (insideOf(abs, c)) return checked(c, abs);
     }
     throw new Error(`path is outside the project and its read-only context: ${p}`);
   }
   const abs = resolve(dir, p);
   if (abs === dir || !abs.startsWith(dir + sep)) throw new Error(`invalid path: ${p}`);
-  return abs;
+  return checked(dir, abs);
 }
 
 /**
@@ -222,6 +229,7 @@ export function resolveWritePath(dir: string, contextDirs: string[], raw: unknow
     if (insideOf(abs, c)) throw new Error("context directories are read-only");
   }
   if (insideOf(abs, join(dir, ".git"))) throw new Error("the .git directory is off-limits");
+  assertNoSymlinkPath(dir, abs);
   return abs;
 }
 
@@ -485,6 +493,7 @@ export function describeChatImage(abs: string, bytes: number): string | null {
 
 export async function executeTool(ctx: BackendTurnContext, name: string, args: any): Promise<ToolOutcome> {
   try {
+    ctx.signal.throwIfAborted();
     switch (name) {
       case "list_files": {
         const files = listFiles(ctx.dir);
@@ -591,6 +600,7 @@ export async function executeTool(ctx: BackendTurnContext, name: string, args: a
         if (ctx.readOnly) throw new Error("adding citations is disabled in this read-only mode");
         const ref = requireString(args, "ref");
         const bibFile = typeof args?.bibFile === "string" && args.bibFile.trim() ? args.bibFile.trim() : undefined;
+        if (bibFile) resolveWritePath(ctx.dir, ctx.contextDirs, bibFile);
         try {
           const result = await addCitation(ctx.dir, ref, bibFile);
           // Verify immediately: a bad reference must surface while the agent is

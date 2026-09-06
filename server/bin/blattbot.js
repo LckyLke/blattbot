@@ -158,8 +158,16 @@ if (!engine) {
   }
 }
 
-// 3. Claude Code CLI — informational; agent turns need it, everything else works.
-const claude = await has("claude");
+// 3. The selected background harness — an installed CLI still needs a login.
+const { loadSettings, selectedBackend } = await import("../dist/settings.js");
+const backend = selectedBackend(loadSettings());
+const harness = backend === "codex"
+  ? (await has(process.env.BLATTBOT_CODEX_EXECUTABLE || "codex"))
+    ? "Codex found — uses your codex login; check connection in Settings → Agent"
+    : "Codex not found — npm install -g @openai/codex, then codex login"
+  : backend === "claude"
+    ? "Claude Agent SDK — uses Claude Code login or the API key in Settings"
+    : "OpenAI-compatible API — configured in Settings → Agent";
 
 // ---- start -----------------------------------------------------------------
 
@@ -173,7 +181,7 @@ console.log("");
 console.log(`    App       ${url}`);
 console.log(`    Data dir  ${short(DATA_DIR)}`);
 console.log(`    TeX       ${engine ? `${engine.name} (${short(engine.path)})` : "none — compiles will fail until an engine is installed"}`);
-console.log(`    Claude    ${claude ? "claude CLI found — agent turns ready" : "claude CLI not found — install Claude Code and log in to run agent turns"}`);
+console.log(`    Agent     ${harness}`);
 console.log("");
 console.log("  Press Ctrl+C to stop.");
 
