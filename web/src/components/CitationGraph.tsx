@@ -289,8 +289,6 @@ export default function CitationGraph({
   const pick = (paper: GraphNode) => {
     setSelected(paper.id);
     setFilter("");
-    setScope("all");
-    setSince("");
     requestAnimationFrame(() => camera.current?.center(paper.id));
   };
   const a = first || projects[0]?.id || "",
@@ -641,6 +639,11 @@ export default function CitationGraph({
                     </button>
                   </div>
                   <h3 className="cg-paper-title">{node.title}</h3>
+                  {!visible.has(node.id) && (
+                    <p className="research-meta" role="status">
+                      This paper is hidden on the graph by your current filters.
+                    </p>
+                  )}
                   <p className="cg-authors">
                     {node.authors?.length
                       ? node.authors.join(", ")

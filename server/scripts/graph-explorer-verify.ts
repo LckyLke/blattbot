@@ -113,6 +113,14 @@ export async function verifyGraphExplorer(
       path: join(shots, "12-graph-fullscreen-5000.png"),
     });
     const search = explorer.getByLabel("Find a paper");
+    const scope = explorer.getByLabel("Paper scope");
+    const since = explorer.getByLabel("Published since year");
+    const expectFilters = async (paperScope: string, year: string) => {
+      if ((await scope.inputValue()) !== paperScope || (await since.inputValue()) !== year)
+        throw new Error("Selecting a paper reset the graph filters");
+    };
+    await scope.selectOption("external");
+    await since.fill("1995");
     await page.keyboard.press("Control+f");
     if (!(await search.evaluate((el) => el === document.activeElement)))
       throw new Error("Ctrl-F did not focus graph search");
@@ -133,6 +141,7 @@ export async function verifyGraphExplorer(
       })
       .waitFor();
     await explorer.getByText(/We study relational structure/).waitFor();
+    await expectFilters("external", "1995");
     if (detailCalls !== 1)
       throw new Error(`Expected one selected-paper lookup, got ${detailCalls}`);
     await explorer
@@ -180,6 +189,27 @@ export async function verifyGraphExplorer(
       })
       .waitFor();
     await search.fill("");
+    await scope.selectOption("project");
+    await since.fill("2020");
+    await search.fill("source31");
+    await explorer.getByRole("button", {
+      name: "Project source: Graph representation learning — study 31", exact: true,
+    }).click();
+    await explorer.getByRole("heading", {
+      name: "Graph representation learning — study 31", exact: true,
+    }).waitFor();
+    await expectFilters("project", "2020");
+    await explorer.getByRole("tab", { name: "Connections", exact: true }).click();
+    await explorer.getByLabel("Connection direction").selectOption("outgoing");
+    await explorer.getByRole("button", {
+      name: "External source: Structured prediction — study 85", exact: true,
+    }).click();
+    await explorer.getByRole("heading", {
+      name: "Structured prediction — study 85", exact: true,
+    }).waitFor();
+    await expectFilters("project", "2020");
+    await explorer.getByText("This paper is hidden on the graph by your current filters.", { exact: true }).waitFor();
+    await explorer.getByRole("button", { name: "Close paper details" }).click();
     for (const mode of ["clusters", "radial", "timeline"]) {
       await explorer.getByLabel("Graph layout").selectOption(mode);
       await page.waitForFunction(
@@ -241,6 +271,7 @@ export async function verifyGraphExplorer(
           }
         }
     if (!hit) throw new Error("Could not hit-test a rendered citation node");
+    await expectFilters("project", "");
     await explorer
       .getByRole("button", { name: "Close paper details" })
       .waitFor();
