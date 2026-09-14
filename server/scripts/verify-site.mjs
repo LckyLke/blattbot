@@ -58,6 +58,9 @@ try {
     await page.setViewportSize({ width, height: 844 });
     await page.evaluate(() => scrollTo(0, 0));
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `No overflow at ${width}px`);
+    assert(await page.locator(".brand-mark").evaluate(el => el.getBoundingClientRect().height < 40), "The wordmark stays on one line");
+    assert(await page.locator(".site-nav a").evaluateAll(links => links.every(el => el.getBoundingClientRect().height < 30)), "Navigation labels stay on one line");
+    await page.screenshot({ path: join(shots, `mobile-${width}-top.png`) });
     await page.screenshot({ path: join(shots, `mobile-${width}.png`), fullPage: true });
     await video.scrollIntoViewIfNeeded();
     await page.locator("#demo-writing").click();

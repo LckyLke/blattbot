@@ -160,6 +160,8 @@ hr.booktabs::after {
 }
 .brand {
   display: inline-flex;
+  flex-shrink: 0;
+  white-space: nowrap;
   align-items: center;
   gap: 0.55rem;
   color: var(--paper);
@@ -181,6 +183,7 @@ hr.booktabs::after {
 }
 .site-nav a {
   color: var(--paper-dim);
+  white-space: nowrap;
 }
 .site-nav a:hover {
   color: var(--leaf);
@@ -675,6 +678,11 @@ hr.booktabs::after {
   .shot figcaption {
     padding: 0 1.25rem;
   }
+}
+
+@media (max-width: 480px) {
+  .site-head { flex-wrap: wrap; gap: .75rem; }
+  .site-nav { flex-basis: 100%; justify-content: space-between; }
 }
 
 /* --- Reduced motion ------------------------------------------------------ */
