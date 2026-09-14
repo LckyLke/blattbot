@@ -741,7 +741,7 @@ export default function Chat({
             </span>
           </div>
         )}
-        <div className="mx-auto mb-2 flex max-w-2xl items-center gap-1">
+        <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-1">
           {MODES.map((m) => (
             <button
               key={m.id}
