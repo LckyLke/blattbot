@@ -1,3 +1,4 @@
+import { appUrl } from "../urls";
 import {
   PaperLibrary,
   QualityChecks,
@@ -592,7 +593,7 @@ export default function ResearchPanel({
             ) : (
               <img
                 alt={`Original PDF page ${source.page} of ${source.title}`}
-                src={`/api/projects/${encodeURIComponent(projectId)}/research/page-image/${encodeURIComponent(source.key)}/${source.page}`}
+                src={appUrl(`/api/projects/${encodeURIComponent(projectId)}/research/page-image/${encodeURIComponent(source.key)}/${source.page}`)}
                 onError={() => setImageError(true)}
               />
             ))}

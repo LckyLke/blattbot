@@ -1,3 +1,4 @@
+import { appUrl } from "./urls";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { modelSettingPatch } from "./models";
 import {
@@ -767,7 +768,7 @@ function AppShell() {
         .then(() => {
           if (cancelled) return;
           const proto = location.protocol === "https:" ? "wss" : "ws";
-          ws = new WebSocket(`${proto}://${location.host}/api/ws?project=${encodeURIComponent(selectedId)}`);
+          ws = new WebSocket(`${proto}://${location.host}${appUrl(`/api/ws?project=${encodeURIComponent(selectedId)}`)}`);
           ws.onopen = () => {
             if (cancelled) return;
             if (everConnected) {
@@ -1336,7 +1337,7 @@ function AppShell() {
       const id = selectedRef.current?.id;
       if (!id) return false;
       try {
-        const res = await fetch(`/api/projects/${id}/locate`, {
+        const res = await fetch(appUrl(`/api/projects/${id}/locate`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text }),
@@ -1691,7 +1692,7 @@ function AppShell() {
           title="Back to the project dashboard"
           className="flex cursor-pointer select-none items-center gap-2"
         >
-          <img src="/logo.svg" alt="" aria-hidden="true" className="h-[18px] w-auto" />
+          <img src={appUrl("/logo.svg")} alt="" aria-hidden="true" className="h-[18px] w-auto" />
           <h1 className="tex-logo text-[19px] text-paper">
             <span className="lt">B</span>
             <span className="lt">l</span>

@@ -1,3 +1,4 @@
+import { appUrl } from "./urls";
 export interface Project {
   id: string;
   name: string;
@@ -365,7 +366,7 @@ let authReady: Promise<void> | null = null;
  * carries automatically. Cross-site pages can neither read nor send it.
  */
 export function ensureAuth(): Promise<void> {
-  authReady ??= fetch("/api/bootstrap")
+  authReady ??= fetch(appUrl("/api/bootstrap"))
     .then((r) => {
       if (!r.ok) throw new Error(`bootstrap failed: HTTP ${r.status}`);
     })
@@ -378,7 +379,7 @@ export function ensureAuth(): Promise<void> {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   await ensureAuth();
-  const res = await fetch(path, {
+  const res = await fetch(appUrl(path), {
     ...init,
     // Explicit headers win — raw uploads post bytes, not JSON.
     headers: init?.headers ?? (init?.body ? { "Content-Type": "application/json" } : undefined),
@@ -508,7 +509,7 @@ export const api = {
       body: file,
     }),
   chatImageUrl: (id: string, imageId: string) =>
-    `/api/projects/${id}/chat-image/${encodeURIComponent(imageId)}`,
+    appUrl(`/api/projects/${id}/chat-image/${encodeURIComponent(imageId)}`),
   chats: (id: string) =>
     request<{ chats: ChatMeta[]; activeChatId: string }>(`/api/projects/${id}/chats`),
   createChat: (id: string) => request<ChatMeta>(`/api/projects/${id}/chats`, { method: "POST" }),
@@ -549,7 +550,7 @@ export const api = {
    */
   approve: async (id: string, message: string, force = false) => {
     await ensureAuth();
-    const res = await fetch(`/api/projects/${id}/approve`, {
+    const res = await fetch(appUrl(`/api/projects/${id}/approve`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message, force }),
@@ -633,7 +634,7 @@ export const api = {
       method: "POST",
     }),
   refPdfUrl: (id: string, key: string) =>
-    `/api/projects/${id}/refs/${encodeURIComponent(key)}/pdf`,
+    appUrl(`/api/projects/${id}/refs/${encodeURIComponent(key)}/pdf`),
   /** Manual, on-demand check of a specific claim against the paper's own content. */
   verifyRef: (id: string, key: string, claim: string) =>
     request<CitationCheckResult>(`/api/projects/${id}/refs/${encodeURIComponent(key)}/verify`, {
@@ -659,7 +660,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ bibtex, bibFile }),
     }),
-  exportBibUrl: (id: string) => `/api/projects/${id}/bib/export`,
+  exportBibUrl: (id: string) => appUrl(`/api/projects/${id}/bib/export`),
   labels: (id: string) =>
     request<{ labels: { name: string; file: string; line: number }[] }>(
       `/api/projects/${id}/labels`,

@@ -1,3 +1,4 @@
+import { appUrl } from "../urls";
 import { findPdfMatches } from "../pdf-search";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { GlobalWorkerOptions, TextLayer, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
@@ -229,8 +230,8 @@ export default function PdfPanel({
   // compiler output for the project as it currently is on Overleaf.
   const showingRemote = source === "remote" && remoteStamp > 0;
   const pdfUrl = showingRemote
-    ? `/api/projects/${projectId}/pdf?source=remote&v=${remoteStamp}`
-    : `/api/projects/${projectId}/pdf?v=${stamp}`;
+    ? appUrl(`/api/projects/${projectId}/pdf?source=remote&v=${remoteStamp}`)
+    : appUrl(`/api/projects/${projectId}/pdf?v=${stamp}`);
   const hasPdf = showingRemote || Boolean(compile?.hasPdf);
 
   useEffect(() => {
@@ -472,7 +473,7 @@ export default function PdfPanel({
   const locate = useCallback(
     async (query: string) => {
       try {
-        const res = await fetch(`/api/projects/${projectId}/locate`, {
+        const res = await fetch(appUrl(`/api/projects/${projectId}/locate`), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: query }),

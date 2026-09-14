@@ -1,4 +1,5 @@
-import { researchJobs } from "./research/jobs.js";
+import { researchJobs, listResearchJobs } from "./research/jobs.js";
+import { registerDeployment } from "./deployment.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
@@ -197,6 +198,9 @@ app.addHook("onRequest", async (req, reply) => {
   }
 });
 
+registerDeployment(app, () => listProjects().some((p) =>
+  isTurnActive(p.id) || listResearchJobs(p.id).some((j) => ["queued", "running"].includes(j.state)),
+));
 const graphIndexer = new GraphIndexer();
 registerResearchRoutes(app, async (id) => {
   const diff = await git.workingDiff(projectDir(id));

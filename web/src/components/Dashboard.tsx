@@ -1,3 +1,4 @@
+import { appUrl } from "../urls";
 import { useEffect, useMemo, useState } from "react";
 import { api, type Account, type OlProject, type Project } from "../api";
 import AccountSignIn from "./AccountSignIn";
@@ -70,7 +71,7 @@ export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpe
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto max-w-[1100px] px-10 pb-20 pt-12">
         <div className="flex flex-wrap items-baseline gap-3">
-          <img src="/logo.svg" alt="" aria-hidden="true" className="h-[30px] w-auto self-center" />
+          <img src={appUrl("/logo.svg")} alt="" aria-hidden="true" className="h-[30px] w-auto self-center" />
           <h2 className="font-serif text-[28px] text-paper">Projects</h2>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <button onClick={() => toggleForm("account")} className={actionCls("account")}>

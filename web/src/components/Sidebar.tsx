@@ -1,3 +1,4 @@
+import { appUrl } from "../urls";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type DirListing, type Project, type ProjectContext } from "../api";
 
@@ -415,7 +416,7 @@ export default function Sidebar({
                 ▥
               </span>
               <a
-                href={`/api/projects/${project.id}/context/upload/${encodeURIComponent(u.name)}`}
+                href={appUrl(`/api/projects/${project.id}/context/upload/${encodeURIComponent(u.name)}`)}
                 target="_blank"
                 rel="noreferrer"
                 className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-paper-dim hover:text-leaf"

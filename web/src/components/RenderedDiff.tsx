@@ -1,3 +1,4 @@
+import { appUrl } from "../urls";
 import { useEffect, useRef, useState } from "react";
 import { GlobalWorkerOptions, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -103,8 +104,8 @@ export default function RenderedDiff({
     void (async () => {
       try {
         [baseDoc, curDoc] = await Promise.all([
-          getDocument({ url: `/api/projects/${projectId}/pdf?rev=${base.sha}` }).promise,
-          getDocument({ url: `/api/projects/${projectId}/pdf?v=${pdfStamp}` }).promise,
+          getDocument({ url: appUrl(`/api/projects/${projectId}/pdf?rev=${base.sha}`) }).promise,
+          getDocument({ url: appUrl(`/api/projects/${projectId}/pdf?v=${pdfStamp}`) }).promise,
         ]);
         if (cancelled) {
           discard();

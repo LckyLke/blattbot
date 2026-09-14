@@ -163,3 +163,11 @@ CI runs the suite on Ubuntu, macOS and Windows. Release notes live in [CHANGELOG
 ## License
 
 Source-available under [PolyForm Noncommercial 1.0.0](LICENSE), Luke Friedrichs. Free for personal, academic, and other noncommercial use.
+
+### Hosting behind an authenticated reverse proxy
+
+Build the frontend with `npm run build --workspace=web -- --base=/blattbot/` (or another absolute path prefix), then `npm run build --workspace=server`. All API requests, WebSockets, PDF workers, downloads and logos follow that base. The default build still runs at `/`.
+
+Keep the server on loopback. A proxy must authenticate the owner on **every** HTTP request and WebSocket upgrade, reject foreign-origin writes, remove the prefix, and send the loopback Host header. It may inject the local bearer token server-side; in that case, handle `/api/bootstrap` at the proxy without exposing the token. Keep user data in `BLATTBOT_DATA_DIR` outside releases and select the installed, authenticated Codex CLI with `BLATTBOT_CODEX_EXECUTABLE`.
+
+For unattended deployments, the authenticated local `/api/deployment` endpoint reports the running `BLATTBOT_REVISION` and whether work is idle. `POST /api/deployment/drain` with `{"drain":true}` pauses new writes for up to two minutes while active requests, agent turns and research tasks finish. Only replace/restart an idle instance. Release a cancelled drain with `{"drain":false}`. Keep these deployment endpoints local. Build and test a pinned GitHub commit before activation; failed health checks must restore the previous code release without replacing user data.
