@@ -1,5 +1,5 @@
 /** Source gaps reach the chat directly, independent of the model's final answer. */
-import { formatCitationCheckResult, formatPaperReadResult, readPaper, verifyCitationSupport, type PaperReadOptions } from "../papers.js";
+import { formatCitationCheckResult, formatPaperReadResult, readPaper, verifyCitationSupportBatch, type CitationCheckResult, type PaperReadOptions } from "../papers.js";
 import type { BackendTurnContext } from "./types.js";
 
 const notices = new WeakMap<BackendTurnContext, Set<string>>();
@@ -27,14 +27,27 @@ export async function readPaperTool(ctx: BackendTurnContext, key: string, opts: 
   }
 }
 
-export async function verifyPaperTool(ctx: BackendTurnContext, key: string, claim: string): Promise<string> {
+const citationReports = new WeakMap<BackendTurnContext, Map<string, Map<string, CitationCheckResult>>>();
+
+export async function verifyPaperTool(ctx: BackendTurnContext, key: string, claim: string | string[]): Promise<string> {
+  const claims = Array.isArray(claim) ? claim : [claim];
   try {
-    const result = await verifyCitationSupport(ctx.project.id, ctx.dir, key, claim, { contextDirs: ctx.contextDirs });
-    const report = formatCitationCheckResult(key, claim, result);
-    if (result.basis !== "full_text" || result.truncated || result.verdict !== "supported") warn(ctx, report);
-    return report;
+    const results = await verifyCitationSupportBatch(ctx.project.id, ctx.dir, key, claims, { contextDirs: ctx.contextDirs });
+    let papers = citationReports.get(ctx);
+    if (!papers) citationReports.set(ctx, papers = new Map());
+    let checked = papers.get(key);
+    if (!checked) papers.set(key, checked = new Map());
+    claims.forEach((claim, index) => checked!.set(claim, results[index]));
+    const entries = [...checked];
+    const issues = entries.filter(([, result]) => result.verdict !== "supported");
+    const limited = entries.some(([, result]) => result.basis !== "full_text" || result.truncated);
+    ctx.emit({ type: "notice", citationGroup: key, tone: issues.length ? "warn" : limited ? "info" : "ok",
+      text: `${key}: ${entries.length - issues.length}/${entries.length} claims supported${issues.length ? ` · ${issues.length} need attention` : ""}${limited ? " · some checks use excerpts or abstracts" : ""}.`,
+      details: issues.map(([claim, result]) => formatCitationCheckResult(key, claim, result)).join("\n\n"),
+    });
+    return claims.map((claim, index) => formatCitationCheckResult(key, claim, results[index])).join("\n\n");
   } catch (error: any) {
-    warn(ctx, `Citation ${key} could not be checked: ${error?.message ?? error}. Claim: ${claim}`);
+    warn(ctx, `Citation ${key} could not be checked: ${error?.message ?? error}. No new support verdict was established.`);
     throw error;
   }
 }

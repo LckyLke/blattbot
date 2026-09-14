@@ -33,7 +33,7 @@ export type ChatItem =
       /** One-line result summary of a read-only tool (Grep/Read/search…). */
       resultHead?: string;
     }
-  | { kind: "notice"; tone: "info" | "warn" | "error" | "ok"; text: string }
+  | { kind: "notice"; tone: "info" | "warn" | "error" | "ok"; text: string; citationGroup?: string; details?: string }
   | {
       /** A mid-turn agent question — actionable while pending, collapsed after.
        *  "stale": restored from a transcript with no resolution but not the
@@ -1155,6 +1155,7 @@ function ChatBubble({
       return (
         <div role="status" className={`self-center rounded border px-3 py-1 text-center text-xs ${tone}`}>
           {item.text}
+          {item.details && <details className="mt-1 text-left"><summary className="cursor-pointer">Claims needing attention</summary><p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap">{item.details}</p></details>}
         </div>
       );
     }

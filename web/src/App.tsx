@@ -1,3 +1,4 @@
+import { appendChatItem } from "./citation-notices";
 import InlineQuestion from "./components/InlineQuestion";
 import { appUrl } from "./urls";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -230,6 +231,8 @@ function itemsFromEvents(
             ? (ev.tone as (typeof TONES)[number])
             : "info",
           text: String(ev.text ?? ""),
+          citationGroup: typeof ev.citationGroup === "string" ? ev.citationGroup : undefined,
+          details: typeof ev.details === "string" ? ev.details : undefined,
         });
         break;
       default:
@@ -240,7 +243,7 @@ function itemsFromEvents(
   // the turn is (as far as the transcript knows) still blocked on it. Only
   // THE turn-state's pending question restores actionable; any other is in an
   // unknown state — mark it stale ("reload to answer"), never skipped.
-  return items.map((it) =>
+  return items.reduce<ChatItem[]>((all, item) => appendChatItem(all, item), []).map((it) =>
     it.kind === "question" && it.status === "pending" && it.questionId !== pendingQuestionId
       ? { ...it, status: "stale" as const }
       : it,
@@ -400,7 +403,7 @@ function AppShell() {
   }, []);
 
   const pushChat = useCallback((item: ChatItem) => {
-    setChat((prev) => [...prev, item]);
+    setChat((prev) => appendChatItem(prev, item));
   }, []);
 
   // Replace the chat with a restored transcript WITHOUT losing live question
@@ -616,6 +619,8 @@ function AppShell() {
             kind: "notice",
             tone: ["info", "warn", "error", "ok"].includes(ev.tone) ? ev.tone : "info",
             text: String(ev.text ?? ""),
+            citationGroup: typeof ev.citationGroup === "string" ? ev.citationGroup : undefined,
+            details: typeof ev.details === "string" ? ev.details : undefined,
           });
           break;
         case "error":

@@ -385,6 +385,31 @@ async function main() {
         activeChatId: string;
       };
 
+    if (process.env.CITATION_NOTICE_ONLY === "1") {
+      process.env.BLATTBOT_DATA_DIR = dataDir;
+      const store = await import("../src/chats.js");
+      const id = (await getChats()).activeChatId;
+      for (const event of [
+        { type: "user_message", text: "Check the citations in this draft" },
+        { type: "notice", citationGroup: "alpha", tone: "info", text: "alpha: 1/1 claims supported · some checks use excerpts or abstracts.", details: "" },
+        { type: "notice", citationGroup: "alpha", tone: "warn", text: "alpha: 6/7 claims supported · 1 need attention · some checks use excerpts or abstracts.", details: "Claim: The method always improves accuracy. PARTIALLY_SUPPORTED: The source only reports dataset A." },
+        { type: "notice", citationGroup: "beta", tone: "info", text: "beta: 3/3 claims supported · some checks use excerpts or abstracts.", details: "" },
+        { type: "turn_end", isError: false },
+      ]) store.appendEvent(mockProjectId, id, event);
+      await page.reload();
+      const summary = page.getByRole("status").filter({ hasText: "alpha: 6/7" });
+      await summary.waitFor();
+      if (await page.getByText("alpha: 1/1", { exact: false }).count()) throw new Error("Old citation summary was not replaced on replay");
+      if (await summary.locator("details").getAttribute("open") !== null) throw new Error("Citation details should start collapsed");
+      await summary.getByText("Claims needing attention", { exact: true }).click();
+      await summary.getByText("Claim: The method always improves accuracy.", { exact: false }).waitFor();
+      const supported = page.getByRole("status").filter({ hasText: "beta: 3/3" });
+      if ((await supported.getAttribute("class"))?.includes("text-gold") || await supported.locator("details").count()) throw new Error("Supported excerpt check was shown as an expanded warning");
+      await shot("citation-check-summary");
+      console.log("✅ Citation summaries: one per paper, issue details collapsed, supported excerpts neutral, transcript replay verified");
+      return;
+    }
+
     // ---- Chats: opening the project created one active "New chat" ----
     const chats1 = await getChats();
     const chatInitOk =

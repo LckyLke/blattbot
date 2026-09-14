@@ -150,11 +150,13 @@ export function buildMcpServer(ctx: BackendTurnContext) {
     AGENT_TOOL_INFO[5].description,
     {
       key: z.string().describe("The cite key (as used in \\cite{...}) of the reference to check"),
-      claim: z.string().describe("The specific statement or sentence the citation is attached to, verbatim"),
+      claim: z.string().optional().describe("One exact claim; prefer claims for multiple statements from the same paper"),
+      claims: z.array(z.string().min(1).max(16000)).min(1).max(12).optional().describe("Exact claims for this paper, checked together in one request"),
     },
-    async ({ key, claim }) => {
+    async ({ key, claim, claims }) => {
       try {
-        return text(await verifyPaperTool(ctx, key, claim));
+        if ((claim === undefined) === (claims === undefined)) throw new Error("Pass either claim or claims, not both");
+        return text(await verifyPaperTool(ctx, key, claims ?? claim!));
       } catch (err: any) {
         return text(`verify_citation_support failed: ${err?.message ?? err}`);
       }
