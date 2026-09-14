@@ -1,7 +1,7 @@
 import { appUrl } from "../urls";
 import { useEffect, useMemo, useState } from "react";
 import { api, type Account, type OlProject, type Project } from "../api";
-import AccountSignIn from "./AccountSignIn";
+import AccountSignIn, { RemoteLoginHint } from "./AccountSignIn";
 import { useDialog } from "./Dialog";
 
 interface Props {
@@ -424,6 +424,8 @@ function AccountSection({
           </button>
         )}
       </div>
+
+      {disconnected && <RemoteLoginHint />}
 
       {error && (!disconnected || !/expired|reconnect/i.test(error)) && (
         <p className="mt-2 text-[12px] leading-snug text-pencil">{error}</p>

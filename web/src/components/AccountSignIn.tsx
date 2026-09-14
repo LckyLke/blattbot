@@ -9,6 +9,20 @@ interface Props {
 }
 
 const INSTANCE_KEY = "blattbot.instance";
+const desktopUrl = import.meta.env.VITE_REMOTE_DESKTOP_URL;
+
+/** Optional entry point for login windows in a remotely hosted installation. */
+export function RemoteLoginHint() {
+  if (!desktopUrl) return null;
+  return (
+    <p className="mt-2 text-[12px] leading-relaxed text-paper-dim">
+      Browser sign-in opens in Desktop. After clicking “Log in via browser”,{" "}
+      <a href={desktopUrl} target="_blank" rel="noopener noreferrer" className="text-leaf underline underline-offset-2">
+        open Desktop to finish signing in ↗
+      </a>.
+    </p>
+  );
+}
 
 /**
  * Sign in to an Overleaf instance: import the session from an installed
@@ -44,7 +58,7 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
   async function grab(source: "firefox" | "browser") {
     setGrabbing(source);
     setError(null);
-    setMessage(source === "browser" ? "A browser window opened — log in to Overleaf there." : null);
+    setMessage(source === "browser" ? desktopUrl ? "Open Desktop below to complete your Overleaf sign-in." : "A browser window opened — log in to Overleaf there." : null);
     try {
       const res =
         source === "firefox"
@@ -93,7 +107,7 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
         </p>
       )}
 
-      <div className="mt-2.5 flex items-center gap-1.5">
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           disabled={disabled}
@@ -118,6 +132,8 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
           paste cookie
         </button>
       </div>
+
+      <RemoteLoginHint />
 
       {showPaste && (
         <div className="mt-2 flex gap-1.5">
