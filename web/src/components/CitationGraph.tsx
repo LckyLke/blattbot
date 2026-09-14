@@ -13,10 +13,13 @@ import CitationGraphCanvas, { type GraphCamera } from "./CitationGraphCanvas";
 import { graphNeighborhood, searchGraph } from "./graph-model";
 import "./citation-graph.css";
 import PaperSignals from "./PaperSignals";
+import GraphSplitPane from "./GraphSplitPane";
+import type { GraphLayout } from "./graph-layout";
 interface Props {
   projectId: string;
   busy: boolean;
   stamp: number;
+  onJump: (file: string, line: number) => void;
 }
 interface QueryResult {
   results?: (GraphNode | { node: GraphNode; citedBy?: GraphNode[] })[];
@@ -27,7 +30,12 @@ interface QueryResult {
   note: string;
   ranking?: string;
 }
-export default function CitationGraph({ projectId, busy, stamp }: Props) {
+export default function CitationGraph({
+  projectId,
+  busy,
+  stamp,
+  onJump,
+}: Props) {
   const [graph, setGraph] = useState<Graph>();
   const [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
@@ -131,7 +139,9 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
       }
     });
   const [fullscreen, setFullscreen] = useState(false);
-  const [mode, setMode] = useState<"network" | "timeline">("network");
+  const [mode, setMode] = useState<GraphLayout>("network");
+  const [layoutRevision, setLayoutRevision] = useState(0);
+  const [detailTab, setDetailTab] = useState("overview");
   const [scope, setScope] = useState("all");
   const [sort, setSort] = useState("project");
   const [depth, setDepth] = useState(0);
@@ -186,6 +196,7 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
   useEffect(() => {
     let cancelled = false;
     setDetail(undefined);
+    setDetailTab("overview");
     setDetailError("");
     setDetailBusy(false);
     // Bibliography-only nodes can still have an indexed local paper.
@@ -210,6 +221,7 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
   const node = selectedNode
     ? { ...selectedNode, ...(detail?.id === selected ? detail : {}) }
     : undefined;
+  const manuscriptCitationCount = node?.manuscriptCitations?.filter(c => c.kind === "citation").length;
   const projects = useMemo(
     () => graph?.nodes.filter((n) => n.inProject) ?? [],
     [graph?.nodes],
@@ -405,8 +417,8 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
           {indexing &&
             indexing.state !== "ready" &&
             indexing.state !== "empty" && (
-              <div className="cg-index-status" role="status">
-                <div>
+              <details className="cg-index-status" open={building || undefined}>
+                <summary>
                   <strong>
                     {building
                       ? "Building automatically"
@@ -428,7 +440,7 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                   >
                     Retry now
                   </button>
-                </div>
+                </summary>
                 <progress
                   aria-label="Citation graph indexing"
                   max={indexing.total || 1}
@@ -448,7 +460,7 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                     ? ` ${indexing.metadataPending} sources have incomplete paper metadata.`
                     : ""}
                 </p>
-              </div>
+              </details>
             )}
           <div className="cg-controls">
             <div className="cg-search">
@@ -487,8 +499,10 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                 value={mode}
                 onChange={(e) => setMode(e.target.value as typeof mode)}
               >
-                <option value="network">Network</option>
-                <option value="timeline">Timeline</option>
+                <option value="network">ForceAtlas2 · Network</option>
+                <option value="clusters">ForceAtlas2 · Clusters</option>
+                <option value="radial">Concentric · Hubs</option>
+                <option value="timeline">Timeline · Year</option>
               </select>
               <input
                 type="number"
@@ -516,9 +530,12 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
               </button>
             </div>
           </div>
-          <div className="cg-workspace">
+          <GraphSplitPane>
             <div className="cg-map">
-              <div className="cg-legend">
+              <div
+                className="cg-legend"
+                title="Drag a node to move it. Drag the background to pan. Scroll to zoom."
+              >
                 <span>
                   <i className="project" />
                   Project
@@ -531,7 +548,7 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                   <i className="pending" />
                   Unresolved
                 </span>
-                <small>A → B means A cites B</small>
+                <small>Drag nodes to arrange · A → B cites B</small>
               </div>
               <CitationGraphCanvas
                 ref={camera}
@@ -542,6 +559,7 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                 matches={matches}
                 path={path}
                 mode={mode}
+                revision={layoutRevision}
                 labels={labels}
                 onSelect={setSelected}
               />
@@ -551,9 +569,20 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                   {graph.nodes.length.toLocaleString()} papers
                   {mode === "timeline"
                     ? " · Older → newer; undated at left"
-                    : " · Scroll to zoom; drag to explore"}
+                    : mode === "radial"
+                      ? " · Most connected papers at the center"
+                      : mode === "clusters"
+                        ? " · ForceAtlas2 with stronger cluster separation"
+                        : " · ForceAtlas2 network"}
                 </span>
                 <div>
+                  <button
+                    type="button"
+                    onClick={() => setLayoutRevision((v) => v + 1)}
+                    title="Reset dragged positions and arrange the graph again"
+                  >
+                    Rearrange
+                  </button>
                   <button
                     type="button"
                     aria-label="Zoom out"
@@ -623,196 +652,338 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                       .join(" · ") || "Publication details not available"}
                   </p>
                   <p className="cg-key">{node.keys.join(", ") || node.id}</p>
-                  <div className="cg-metrics">
-                    <div>
-                      <strong>
-                        {node.referencesLoaded ? outgoing.size : "—"}
-                      </strong>
-                      <span>references loaded</span>
-                    </div>
-                    <div>
-                      <strong>{incoming.size}</strong>
-                      <span>citers in this graph</span>
-                    </div>
-                    {node.citationCount !== undefined && (
+                  {node.sourceAvailability && <span className={`cg-availability ${node.sourceAvailability}`}>
+                    <i aria-hidden="true" />{node.sourceAvailability === "indexed" ? "Full text indexed" : node.sourceAvailability === "abstract" ? "Abstract indexed" : node.sourceAvailability === "stale" ? "Library index needs updating" : "Not indexed in your library"}
+                  </span>}
+                  <button
+                    type="button"
+                    className="cg-draft-summary"
+                    onClick={() => setDetailTab("citations")}
+                  >
+                    <span>In your manuscript</span>
+                    <strong>
+                      {node.manuscriptCitations
+                        ? `${manuscriptCitationCount} ${manuscriptCitationCount === 1 ? "citation" : "citations"}`
+                        : node.inProject
+                          ? detailBusy
+                            ? "Checking citations…"
+                            : "View citations"
+                          : "Not cited"}{" "}
+                      <span aria-hidden="true">↗</span>
+                    </strong>
+                  </button>
+                  <div
+                    className="cg-detail-tabs"
+                    role="tablist"
+                    aria-label="Paper information"
+                    onKeyDown={(event) => {
+                      const tabs = ["overview", "citations", "connections"];
+                      if (
+                        !["ArrowLeft", "ArrowRight", "Home", "End"].includes(
+                          event.key,
+                        )
+                      )
+                        return;
+                      event.preventDefault();
+                      const next =
+                        event.key === "Home"
+                          ? 0
+                          : event.key === "End"
+                            ? 2
+                            : (tabs.indexOf(detailTab) +
+                                (event.key === "ArrowRight" ? 1 : 2)) %
+                              3;
+                      setDetailTab(tabs[next]);
+                      (
+                        event.currentTarget.children[next] as HTMLButtonElement
+                      ).focus();
+                    }}
+                  >
+                    {[
+                      ["overview", "Overview"],
+                      ["citations", "In your draft"],
+                      ["connections", "Connections"],
+                    ].map(([id, label]) => (
+                      <button
+                        key={id}
+                        id={`cg-tab-${id}`}
+                        role="tab"
+                        type="button"
+                        aria-selected={detailTab === id}
+                        aria-controls={`cg-panel-${id}`}
+                        tabIndex={detailTab === id ? 0 : -1}
+                        onClick={() => setDetailTab(id)}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <section
+                    role="tabpanel"
+                    id="cg-panel-overview"
+                    aria-labelledby="cg-tab-overview"
+                    hidden={detailTab !== "overview"}
+                  >
+                    <div className="cg-metrics">
                       <div>
-                        <strong>{node.citationCount.toLocaleString()}</strong>
-                        <span>citations in OpenAlex</span>
+                        <strong>
+                          {node.referencesLoaded ? outgoing.size : "—"}
+                        </strong>
+                        <span>references loaded</span>
+                      </div>
+                      <div>
+                        <strong>{incoming.size}</strong>
+                        <span>citers in this graph</span>
+                      </div>
+                      {node.citationCount !== undefined && (
+                        <div>
+                          <strong>{node.citationCount.toLocaleString()}</strong>
+                          <span>citations in OpenAlex</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="cg-detail-actions">
+                      {node.doi && (
+                        <a
+                          href={`https://doi.org/${encodeURIComponent(node.doi)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Publisher record ↗
+                        </a>
+                      )}
+                      {/^W\d+$/.test(node.id) && (
+                        <a
+                          href={`https://openalex.org/${node.id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          OpenAlex ↗
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        disabled={!!working || building}
+                        onClick={expand}
+                      >
+                        {node.referencesLoaded
+                          ? "Refresh references"
+                          : "Expand references"}
+                      </button>
+                      {!node.inProject && node.ref && (
+                        <button
+                          type="button"
+                          className="research-primary"
+                          disabled={busy || !!working}
+                          onClick={() =>
+                            void act("Adding reference…", async () => {
+                              const added = await api.research<{
+                                key: string;
+                                verification?: {
+                                  status: string;
+                                  detail?: string;
+                                };
+                              }>(projectId, "/add-reference", {
+                                ref: node.ref,
+                              });
+                              await load();
+                              if (
+                                alive.current &&
+                                added.verification?.status !== "verified"
+                              )
+                                setError(
+                                  `${added.key} was added, but its identity check is ${added.verification?.status ?? "unavailable"}. ${added.verification?.detail ?? "Review it in References."}`,
+                                );
+                            })
+                          }
+                        >
+                          Add to bibliography
+                        </button>
+                      )}
+                    </div>
+                    {detailBusy && (
+                      <p role="status" className="research-meta">
+                        Loading paper information…
+                      </p>
+                    )}
+                    {(detailError || node.metadataWarning) && (
+                      <div className="research-alert" role="alert">
+                        Paper information unavailable:{" "}
+                        {detailError || node.metadataWarning}
+                        <button
+                          type="button"
+                          onClick={() => setDetailRetry((v) => v + 1)}
+                        >
+                          Retry paper details
+                        </button>
                       </div>
                     )}
-                  </div>
-
-                  <div className="cg-detail-actions">
-                    {node.doi && (
-                      <a
-                        href={`https://doi.org/${encodeURIComponent(node.doi)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Publisher record ↗
-                      </a>
+                    <div className="cg-abstract">
+                      <h4>Abstract</h4>
+                      <p>
+                        {node.abstract ||
+                          (detailBusy
+                            ? "Retrieving the indexed abstract…"
+                            : "No abstract available in the saved OpenAlex metadata. Open the paper to read its content.")}
+                      </p>
+                      <small>
+                        Index metadata; this does not mean BlattBot has read the
+                        full paper.
+                      </small>
+                    </div>
+                    <details className="cg-signal-disclosure">
+                      <summary>Relevance & citation signals</summary>
+                      <PaperSignals
+                        node={node}
+                        question={graph.researchQuestion}
+                        projectCount={projects.length}
+                        projectCiters={
+                          projects.filter((paper) => incoming.has(paper.id))
+                            .length
+                        }
+                      />
+                    </details>
+                    <small className="cg-provenance">
+                      Metadata from OpenAlex
+                      {node.retrievedAt
+                        ? ` · ${new Date(node.retrievedAt).toLocaleDateString()}`
+                        : ""}
+                      . Coverage can be incomplete.
+                    </small>
+                  </section>
+                  <section
+                    role="tabpanel"
+                    id="cg-panel-citations"
+                    aria-labelledby="cg-tab-citations"
+                    hidden={detailTab !== "citations"}
+                    className="cg-citations"
+                  >
+                    <h4>Where you cite this paper</h4>
+                    <p className="research-meta">
+                      Current LaTeX sources · Select a passage to open its
+                      source line.
+                    </p>
+                    {node.manuscriptCitations?.length ? (
+                      node.manuscriptCitations.map((citation, i) => (
+                        <button
+                          type="button"
+                          className="cg-citation"
+                          key={`${citation.file}:${citation.line}:${citation.column}:${i}`}
+                          onClick={() => {
+                            setFullscreen(false);
+                            onJump(citation.file, citation.line);
+                          }}
+                        >
+                          <span className="cg-citation-location">
+                            <strong>{citation.file}</strong>
+                            <span>Line {citation.line} ↗</span>
+                          </span>
+                          <span className="cg-citation-excerpt">
+                            {citation.excerpt}
+                          </span>
+                          <small>
+                            {citation.key}
+                            {citation.kind === "bibliography"
+                              ? " · Bibliography inclusion (\\nocite)"
+                              : ""}
+                          </small>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="cg-empty-state">
+                        <strong>
+                          {detailBusy
+                            ? "Reading citation locations…"
+                            : node.manuscriptCitations
+                              ? "No citations in your draft"
+                              : "Citation locations unavailable"}
+                        </strong>
+                        <p>
+                          {node.inProject
+                            ? "This paper is in your bibliography. Citations in your LaTeX files appear here, including their surrounding text."
+                            : "This source is outside your project. Add it to your bibliography when you decide to use it."}
+                        </p>
+                      </div>
                     )}
-                    {/^W\d+$/.test(node.id) && (
-                      <a
-                        href={`https://openalex.org/${node.id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        OpenAlex ↗
-                      </a>
-                    )}
-                    <button
-                      type="button"
-                      disabled={!!working || building}
-                      onClick={expand}
-                    >
-                      {node.referencesLoaded
-                        ? "Refresh references"
-                        : "Expand references"}
-                    </button>
-                    {!node.inProject && node.ref && (
-                      <button
-                        type="button"
-                        className="research-primary"
-                        disabled={busy || !!working}
-                        onClick={() =>
-                          void act("Adding reference…", async () => {
-                            const added = await api.research<{
-                              key: string;
-                              verification?: {
-                                status: string;
-                                detail?: string;
-                              };
-                            }>(projectId, "/add-reference", { ref: node.ref });
-                            await load();
-                            if (
-                              alive.current &&
-                              added.verification?.status !== "verified"
-                            )
-                              setError(
-                                `${added.key} was added, but its identity check is ${added.verification?.status ?? "unavailable"}. ${added.verification?.detail ?? "Review it in References."}`,
-                              );
-                          })
+                  </section>
+                  <section
+                    role="tabpanel"
+                    id="cg-panel-connections"
+                    aria-labelledby="cg-tab-connections"
+                    hidden={detailTab !== "connections"}
+                  >
+                    <div className="cg-connection-heading">
+                      <h4>Connections</h4>
+                      <select
+                        aria-label="Connection direction"
+                        value={direction}
+                        onChange={(e) =>
+                          setDirection(e.target.value as typeof direction)
                         }
                       >
-                        Add to bibliography
-                      </button>
-                    )}
-                  </div>
-                  {detailBusy && (
-                    <p role="status" className="research-meta">
-                      Loading paper information…
-                    </p>
-                  )}
-                  {detailError && (
-                    <div className="research-alert" role="alert">
-                      Paper information unavailable: {detailError}
+                        <option value="both">Both directions</option>
+                        <option value="outgoing">References →</option>
+                        <option value="incoming">← Cited by</option>
+                      </select>
+                    </div>
+                    <div className="cg-focus">
+                      <select
+                        aria-label="Neighborhood depth"
+                        value={depth}
+                        onChange={(e) => setDepth(Number(e.target.value))}
+                      >
+                        <option value="0">Show entire graph</option>
+                        <option value="1">Focus: 1 step</option>
+                        <option value="2">Focus: 2 steps</option>
+                      </select>
                       <button
                         type="button"
-                        onClick={() => setDetailRetry((v) => v + 1)}
+                        onClick={() => camera.current?.center(node.id)}
                       >
-                        Retry paper details
+                        Center paper
                       </button>
                     </div>
-                  )}
-                  <div className="cg-abstract">
-                    <h4>Abstract</h4>
-                    <p>
-                      {node.abstract ||
-                        (detailBusy
-                          ? "Retrieving the indexed abstract…"
-                          : "No abstract available in the saved OpenAlex metadata. Open the paper to read its content.")}
-                    </p>
-                    <small>
-                      Index metadata; this does not mean BlattBot has read the
-                      full paper.
-                    </small>
-                  </div>
-                  <PaperSignals
-                    node={node}
-                    question={graph.researchQuestion}
-                    projectCount={projects.length}
-                    projectCiters={
-                      projects.filter((paper) => incoming.has(paper.id)).length
-                    }
-                  />
-                  <div className="cg-connection-heading">
-                    <h4>Connections</h4>
-                    <select
-                      aria-label="Connection direction"
-                      value={direction}
-                      onChange={(e) =>
-                        setDirection(e.target.value as typeof direction)
-                      }
-                    >
-                      <option value="both">Both directions</option>
-                      <option value="outgoing">References →</option>
-                      <option value="incoming">← Cited by</option>
-                    </select>
-                  </div>
-                  <div className="cg-focus">
-                    <select
-                      aria-label="Neighborhood depth"
-                      value={depth}
-                      onChange={(e) => setDepth(Number(e.target.value))}
-                    >
-                      <option value="0">Show entire graph</option>
-                      <option value="1">Focus: 1 step</option>
-                      <option value="2">Focus: 2 steps</option>
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => camera.current?.center(node.id)}
-                    >
-                      Center paper
-                    </button>
-                  </div>
-                  <p className="research-meta">
-                    {connections.length} connected papers loaded.{" "}
-                    {direction === "both"
-                      ? "Gold arrows: references. Blue arrows: papers citing this work."
-                      : ""}
-                  </p>
-                  <div className="cg-paper-list">
-                    {connections
-                      .slice(page * 50, (page + 1) * 50)
-                      .map(paperButton)}
-                  </div>
-                  {!connections.length && (
                     <p className="research-meta">
-                      {node.referencesLoaded
-                        ? "No connections in the loaded graph."
-                        : "Expand references to retrieve this paper’s bibliography."}
+                      {connections.length} connected papers loaded.{" "}
+                      {direction === "both"
+                        ? "Gold arrows: references. Blue arrows: papers citing this work."
+                        : ""}
                     </p>
-                  )}
-                  {connections.length > 50 && (
-                    <div className="cg-pagination">
-                      <button
-                        type="button"
-                        disabled={page === 0}
-                        onClick={() => setPage((v) => v - 1)}
-                      >
-                        Previous
-                      </button>
-                      <span>
-                        {page + 1} / {Math.ceil(connections.length / 50)}
-                      </span>
-                      <button
-                        type="button"
-                        disabled={(page + 1) * 50 >= connections.length}
-                        onClick={() => setPage((v) => v + 1)}
-                      >
-                        Next
-                      </button>
+                    <div className="cg-paper-list">
+                      {connections
+                        .slice(page * 50, (page + 1) * 50)
+                        .map(paperButton)}
                     </div>
-                  )}
-                  <small className="cg-provenance">
-                    Source: OpenAlex
-                    {node.retrievedAt
-                      ? ` · Retrieved ${new Date(node.retrievedAt).toLocaleString()}`
-                      : ""}
-                    . Coverage can be incomplete.
-                  </small>
+                    {!connections.length && (
+                      <p className="research-meta">
+                        {node.referencesLoaded
+                          ? "No connections in the loaded graph."
+                          : "Expand references to retrieve this paper’s bibliography."}
+                      </p>
+                    )}
+                    {connections.length > 50 && (
+                      <div className="cg-pagination">
+                        <button
+                          type="button"
+                          disabled={page === 0}
+                          onClick={() => setPage((v) => v - 1)}
+                        >
+                          Previous
+                        </button>
+                        <span>
+                          {page + 1} / {Math.ceil(connections.length / 50)}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={(page + 1) * 50 >= connections.length}
+                          onClick={() => setPage((v) => v + 1)}
+                        >
+                          Next
+                        </button>
+                      </div>
+                    )}
+                  </section>
                 </>
               ) : (
                 <>
@@ -904,7 +1075,7 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                 </>
               )}
             </aside>
-          </div>
+          </GraphSplitPane>
           <div className="cg-bottom">
             <details
               className="research-card research-compare"

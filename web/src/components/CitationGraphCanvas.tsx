@@ -2,12 +2,15 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { DirectedGraph } from "graphology";
 import Sigma from "sigma";
 import FA2Layout from "graphology-layout-forceatlas2/worker";
+import type { MouseCoords, TouchCoords } from "sigma/types";
+import { graphPositions, type GraphLayout } from "./graph-layout";
 import type { CitationGraph, GraphNode } from "../research";
 
 export interface GraphCamera {
@@ -22,7 +25,8 @@ interface Props {
   visible: Set<string>;
   matches?: Set<string>;
   path: string[];
-  mode: "network" | "timeline";
+  mode: GraphLayout;
+  revision: number;
   labels: boolean;
   onSelect: (id: string) => void;
 }
@@ -43,7 +47,8 @@ export default forwardRef<GraphCamera, Props>(
     const container = useRef<HTMLDivElement>(null);
     const renderer = useRef<Sigma | null>(null);
     const model = useRef(new DirectedGraph());
-    const topology = useRef("");
+    const layout = useRef<FA2Layout | null>(null);
+    const arrangement = useRef("");
     const latest = useRef(props);
     latest.current = props;
     const [unavailable, setUnavailable] = useState(false);
@@ -111,8 +116,8 @@ export default forwardRef<GraphCamera, Props>(
           labelSize: 11,
           labelFont: "Inter, system-ui, sans-serif",
           labelRenderedSizeThreshold: 4.5,
-          labelDensity: 0.5,
-          labelGridCellSize: 100,
+          labelDensity: 0.35,
+          labelGridCellSize: 150,
           stagePadding: 40,
           minCameraRatio: 0.025,
           maxCameraRatio: 4,
@@ -140,9 +145,16 @@ export default forwardRef<GraphCamera, Props>(
               ...data,
               hidden: !visible.has(id),
               color: active ? "#f1f5dc" : muted ? colors.dim : data.color,
-              label: muted ? null : data.label,
-              size: data.size + (id === selected ? 3 : 0),
-              forceLabel: active || !!matches?.has(id),
+              label: muted
+                ? null
+                : active || (connected && visible.size < 30)
+                  ? data.fullLabel
+                  : data.label,
+              size:
+                (!data.inProject && visible.size < 250
+                  ? Math.max(3, data.size)
+                  : data.size) + (id === selected ? 3 : 0),
+              forceLabel: active || (!!matches?.has(id) && matches.size <= 12),
               zIndex: active ? 3 : connected ? 2 : 0,
             };
           },
@@ -174,71 +186,124 @@ export default forwardRef<GraphCamera, Props>(
         return;
       }
       renderer.current = sigma;
-      sigma.on("clickNode", ({ node }) => latest.current.onSelect(node));
+      // Interaction belongs to the renderer lifetime, not metadata/layout updates.
+      let dragged = "";
+      let origin = { x: 0, y: 0 };
+      let offset = { x: 0, y: 0 };
+      let moved = false;
+      let suppressClickUntil = 0;
+      const release = () => {
+        if (moved) suppressClickUntil = Date.now() + 250;
+        dragged = "";
+        moved = false;
+        sigma.getCamera().enable();
+        container.current!.style.cursor = "grab";
+      };
+      sigma.on("clickNode", ({ node }) => {
+        if (Date.now() >= suppressClickUntil) latest.current.onSelect(node);
+      });
+      sigma.on("downNode", ({ node, event }) => {
+        if ("button" in event.original && event.original.button !== 0) return;
+        dragged = node;
+        moved = false;
+        origin = { x: event.x, y: event.y };
+        layout.current?.stop();
+        setSettling(false);
+        // Freeze normalization so dragging an outermost node does not move others.
+        if (!sigma.getCustomBBox()) sigma.setCustomBBox(sigma.getBBox());
+        const point = sigma.viewportToGraph(origin);
+        const position = model.current.getNodeAttributes(node);
+        offset = { x: position.x - point.x, y: position.y - point.y };
+        sigma.getCamera().disable();
+        event.preventSigmaDefault();
+      });
+      const move = (event: MouseCoords) => {
+        if (!dragged || !model.current.hasNode(dragged)) return;
+        event.preventSigmaDefault();
+        event.original.preventDefault();
+        if (!moved && Math.hypot(event.x - origin.x, event.y - origin.y) < 3)
+          return;
+        moved = true;
+        container.current!.style.cursor = "grabbing";
+        const point = sigma.viewportToGraph(event);
+        model.current.mergeNodeAttributes(dragged, {
+          x: point.x + offset.x,
+          y: point.y + offset.y,
+        });
+      };
+      const touchMove = (event: TouchCoords) => {
+        if (event.touches.length !== 1) {
+          release();
+          return;
+        }
+        move({
+          ...event,
+          ...event.touches[0],
+          preventSigmaDefault: () => event.preventSigmaDefault(),
+        });
+      };
+      sigma.getMouseCaptor().on("mousemovebody", move);
+      sigma.getMouseCaptor().on("mouseup", release);
+      sigma.getTouchCaptor().on("touchmove", touchMove);
+      sigma.getTouchCaptor().on("touchup", release);
+      window.addEventListener("blur", release);
       sigma.on("enterNode", ({ node }) => {
         setHover(node);
-        container.current!.style.cursor = "pointer";
+        if (!dragged) container.current!.style.cursor = "grab";
       });
       sigma.on("leaveNode", () => {
         setHover("");
         container.current!.style.cursor = "grab";
       });
-      sigma.on("clickStage", () => latest.current.onSelect(""));
+      sigma.on("clickStage", () => {
+        if (Date.now() >= suppressClickUntil) latest.current.onSelect("");
+      });
       const observer = new ResizeObserver(() => {
         if (renderer.current === sigma) sigma.resize();
       });
       observer.observe(container.current!);
       return () => {
         observer.disconnect();
+        window.removeEventListener("blur", release);
+        layout.current?.kill();
+        layout.current = null;
         sigma.kill();
         renderer.current = null;
       };
     }, []);
+    const signature = useMemo(
+      () =>
+        JSON.stringify([
+          props.mode,
+          props.revision,
+          props.nodes.map((n) => [n.id, n.year]),
+          props.edges.map((e) => [e.from, e.to]),
+        ]),
+      [props.mode, props.revision, props.nodes, props.edges],
+    );
     useEffect(() => {
       const previous = model.current;
-      const signature = JSON.stringify([
-        props.mode,
-        props.nodes.map((n) => n.id),
-        props.edges.map((e) => [e.from, e.to]),
-      ]);
-      if (topology.current === signature) {
-        for (const node of props.nodes)
-          previous.setNodeAttribute(
-            node.id,
-            "label",
-            `${node.keys[0] ? node.keys[0] + " · " : ""}${node.title.length > 64 ? node.title.slice(0, 61) + "…" : node.title}`,
-          );
-        renderer.current?.refresh();
-        setSettling(false);
-        return;
-      }
-      topology.current = signature;
+      const arrangementKey = `${props.mode}:${props.revision}`;
+      const preserve = arrangement.current === arrangementKey;
+      arrangement.current = arrangementKey;
       const graph = new DirectedGraph();
       const degree = new Map<string, number>();
       for (const edge of props.edges)
         degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
-      const years = props.nodes.flatMap((n) => (n.year ? [n.year] : []));
+      const positions = graphPositions(props.nodes, degree, props.mode);
       const density = Math.min(
         1,
         Math.sqrt(150 / Math.max(1, props.nodes.length)),
       );
-      const minYear = Math.min(...years, new Date().getFullYear());
       for (let i = 0; i < props.nodes.length; i++) {
         const node = props.nodes[i];
-        const old = previous.hasNode(node.id)
-          ? previous.getNodeAttributes(node.id)
-          : undefined;
-        const radius = Math.sqrt(i + 1) * 10;
-        const angle = i * 2.399963;
+        const old =
+          preserve && previous.hasNode(node.id)
+            ? previous.getNodeAttributes(node.id)
+            : undefined;
         graph.addNode(node.id, {
-          x:
-            props.mode === "timeline"
-              ? ((node.year ?? minYear - 3) - minYear) * 30
-              : (old?.x ?? Math.cos(angle) * radius),
-          y:
-            props.mode === "timeline"
-              ? Math.sin(angle) * 100 + (node.inProject ? 150 : -50)
-              : (old?.y ?? Math.sin(angle) * radius),
+          ...positions.get(node.id),
+          ...(old ? { x: old.x, y: old.y } : {}),
           size: node.inProject
             ? Math.min(9, 4.5 + Math.log2(1 + (degree.get(node.id) ?? 0)) / 2)
             : Math.max(
@@ -246,7 +311,13 @@ export default forwardRef<GraphCamera, Props>(
                 Math.min(7, 2 + Math.log2(1 + (degree.get(node.id) ?? 0))) *
                   density,
               ),
-          label: `${node.keys[0] ? node.keys[0] + " · " : ""}${node.title.length > 64 ? node.title.slice(0, 61) + "…" : node.title}`,
+          inProject: node.inProject,
+          label:
+            node.keys[0] ||
+            (node.title.length > 48
+              ? node.title.slice(0, 45) + "…"
+              : node.title),
+          fullLabel: `${node.keys[0] ? node.keys[0] + " · " : ""}${node.title.length > 64 ? node.title.slice(0, 61) + "…" : node.title}`,
           color: !node.resolved
             ? colors.pending
             : node.inProject
@@ -268,20 +339,28 @@ export default forwardRef<GraphCamera, Props>(
       model.current = graph;
       const sigma = renderer.current;
       if (!sigma) return;
+      sigma.setCustomBBox(null);
       sigma.setGraph(graph);
+      if (!preserve) sigma.getCamera().animatedReset({ duration: duration() });
       let worker: FA2Layout | undefined;
       let stop: ReturnType<typeof setTimeout> | undefined;
-      if (props.mode === "network" && graph.order > 1 && graph.size) {
+      if (
+        ["network", "clusters"].includes(props.mode) &&
+        graph.order > 1 &&
+        graph.size
+      ) {
         try {
           worker = new FA2Layout(graph, {
             settings: {
               barnesHutOptimize: true,
               barnesHutTheta: 0.6,
               gravity: 1,
-              scalingRatio: 10,
+              linLogMode: props.mode === "clusters",
+              scalingRatio: props.mode === "clusters" ? 20 : 10,
               slowDown: 5,
             },
           });
+          layout.current = worker;
           worker.start();
           setSettling(true);
           stop = setTimeout(
@@ -295,50 +374,34 @@ export default forwardRef<GraphCamera, Props>(
           setSettling(false);
         }
       } else setSettling(false);
-      // Dragging stops the layout so the node stays where the user placed it.
-      let dragged = "";
-      const down: Parameters<Sigma["on"]>[1] = ({ node }: { node: string }) => {
-        dragged = node;
-        worker?.stop();
-        setSettling(false);
-        sigma.getCamera().disable();
-        if (!sigma.getCustomBBox()) sigma.setCustomBBox(sigma.getBBox());
-      };
-      const captor = sigma.getMouseCaptor();
-      const move = (event: {
-        x: number;
-        y: number;
-        preventSigmaDefault(): void;
-        original: MouseEvent | TouchEvent;
-      }) => {
-        if (!dragged) return;
-        const position = sigma.viewportToGraph(event);
-        graph.mergeNodeAttributes(dragged, position);
-        event.preventSigmaDefault();
-        event.original.preventDefault();
-        event.original.stopPropagation();
-      };
-      const up = () => {
-        dragged = "";
-        sigma.getCamera().enable();
-      };
-      sigma.on("downNode", down);
-      captor.on("mousemovebody", move);
-      captor.on("mouseup", up);
-      window.addEventListener("blur", up);
       return () => {
         clearTimeout(stop);
         worker?.kill();
-        sigma.off("downNode", down);
-        captor.off("mousemovebody", move);
-        captor.off("mouseup", up);
-        window.removeEventListener("blur", up);
-        if (renderer.current === sigma) {
-          sigma.getCamera().enable();
-          sigma.setCustomBBox(null);
-        }
+        if (layout.current === worker) layout.current = null;
       };
-    }, [props.nodes, props.edges, props.mode]);
+      // Metadata polling cannot tear down the layout or drag handlers.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [signature]);
+    useEffect(() => {
+      for (const node of props.nodes) {
+        if (model.current.hasNode(node.id))
+          model.current.mergeNodeAttributes(node.id, {
+            inProject: node.inProject,
+            label:
+              node.keys[0] ||
+              (node.title.length > 48
+                ? node.title.slice(0, 45) + "…"
+                : node.title),
+            fullLabel: `${node.keys[0] ? node.keys[0] + " · " : ""}${node.title.length > 64 ? node.title.slice(0, 61) + "…" : node.title}`,
+            color: !node.resolved
+              ? colors.pending
+              : node.inProject
+                ? colors.project
+                : colors.external,
+          });
+      }
+      renderer.current?.refresh();
+    }, [props.nodes]);
     useEffect(() => {
       renderer.current?.setSetting("renderLabels", props.labels);
       renderer.current?.refresh();
@@ -405,7 +468,7 @@ export default forwardRef<GraphCamera, Props>(
               {hovered.year ?? "Year unknown"} ·{" "}
               {hovered.inProject ? "In your project" : "External paper"}
             </span>
-            <small>Click for details and connections</small>
+            <small>Click for details · Drag to arrange</small>
           </div>
         )}
       </div>

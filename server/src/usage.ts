@@ -68,19 +68,28 @@ export function stripComments(tex: string): string {
     .join("\n");
 }
 
-/**
- * Scan .tex sources for citation commands (\cite, \citep, \citet, \citealp,
- * \autocite, \parencite, \textcite, \footcite, \nocite — starred and
- * optional-arg forms included) and count citations per key per file.
- * Pure: takes file contents, returns key → [{file, count, lines}].
- */
-export function scanCiteUsage(
+export interface CitationLocation {
+  key: string;
+  file: string;
+  line: number;
+  column: number;
+  kind: "citation" | "bibliography";
+  excerpt: string;
+}
+
+/** Preserve exact command locations, including separate citations on one line. */
+export function scanCitationLocations(
   files: { file: string; content: string }[],
-): CiteUsage {
-  const usage: CiteUsage = {};
+  keys?: string[],
+  withExcerpts = true,
+): CitationLocation[] {
+  const locations: CitationLocation[] = [];
+  const wanted = keys ? new Set(keys) : undefined;
   for (const { file, content } of files) {
+    const clean = stripComments(content);
+    const sourceLines = clean.split("\n");
     const blank = (value: string) => value.replace(/[^\n]/g, " ");
-    const text = stripComments(content)
+    const text = clean
       .replace(
         /\\begin\{(verbatim\*?|lstlisting|minted|comment)\}[\s\S]*?\\end\{\1\}/g,
         blank,
@@ -113,16 +122,56 @@ export function scanCiteUsage(
       for (const rawKey of groups.flatMap((group) => group.split(","))) {
         const key = rawKey.trim();
         if (!key || key === "*") continue; // \nocite{*} is "cite everything", not a key
-        const sites = (usage[key] ??= []);
-        const site = sites.find((s) => s.file === file);
-        if (site) {
-          site.count++;
-          site.lines.push(line);
-        } else {
-          sites.push({ file, count: 1, lines: [line] });
-        }
+        if (wanted && !wanted.has(key)) continue;
+        const column = m.index - text.lastIndexOf("\n", m.index - 1);
+        // Keep the cited command in view even in very long LaTeX paragraphs.
+        const sourceLine = sourceLines[line - 1] ?? "";
+        const start = Math.max(0, column - 1 - 180);
+        const paragraph = withExcerpts
+          ? claimContextAtLine(content, line, 600)
+          : "";
+        const excerpt = !withExcerpts
+          ? ""
+          : sourceLine.length > 600
+            ? `${start ? "…" : ""}${sourceLine.slice(start, start + 600)}${sourceLine.length > start + 600 ? "…" : ""}`
+            : paragraph.endsWith("…")
+              ? sourceLines
+                  .slice(line - 1, line + 2)
+                  .join(" ")
+                  .slice(0, 600)
+              : paragraph;
+        locations.push({
+          key,
+          file,
+          line,
+          column,
+          kind: m[1].toLowerCase() === "nocite" ? "bibliography" : "citation",
+          excerpt,
+        });
       }
     }
+  }
+  return locations;
+}
+
+/**
+ * Scan .tex sources for citation commands (\cite, \citep, \citet, \citealp,
+ * \autocite, \parencite, \textcite, \footcite, \nocite — starred and
+ * optional-arg forms included) and count citations per key per file.
+ * Pure: takes file contents, returns key → [{file, count, lines}].
+ */
+export function scanCiteUsage(
+  files: { file: string; content: string }[],
+): CiteUsage {
+  const usage: CiteUsage = {};
+  for (const location of scanCitationLocations(files, undefined, false)) {
+    const sites = (usage[location.key] ??= []);
+    const site = sites.find((s) => s.file === location.file);
+    if (site) {
+      site.count++;
+      site.lines.push(location.line);
+    } else
+      sites.push({ file: location.file, count: 1, lines: [location.line] });
   }
   return usage;
 }
@@ -187,4 +236,21 @@ export function collectCiteUsage(projectPath: string): CiteUsage {
     }
   }
   return scanCiteUsage(inputs);
+}
+
+/** Read-only: locations come from current project sources, never provider metadata. */
+export function collectCitationLocations(
+  projectPath: string,
+  keys: string[],
+): CitationLocation[] {
+  if (!keys.length) return [];
+  return scanCitationLocations(
+    listFiles(projectPath)
+      .filter((file) => file.endsWith(".tex"))
+      .map((file) => ({
+        file,
+        content: readFileSync(join(projectPath, file), "utf8"),
+      })),
+    keys,
+  );
 }

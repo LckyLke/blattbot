@@ -14,7 +14,7 @@ import { contextDirectories, contextUploadsDir } from "./context.js";
 import { resolveReadPath } from "./backends/paths.js";
 import { extractPdfPages, formatTextExcerpt, readTextPages, MAX_PDF_BYTES, type TextReadOptions, type TextExcerpt } from "./pdftext.js";
 import { loadSettings } from "./settings.js";
-import { RateLimitError, semanticScholarGet, openAlexHeaders, unpaywallPdfUrls } from "./research-providers.js";
+import { RateLimitError, semanticScholarGet, semanticScholarPaperBatch, openAlexHeaders, unpaywallPdfUrls } from "./research-providers.js";
 export { RateLimitError } from "./research-providers.js";
 import {
   CROSSREF_MAILTO,
@@ -138,12 +138,22 @@ export function titlesSimilar(a: string, b: string): boolean {
  */
 export async function resolveS2Paper(entry: Pick<BibEntry, "fields">): Promise<S2Paper | null> {
   const doi = entry.fields.doi?.trim().replace(/^https?:\/\/(dx\.)?doi\.org\//, "");
-  if (doi) {
+  const arxivId = arxivIdFromEntry(entry);
+  const identifiers = [
+    ...(doi ? [`DOI:${doi}`] : []),
+    ...(arxivId ? [`ARXIV:${arxivId.replace(/v[0-9]+$/, "")}`] : []),
+  ];
+  const useBatch = !!loadSettings().s2ApiKey.trim();
+  if (useBatch && identifiers.length) {
+    const records = await semanticScholarPaperBatch(identifiers, S2_FIELDS);
+    const paper = records.find(Boolean);
+    if (paper) return paper as S2Paper;
+  }
+  if (!useBatch && doi) {
     const paper = await s2Get(`/paper/DOI:${encodeURIComponent(doi)}?fields=${S2_FIELDS}`);
     if (paper) return paper as S2Paper;
   }
-  const arxivId = arxivIdFromEntry(entry);
-  if (arxivId) {
+  if (!useBatch && arxivId) {
     const paper = await s2Get(`/paper/arXiv:${encodeURIComponent(arxivId.replace(/v[0-9]+$/, ""))}?fields=${S2_FIELDS}`);
     if (paper) return paper as S2Paper;
   }
@@ -167,6 +177,7 @@ export interface OpenAlexPaper {
   title?: string;
   abstract?: string;
   oaUrl?: string;
+  oaUrls?: string[];
 }
 
 /** OpenAlex ships abstracts as a word → positions inverted index; rebuild the text. */
@@ -181,10 +192,16 @@ function reconstructAbstract(index: unknown): string | undefined {
 }
 
 function openAlexPaperFromWork(work: any): OpenAlexPaper {
+  const urls = [...new Set<string>([
+    work?.best_oa_location?.pdf_url,
+    ...(work?.locations ?? []).filter((location: any) => location.is_oa).map((location: any) => location.pdf_url),
+    work?.open_access?.oa_url,
+  ].filter((url): url is string => typeof url === "string" && /^https?:\/\//i.test(url)))];
   return {
     title: work?.display_name ?? undefined,
     abstract: reconstructAbstract(work?.abstract_inverted_index),
-    oaUrl: work?.best_oa_location?.pdf_url ?? work?.locations?.find((location: any) => location.is_oa && location.pdf_url)?.pdf_url ?? work?.open_access?.oa_url ?? undefined,
+    oaUrl: urls[0],
+    ...(urls.length > 1 ? { oaUrls: urls.slice(0, 6) } : {}),
   };
 }
 
@@ -364,27 +381,23 @@ export async function ensurePaperPdf(projectId: string, projectPath: string, cit
   if (cached && (!stored?.pdfEntryHash || stored.pdfEntryHash === paperEntryHash(entry))) return cached;
   const candidates = new Set<string>();
   if (stored?.oaPdfUrl && (!stored.pdfEntryHash || stored.pdfEntryHash === paperEntryHash(entry))) candidates.add(stored.oaPdfUrl);
-  let rateLimited: RateLimitError | null = null;
-  if (candidates.size === 0) {
-    let s2: S2Paper | null = null;
+  // Bibliographies often already point directly to a repository PDF.
+  const directUrl = entry.fields.url?.trim();
+  if (directUrl) {
     try {
-      s2 = await resolveS2Paper(entry);
-    } catch (err) {
-      // A rate-limited S2 must not block the arXiv fallback below.
-      if (err instanceof RateLimitError) rateLimited = err;
-      s2 = null;
-    }
-    const url = oaPdfUrlFor(entry, s2);
-    if (url) candidates.add(url);
-    if (s2?.url) writePaperRecord(projectId, citeKey, { s2Url: s2.url, oaPdfUrl: url ?? stored?.oaPdfUrl });
+      const url = new URL(directUrl);
+      if (["http:", "https:"].includes(url.protocol) && /\.pdf$/i.test(url.pathname)) candidates.add(url.href);
+    } catch { /* Invalid bibliography URL; continue with provider lookups. */ }
   }
   // The arXiv mirror is a dependable fallback even when S2 lists another URL.
   const arxivId = arxivIdFromEntry(entry);
   if (arxivId) candidates.add(`https://arxiv.org/pdf/${arxivId}`);
-  // Still nothing (S2 rate-limited/no OA link, and the paper isn't on arXiv
-  // either) — OpenAlex is a second, keyless index worth a try before giving up.
+  // Try each repository only once, retaining alternate locations as fallbacks.
+  const attempted = new Set<string>();
   const tryCandidates = async (): Promise<string | null> => {
     for (const url of candidates) {
+      if (attempted.has(url)) continue;
+      attempted.add(url);
       const buf = await downloadPdf(url);
       assertResearchActive();
       if (!buf) continue;
@@ -398,12 +411,27 @@ export async function ensurePaperPdf(projectId: string, projectPath: string, cit
   };
   const downloaded = await tryCandidates();
   if (downloaded) return downloaded;
+  let rateLimited: RateLimitError | null = null;
+  {
+    let s2: S2Paper | null = null;
+    try {
+      s2 = await resolveS2Paper(entry);
+    } catch (err) {
+      // A rate-limited S2 must not block the other repositories.
+      if (err instanceof RateLimitError) rateLimited = err;
+      s2 = null;
+    }
+    const url = oaPdfUrlFor(entry, s2);
+    if (url) candidates.add(url);
+    if (s2?.url) writePaperRecord(projectId, citeKey, { s2Url: s2.url, oaPdfUrl: url ?? stored?.oaPdfUrl });
+  }
+  const fromScholar = await tryCandidates();
+  if (fromScholar) return fromScholar;
   // A stale/blocked S2 link should not prevent trying another index.
   {
     const openAlex = await resolveOpenAlexPaper(entry).catch(() => null);
-    if (openAlex?.oaUrl && !candidates.has(openAlex.oaUrl)) {
-      candidates.clear();
-      candidates.add(openAlex.oaUrl);
+    if (openAlex?.oaUrl) {
+      for (const url of openAlex.oaUrls ?? [openAlex.oaUrl]) candidates.add(url);
       const fallback = await tryCandidates();
       if (fallback) return fallback;
     }

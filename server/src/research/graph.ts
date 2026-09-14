@@ -9,6 +9,7 @@ import { sourceFailure, type SourceFailure } from "./source-failure.js";
 
 import { readMemory } from "./memory.js";
 import { topicRelevance, type TopicRelevance } from "./relevance.js";
+import { collectCitationLocations, type CitationLocation } from "../usage.js";
 import { libraryStatus } from "./library.js";
 
 interface WorkDetails {
@@ -28,6 +29,8 @@ interface WorkDetails {
 export interface GraphNode extends WorkDetails {
   relevance?: TopicRelevance;
   sourceAvailability?: string;
+  manuscriptCitations?: CitationLocation[];
+  metadataWarning?: string;
   id: string;
   keys: string[];
   title: string;
@@ -415,6 +418,7 @@ export async function graphDetails(
   if (!target) throw new Error("Node is not in the project graph.");
   const withAvailability = (node: GraphNode): GraphNode => ({
     ...node,
+    manuscriptCitations: collectCitationLocations(dir, node.keys),
     sourceAvailability: node.keys.length
       ? libraryStatus(id, dir).sources.find((source) =>
           node.keys.includes(source.key),
@@ -426,7 +430,11 @@ export async function graphDetails(
     (target.detailsLoaded && target.metricsVersion === 1)
   )
     return withAvailability(target);
-  const raw = await fetchJson(`https://api.openalex.org/works/${target.id}`);
+  let raw: any;
+  try { raw = await fetchJson(`https://api.openalex.org/works/${target.id}`); }
+  catch (error) {
+    return { ...withAvailability(target), metadataWarning: error instanceof Error ? error.message : String(error) };
+  }
   const work = workRecord(raw, false, true);
   if (work.id !== target.id)
     throw new Error("OpenAlex returned a different work");
@@ -444,6 +452,7 @@ export async function graphDetails(
 export const graphQuerySchema = z.object({
   query: z.enum([
     "overview",
+    "citations",
     "neighbors",
     "shared_references",
     "missing",
@@ -495,6 +504,11 @@ export function queryGraph(id: string, dir: string, input: GraphQuery) {
         ? args.offset + args.limit
         : undefined,
   });
+  if (args.query === "citations") {
+    const node = byId.get(resolve(args.node))!;
+    return { ...meta, node, ...page(collectCitationLocations(dir, node.keys)),
+      note: "Current LaTeX citation locations. Bibliography inclusions (nocite) are labeled separately from citations. These are manuscript passages, not evidence from the cited paper." };
+  }
   if (args.query === "overview")
     return {
       ...meta,

@@ -98,6 +98,24 @@ describe("structured directed citation graph", () => {
     expect(g.readGraph("p1", dir).edges).toEqual(before);
     await expect(g.graphDetails("p1", dir, "W99999")).rejects.toThrow("not in the project graph");
   });
+  it("reads current manuscript citations locally, including when metadata is offline", async () => {
+    const g = await import("../src/research/graph.js");
+    await g.buildGraph("p1", dir);
+    const source = String.raw`Related work.
+We build on \cite{alpha}.
+% \cite{alpha}
+\nocite{alpha}`;
+    writeFileSync(join(dir, "main.tex"), source);
+    const result = g.queryGraph("p1", dir, { query: "citations", node: "alpha", limit: 1 });
+    expect(result).toMatchObject({ total: 2, nextOffset: 1, results: [{ file: "main.tex", line: 2, kind: "citation" }] });
+    vi.mocked(fetch).mockRejectedValue(new Error("Provider offline"));
+    const details = await g.graphDetails("p1", dir, "alpha");
+    expect(details.manuscriptCitations).toHaveLength(2);
+    expect(details.manuscriptCitations?.[1]).toMatchObject({ line: 4, kind: "bibliography" });
+    expect(readFileSync(join(dir, "main.tex"), "utf8")).toBe(source);
+    writeFileSync(join(dir, "main.tex"), "No longer cited.");
+    expect((await g.graphDetails("p1", dir, "alpha")).manuscriptCitations).toEqual([]);
+  });
   it("retries failed metadata in batches without refetching resolved sources", async () => {
     const g = await import("../src/research/graph.js");
     vi.mocked(fetch).mockImplementation(async url => {

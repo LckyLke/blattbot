@@ -62,6 +62,18 @@ export async function verifyGraphExplorer(
         json: {
           ...found,
           detailsLoaded: true,
+          manuscriptCitations: found?.inProject
+            ? [
+                {
+                  key: found.keys[0],
+                  file: "main.tex",
+                  line: 2,
+                  column: 1,
+                  kind: "citation",
+                  excerpt: "Fixture passage citing this work.",
+                },
+              ]
+            : [],
           abstract:
             "We study relational structure using message passing. The evaluation covers three benchmark datasets; generalization beyond these datasets remains untested.",
           retrievedAt: graph.at,
@@ -123,10 +135,36 @@ export async function verifyGraphExplorer(
     await explorer.getByText(/We study relational structure/).waitFor();
     if (detailCalls !== 1)
       throw new Error(`Expected one selected-paper lookup, got ${detailCalls}`);
+    await explorer
+      .getByRole("tab", { name: "Connections", exact: true })
+      .click();
     await explorer.getByLabel("Neighborhood depth").selectOption("1");
     await explorer.getByLabel("Connection direction").selectOption("incoming");
     await explorer.getByRole("button", { name: "Fit graph" }).click();
     await page.screenshot({ path: join(shots, "13-graph-paper-details.png") });
+    const divider = explorer.getByRole("separator", {
+      name: "Resize paper panel",
+    });
+    const panel = explorer.getByRole("complementary", {
+      name: "Paper details",
+    });
+    const widthBefore = (await panel.boundingBox())!.width;
+    await divider.focus();
+    await divider.press("ArrowLeft");
+    if ((await panel.boundingBox())!.width < widthBefore + 20)
+      throw new Error("Keyboard panel resize failed");
+    const separatorBounds = (await divider.boundingBox())!;
+    await page.mouse.move(
+      separatorBounds.x + separatorBounds.width / 2,
+      separatorBounds.y + 90,
+    );
+    await page.mouse.down();
+    await page.mouse.move(separatorBounds.x - 60, separatorBounds.y + 90, {
+      steps: 8,
+    });
+    await page.mouse.up();
+    if ((await panel.boundingBox())!.width < widthBefore + 75)
+      throw new Error("Pointer panel resize failed");
     // Keyboard-accessible result lists and filters still work for nodes beyond the old cap.
     await explorer.getByRole("button", { name: "Close paper details" }).click();
     await search.fill("10.1234/paper1842");
@@ -137,7 +175,12 @@ export async function verifyGraphExplorer(
       })
       .waitFor();
     await search.fill("");
-    await explorer.getByLabel("Graph layout").selectOption("timeline");
+    for (const mode of ["clusters", "radial", "timeline"]) {
+      await explorer.getByLabel("Graph layout").selectOption(mode);
+      await page.waitForFunction(
+        () => !document.querySelector(".cg-layout-status"),
+      );
+    }
     await explorer.getByLabel("Paper scope").selectOption("project");
     await explorer.getByLabel("Published since year").fill("2020");
     await explorer.getByRole("button", { name: "Fit graph" }).click();
@@ -151,7 +194,43 @@ export async function verifyGraphExplorer(
         for (let x = 20; x < stage.width - 20 && !hit; x += 18) {
           await page.mouse.move(stage.x + x, stage.y + y);
           if (await explorer.locator(".cg-tooltip").count()) {
-            await page.mouse.click(stage.x + x, stage.y + y);
+            const title = await explorer
+              .locator(".cg-tooltip strong")
+              .innerText();
+            // First move, then force a metadata poll and move again. This catches
+            // drag handlers being removed by metadata-only graph refreshes.
+            const target = { x: stage.x + x + 60, y: stage.y + y + 35 };
+            await page.mouse.down();
+            await page.mouse.move(target.x, target.y, { steps: 12 });
+            await page.mouse.up();
+            await page.mouse.move(target.x + 20, target.y + 20);
+            await page.mouse.move(target.x, target.y);
+            await page.waitForFunction(
+              (title) =>
+                document.querySelector(".cg-tooltip strong")?.textContent ===
+                title,
+              title,
+            );
+            graph.nodes[0].venue = "Updated venue";
+            // The production poll is 15 seconds when ready.
+            await page.waitForResponse((response) =>
+              response.url().endsWith(`/research/graph`),
+            );
+            await page.waitForTimeout(100);
+            await page.mouse.move(target.x, target.y);
+            await page.mouse.down();
+            await page.mouse.move(target.x + 60, target.y + 35, { steps: 12 });
+            await page.mouse.up();
+            await page.mouse.move(target.x + 80, target.y + 55);
+            await page.mouse.move(target.x + 60, target.y + 35);
+            await page.waitForFunction(
+              (title) =>
+                document.querySelector(".cg-tooltip strong")?.textContent ===
+                title,
+              title,
+            );
+            await page.waitForTimeout(300);
+            await page.mouse.click(target.x + 60, target.y + 35);
             hit = true;
           }
         }
@@ -159,6 +238,13 @@ export async function verifyGraphExplorer(
     await explorer
       .getByRole("button", { name: "Close paper details" })
       .waitFor();
+    await explorer
+      .getByRole("tab", { name: "In your draft", exact: true })
+      .click();
+    await explorer
+      .getByText("Fixture passage citing this work.", { exact: true })
+      .waitFor();
+    await page.screenshot({ path: join(shots, "16-graph-manuscript.png") });
     const downloadPromise = page.waitForEvent("download");
     await explorer.getByRole("button", { name: "Export JSON" }).click();
     const downloaded = await downloadPromise;
@@ -167,6 +253,19 @@ export async function verifyGraphExplorer(
     );
     if (exported.nodes.length !== 5000 || exported.edges.length !== 20000)
       throw new Error("Export omitted graph data");
+    await explorer
+      .getByRole("button", { name: /Fixture passage citing this work/ })
+      .click();
+    await page.waitForFunction(() => !document.querySelector("dialog:modal"));
+    await page.locator(".cm-content").waitFor();
+    // Return to the explorer and check Escape independently from source navigation.
+    await page
+      .getByRole("tab", { name: "Research", exact: true })
+      .first()
+      .click();
+    await explorer
+      .getByRole("button", { name: "Open graph full screen" })
+      .click();
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => !document.querySelector("dialog:modal"));
     if (

@@ -552,6 +552,7 @@ export default function ResearchPanel({
           )}
           {tab === "graph" && (
             <CitationGraph
+              onJump={onJump}
               projectId={projectId}
               busy={busy}
               stamp={refreshVersion}

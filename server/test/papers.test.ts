@@ -262,13 +262,10 @@ describe("getTldr", () => {
 });
 
 describe("s2Get rate-limit pacing", () => {
-  // resolveS2Paper tries DOI, then arXiv, then title — up to three sequential
-  // calls for one entry when the earlier ones 404. A personal key's
-  // introductory limit is 1 req/sec, so firing all three back-to-back can
-  // 429 even with a perfectly valid key unless they are paced apart.
+  // Known identifiers share one batch; a title fallback still shares its quota.
   const PACED_ENTRY = { fields: { doi: "10.1234/paced", eprint: "2106.06935", title: "Paced Paper" } };
 
-  it("paces sequential lookups ~1.1s apart once a personal key is set", async () => {
+  it("batches DOI and arXiv together and paces the title fallback", async () => {
     const { saveSettings } = await import("../src/settings.js");
     saveSettings({ s2ApiKey: "test-key" });
     const papers = await load();
@@ -277,8 +274,13 @@ describe("s2Get rate-limit pacing", () => {
     try {
       vi.stubGlobal(
         "fetch",
-        vi.fn(async () => {
+        vi.fn(async (url, init) => {
           callTimes.push(Date.now());
+          if (String(url).includes("/paper/batch")) {
+            expect(init?.method).toBe("POST");
+            expect(JSON.parse(String(init?.body))).toEqual({ ids: ["DOI:10.1234/paced", "ARXIV:2106.06935"] });
+            return jsonRes(200, [null, null]);
+          }
           return jsonRes(404, {});
         }),
       );
@@ -288,9 +290,8 @@ describe("s2Get rate-limit pacing", () => {
     } finally {
       vi.useRealTimers();
     }
-    expect(callTimes.length).toBe(3);
+    expect(callTimes.length).toBe(2);
     expect(callTimes[1] - callTimes[0]).toBeGreaterThanOrEqual(1100);
-    expect(callTimes[2] - callTimes[1]).toBeGreaterThanOrEqual(1100);
   });
 
   it("does not pace requests when no key is configured — the shared pool isn't a per-caller quota", async () => {
@@ -399,6 +400,36 @@ describe("ensurePaperPdf", () => {
       throw new Error("network must not be hit");
     }));
     await expect(papers.ensurePaperPdf("proj1", projectDir, "zhu2021nbfnet")).resolves.toBe(path);
+  });
+
+  it("reads a direct bibliography PDF without calling a metadata provider", async () => {
+    const papers = await load();
+    const bib = `@inproceedings{definition, title={A Definition of Knowledge Graphs}, url={https://repository.example/paper4.pdf?download=1}}`;
+    writeBib(bib);
+    vi.stubGlobal("fetch", vi.fn(async url => {
+      expect(String(url)).toBe("https://repository.example/paper4.pdf?download=1");
+      return pdfRes();
+    }));
+    const path = await papers.ensurePaperPdf("proj1", projectDir, "definition");
+    expect(existsSync(path)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("tries another OpenAlex repository when the preferred PDF is blocked", async () => {
+    const papers = await load();
+    writeBib(`@article{fallback, title={Repository Paper}, doi={10.1234/fallback}}`);
+    vi.stubGlobal("fetch", vi.fn(async url => {
+      if (String(url).includes("semanticscholar")) return jsonRes(404, {});
+      if (String(url).includes("openalex")) return jsonRes(200, {
+        display_name: "Repository Paper",
+        best_oa_location: { pdf_url: "https://repository.example/blocked.pdf" },
+        locations: [{ is_oa: true, pdf_url: "https://repository.example/available.pdf" }],
+      });
+      if (String(url).endsWith("available.pdf")) return pdfRes();
+      return jsonRes(403, {});
+    }));
+    expect(existsSync(await papers.ensurePaperPdf("proj1", projectDir, "fallback"))).toBe(true);
+    expect(papers.readPaperStore("proj1").fallback.oaPdfUrl).toBe("https://repository.example/available.pdf");
   });
 
   it("rejects HTML masquerading as an open-access PDF", async () => {

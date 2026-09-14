@@ -36,14 +36,18 @@ interface Bucket {
 const buckets = new Map<string, Bucket>();
 const cache = new Map<string, { expires: number; value: any }>();
 let queue: Promise<unknown> = Promise.resolve();
-export async function semanticScholarGet(
+async function semanticScholarRequest(
   path: string,
-  options: { signal?: AbortSignal; fresh?: boolean } = {},
+  options: {
+    signal?: AbortSignal;
+    fresh?: boolean;
+    body?: { ids: string[] };
+  } = {},
 ): Promise<any | null> {
   if (!path.startsWith("/")) throw new Error("Invalid Semantic Scholar path");
   const key = loadSettings().s2ApiKey.trim();
   const signal = options.signal ?? researchSignal();
-  const cacheKey = `${key}:${path}`;
+  const cacheKey = `${key}:${path}:${options.body ? JSON.stringify(options.body) : ""}`;
   // Share paper metadata between PDF and abstract lookups. Search must reflect
   // the current provider response, including outages and newly indexed papers.
   const cacheable = !path.startsWith("/paper/search");
@@ -63,7 +67,13 @@ export async function semanticScholarGet(
     const response = await fetch(
       `https://api.semanticscholar.org/graph/v1${path}`,
       {
-        headers: key ? { "x-api-key": key } : {},
+        headers: {
+          ...(key ? { "x-api-key": key } : {}),
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+        },
+        ...(options.body
+          ? { method: "POST", body: JSON.stringify(options.body) }
+          : {}),
         signal: signal
           ? AbortSignal.any([signal, AbortSignal.timeout(20_000)])
           : AbortSignal.timeout(20_000),
@@ -89,6 +99,9 @@ export async function semanticScholarGet(
     if (!response.ok && response.status !== 404)
       throw new Error(`Semantic Scholar: HTTP ${response.status}`);
     const value = response.status === 404 ? null : await response.json();
+    if (options.body && (!Array.isArray(value) || value.length !== options.body.ids.length ||
+      value.some(row => row !== null && (typeof row !== "object" || Array.isArray(row)))))
+      throw new Error("Semantic Scholar returned an invalid paper batch response.");
     if (cacheable) {
       if (cache.size >= 500) cache.delete(cache.keys().next().value!);
       cache.set(cacheKey, {
@@ -101,6 +114,31 @@ export async function semanticScholarGet(
   const result = queue.then(run, run);
   queue = result.catch(() => {});
   return result;
+}
+
+export function semanticScholarGet(
+  path: string,
+  options: { signal?: AbortSignal; fresh?: boolean } = {},
+) {
+  return semanticScholarRequest(path, options);
+}
+
+/** The supported batch endpoint shares the same key pacing and Retry-After queue. */
+export async function semanticScholarPaperBatch(
+  ids: string[],
+  fields: string,
+  options: { signal?: AbortSignal; fresh?: boolean } = {},
+): Promise<(any | null)[]> {
+  if (!ids.length) return [];
+  const value = await semanticScholarRequest(
+    `/paper/batch?fields=${encodeURIComponent(fields)}`,
+    { ...options, body: { ids } },
+  );
+  if (!Array.isArray(value) || value.length !== ids.length)
+    throw new Error(
+      "Semantic Scholar returned an invalid paper batch response.",
+    );
+  return value;
 }
 export function openAlexHeaders(): Record<string, string> {
   const key =
@@ -120,10 +158,15 @@ export async function checkResearchProvider(
         );
   try {
     if (provider === "semantic-scholar") {
-      const data = await semanticScholarGet(
-        "/paper/ARXIV:1706.03762?fields=title",
-        { fresh: true },
-      );
+      const data = configured
+        ? (
+            await semanticScholarPaperBatch(["ARXIV:1706.03762"], "title", {
+              fresh: true,
+            })
+          )[0]
+        : await semanticScholarGet("/paper/ARXIV:1706.03762?fields=title", {
+            fresh: true,
+          });
       if (!data)
         return {
           provider,

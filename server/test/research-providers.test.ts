@@ -20,6 +20,36 @@ describe("research provider transport", () => {
     expect(times[2] - times[1]).toBeGreaterThanOrEqual(1100);
     await semanticScholarGet("/paper/1"); expect(fetch).toHaveBeenCalledTimes(3);
   });
+  it("caches batch identities separately and shares pacing with searches", async () => {
+    vi.useFakeTimers();
+    const { saveSettings } = await import("../src/settings.js"); saveSettings({ s2ApiKey: "fixture-private-key" });
+    const { semanticScholarPaperBatch, semanticScholarGet } = await import("../src/research-providers.js");
+    const times: number[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url, init) => {
+      times.push(Date.now());
+      if (String(url).includes("/batch")) {
+        expect(init?.method).toBe("POST");
+        const ids = JSON.parse(String(init?.body)).ids;
+        return json(ids.map((id: string) => id === "missing" ? null : { title: id }));
+      }
+      return json({ data: [] });
+    }));
+    expect(await semanticScholarPaperBatch(["a", "missing"], "title")).toEqual([{ title: "a" }, null]);
+    await semanticScholarPaperBatch(["a", "missing"], "title");
+    const calls = Promise.all([semanticScholarPaperBatch(["b"], "title"), semanticScholarGet("/paper/search?query=b")]);
+    await vi.advanceTimersByTimeAsync(2300);
+    expect((await calls)[0]).toEqual([{ title: "b" }]);
+    expect(times).toHaveLength(3);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(1100);
+    expect(times[2] - times[1]).toBeGreaterThanOrEqual(1100);
+  });
+  it("does not cache a malformed batch as paper metadata", async () => {
+    const { semanticScholarPaperBatch } = await import("../src/research-providers.js");
+    vi.stubGlobal("fetch", vi.fn(async () => json({ error: "Bad response" })));
+    await expect(semanticScholarPaperBatch(["a"], "title")).rejects.toThrow("invalid paper batch");
+    vi.mocked(fetch).mockResolvedValue(json([{ title: "Paper A" }]));
+    expect(await semanticScholarPaperBatch(["a"], "title")).toEqual([{ title: "Paper A" }]);
+  });
   it("shares Retry-After cooldown and describes a configured key accurately", async () => {
     vi.useFakeTimers();
     const { saveSettings } = await import("../src/settings.js"); saveSettings({ s2ApiKey: "fixture-private-key" });

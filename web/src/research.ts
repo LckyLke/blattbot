@@ -188,6 +188,8 @@ export interface GraphNode {
   metricsVersion?: number;
   relevance?: { score: number | null; matchedTerms: string[]; basis: "title" | "title_abstract" };
   sourceAvailability?: string;
+  metadataWarning?: string;
+  manuscriptCitations?: { key: string; file: string; line: number; column: number; kind: "citation" | "bibliography"; excerpt: string }[];
   id: string;
   keys: string[];
   title: string;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claimContextAtLine, scanCiteUsage, usageReport } from "../src/usage.js";
+import { claimContextAtLine, scanCitationLocations, scanCiteUsage, usageReport } from "../src/usage.js";
 
 describe("scanCiteUsage", () => {
   it("counts plain \\cite commands per key per file", () => {
@@ -134,5 +134,29 @@ describe("extended citation families", () => {
   it("does not count citation examples inside verbatim or commented environments", () => {
     const usage = scanCiteUsage([{ file: "main.tex", content: String.raw`\verb|\cite{example}| \begin{verbatim}\cite{example2}\end{verbatim} \cite{real}` }]);
     expect(Object.keys(usage)).toEqual(["real"]);
+  });
+});
+
+describe("manuscript citation locations", () => {
+  it("preserves exact locations, aliases and bibliography-only commands without counting examples", () => {
+    const content = String.raw`% \cite{a}
+\section{Related work}
+We build on \parencites[see]{a}[p. 4]{b} and \cite{a}.
+\begin{verbatim}
+\cite{a}
+\end{verbatim}
+\nocite{a}
+\verb|\cite{a}|`;
+    const locations = scanCitationLocations([{ file: "chapters/related.tex", content },
+      { file: "main.tex", content: String.raw`\cite{b}` }], ["a", "b"]);
+    expect(locations.map(({ key, file, line, column, kind }) => ({ key, file, line, column, kind }))).toEqual([
+      { key: "a", file: "chapters/related.tex", line: 3, column: 13, kind: "citation" },
+      { key: "b", file: "chapters/related.tex", line: 3, column: 13, kind: "citation" },
+      { key: "a", file: "chapters/related.tex", line: 3, column: 46, kind: "citation" },
+      { key: "a", file: "chapters/related.tex", line: 7, column: 1, kind: "bibliography" },
+      { key: "b", file: "main.tex", line: 1, column: 1, kind: "citation" },
+    ]);
+    expect(locations[0].excerpt).toContain("We build on");
+    expect(scanCitationLocations([{ file: "main.tex", content }], ["missing"])).toEqual([]);
   });
 });

@@ -73,7 +73,7 @@ export const RESEARCH_TOOLS = [
   ),
   define(
     "query_citation_graph",
-    "Query the saved directed citation graph as structured JSON. Queries: overview, neighbors (outgoing references/incoming citers/both), shared_references (nodes: >=2 keys or IDs), missing (absent works ranked by how many project works cite them), path (node → target, maxDepth). Pagination uses limit/offset. Node IDs and project citation keys both work. Only loaded indexed edges are queried: missing data is unknown. Citation connections are not evidence of a claim. Build/expand the graph when needed.",
+    "Query the saved directed citation graph as structured JSON. Queries: overview, citations (node: key or ID; current manuscript file/line/column, surrounding passage, citation vs bibliography inclusion), neighbors (outgoing references/incoming citers/both), shared_references (nodes: >=2 keys or IDs), missing (absent works ranked by how many project works cite them), path (node → target, maxDepth). Pagination uses limit/offset. Node IDs and project citation keys both work. Only loaded indexed edges are queried: missing data is unknown. Citation connections are not evidence of a claim. Build/expand the graph when needed.",
     graphQuerySchema.shape,
     (ctx, args) => queryGraph(ctx.project.id, ctx.dir, args),
   ),
