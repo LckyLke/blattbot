@@ -44,9 +44,12 @@ export async function semanticScholarGet(
   const key = loadSettings().s2ApiKey.trim();
   const signal = options.signal ?? researchSignal();
   const cacheKey = `${key}:${path}`;
+  // Share paper metadata between PDF and abstract lookups. Search must reflect
+  // the current provider response, including outages and newly indexed papers.
+  const cacheable = !path.startsWith("/paper/search");
   const run = async () => {
     signal?.throwIfAborted();
-    const saved = cache.get(cacheKey);
+    const saved = cacheable ? cache.get(cacheKey) : undefined;
     if (!options.fresh && saved && saved.expires > Date.now())
       return saved.value;
     const bucket = buckets.get(key) ?? { nextAt: 0, cooldownUntil: 0 };
@@ -86,11 +89,13 @@ export async function semanticScholarGet(
     if (!response.ok && response.status !== 404)
       throw new Error(`Semantic Scholar: HTTP ${response.status}`);
     const value = response.status === 404 ? null : await response.json();
-    if (cache.size >= 500) cache.delete(cache.keys().next().value!);
-    cache.set(cacheKey, {
-      expires: Date.now() + (value ? 5 * 60_000 : 60_000),
-      value,
-    });
+    if (cacheable) {
+      if (cache.size >= 500) cache.delete(cache.keys().next().value!);
+      cache.set(cacheKey, {
+        expires: Date.now() + (value ? 5 * 60_000 : 60_000),
+        value,
+      });
+    }
     return value;
   };
   const result = queue.then(run, run);

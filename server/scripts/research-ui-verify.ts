@@ -301,6 +301,8 @@ try {
   await research
     .getByRole("button", { name: "Related Work", exact: true })
     .click();
+  if (await research.locator(".research-task-list").count())
+    throw new Error("Unrelated evidence tasks leaked into Related Work");
   await research
     .locator(".research-checklist")
     .getByLabel("alpha · Graph Models", { exact: true })
@@ -314,6 +316,13 @@ try {
   await tasks.getByRole("button", { name: "Pause", exact: true }).click();
   await tasks.getByText("Paused. Saved items are retained.", { exact: true }).waitFor();
   await page.screenshot({ path: join(shots, "10-tasks.png") });
+  await research.getByRole("button", { name: "Library", exact: true }).click();
+  if (await research.locator(".research-task strong").filter({ hasText: /matrix|outline/ }).count())
+    throw new Error("Related Work tasks leaked into Library");
+  await research.getByRole("button", { name: "Related Work", exact: true }).click();
+  if (await tasks.getAttribute("open") !== null)
+    throw new Error("Task details stayed expanded after switching tabs");
+  await tasks.locator(":scope > summary").click();
   modelDelay = 0;
   await page.waitForTimeout(200);
   await tasks.getByRole("button", { name: "Resume / retry", exact: true }).click();

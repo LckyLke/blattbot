@@ -25,15 +25,22 @@ export function ResearchTasks({
       setPending(undefined);
     }
   }
-  const active = jobs.filter((j) =>
-    ["queued", "running", "paused"].includes(j.state),
-  );
+  const running = jobs.filter((j) =>
+    ["queued", "running"].includes(j.state),
+  ).length;
+  const paused = jobs.filter((j) => j.state === "paused").length;
+  const failed = jobs.filter((j) => j.state === "failed").length;
+  const status = [
+    running && `${running} running`,
+    paused && `${paused} paused`,
+    failed && `${failed} need attention`,
+  ].filter(Boolean).join(" · ");
   if (!jobs.length) return null;
   return (
     <details className="research-task-list">
       <summary>
         Tasks{" "}
-        {active.length ? `· ${active.length} active or paused` : "· up to date"}
+        {status ? `· ${status}` : "· history"}
       </summary>
       {error && <p role="alert" className="research-error">{error}</p>}
       {[...jobs]

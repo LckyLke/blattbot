@@ -278,7 +278,19 @@ export default function ResearchPanel({
         </p>
       )}
       {data && (
-        <ResearchTasks projectId={projectId} jobs={data.jobs} onChanged={load} />
+        <ResearchTasks
+          key={tab}
+          projectId={projectId}
+          jobs={data.jobs.filter((job) => {
+            if (job.kind === "library-index") return tab === "library";
+            if (["evidence", "strict-audit"].includes(job.kind))
+              return tab === "evidence";
+            if (["matrix", "outline"].includes(job.kind))
+              return tab === "literature";
+            return tab === "checks";
+          })}
+          onChanged={load}
+        />
       )}
       {!data ? (
         <Empty>Loading research workspace…</Empty>
