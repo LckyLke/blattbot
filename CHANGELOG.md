@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Updated the website with Research walkthroughs recorded from a real sample project, captions, transcripts and a responsive video player.
+- Fixed live source search selecting the whole query after every keystroke. Codex startup now disables external MCP servers through nested configuration and omits null options, compatible with the current CLI.
+
 - Added optional strict scientific writing readiness: current claim evidence, uncited-assertion audits, versioned user exceptions and an approval gate that also applies to forced approval.
 - Added a persistent full-text paper library with page-located results, optional model-assisted query expansion, explicit coverage and invalidation of changed sources. All backends can query the index.
 - Added durable Research tasks with item checkpoints, pause/cancel/resume, restart recovery and provider-limit pauses. Cancelled requests cannot save late research results.

@@ -136,8 +136,16 @@ export class CodexClient {
   async threadConfig(): Promise<Record<string, unknown>> {
     const { config } = await this.request("config/read", { includeLayers: false });
     const overrides = { ...CODEX_CONFIG };
-    for (const name of Object.keys(config?.mcp_servers ?? {})) {
-      overrides[`mcp_servers.${JSON.stringify(name)}.enabled`] = false;
+    // thread/start accepts nested JSON tables. Quoted dotted paths create a
+    // literal quoted server name in current CLIs, leaving it without a transport.
+    // Drop null optionals: converting JSON null to TOML otherwise produces "".
+    if (Object.keys(config?.mcp_servers ?? {}).length) {
+      overrides.mcp_servers = Object.fromEntries(
+        Object.entries(config.mcp_servers).map(([name, server]) => [
+          name,
+          Object.fromEntries(Object.entries({ ...(server as Record<string, unknown>), enabled: false }).filter(([, value]) => value !== null)),
+        ]),
+      );
     }
     return overrides;
   }

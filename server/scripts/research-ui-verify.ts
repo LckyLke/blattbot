@@ -421,7 +421,9 @@ try {
   await sourceFind.fill("([");
   await page.getByText("Invalid pattern", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Regular expression", exact: true }).click();
-  await sourceFind.fill("results");
+  await sourceFind.fill("");
+  await sourceFind.pressSequentially("results", { delay: 50 });
+  if (await sourceFind.inputValue() !== "results") throw new Error("Live source search replaced previously typed characters");
   await page.locator(".blattbot-source-search").getByText("1/1", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Show replacement", exact: true }).click();
   await page.getByLabel("Replace in source", { exact: true }).fill("findings");

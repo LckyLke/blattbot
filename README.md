@@ -6,7 +6,9 @@ Every change, whether you typed it or the built-in agent made it, lands as a rev
 
 ![BlattBot demo](docs/assets/demo.gif)
 
-*A real agent session: literature search, citations added to the bibliography and cited in the text, then approved and pushed. Sped up.*
+[Watch the Research walkthroughs](https://blattbot.com/#demos) — real app interactions with a sample project; evidence checks and citation data prepared before recording.
+
+*Read the evidence, explore citation connections, and search the source and PDF. An edited overview of the current source build.*
 
 ```
 Overleaf (any instance) ⇄ local git mirror ⇄ editor + Codex agent

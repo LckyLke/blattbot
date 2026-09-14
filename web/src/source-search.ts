@@ -100,8 +100,13 @@ export function sourceSearchPanel(view: EditorView): Panel {
     });
   };
   search.oninput = () => {
+    const start = search.selectionStart;
+    const end = search.selectionEnd;
     commit();
     if (getSearchQuery(view.state).valid) findNext(view);
+    // CodeMirror selects the search input after navigation. During live typing,
+    // restore its caret so the next character extends the query instead of replacing it.
+    search.setSelectionRange(start, end);
   };
   replace.oninput = commit;
   dom.onkeydown = (e) => {

@@ -3,19 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BlattBot · an agentic LaTeX editor</title>
-  <meta name="description" content="BlattBot is a LaTeX editor with Codex built in as its default agent harness. Projects live and compile on your machine. It syncs with any Overleaf when you want it to. Agent edits land as diffs you approve.">
+  <title>BlattBot · research, write and review in LaTeX</title>
+  <meta name="description" content="Read source papers, explore citation graphs and write LaTeX with an AI assistant. Original evidence, local projects and changes you review. Sync with Overleaf when you choose.">
   <link rel="icon" type="image/svg+xml" href="logo.svg">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="BlattBot · an agentic LaTeX editor">
-  <meta property="og:description" content="An agentic LaTeX editor that syncs with any Overleaf. Projects live on your machine. Agent edits land as diffs you approve before anything is pushed.">
+  <meta property="og:title" content="BlattBot · research, write and review in LaTeX">
+  <meta property="og:description" content="Your papers, their evidence and your writing in one local LaTeX workspace. Explore citation graphs, inspect source passages and review every change.">
   <meta property="og:url" content="https://blattbot.com/">
   <meta property="og:image" content="https://blattbot.com/assets/demo-poster.png">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:ital,wght@0,400;0,600;0,700;1,400&display=swap">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="canonical" href="https://blattbot.com/">
+  <link rel="stylesheet" href="styles.css?v=research-20260914">
 </head>
 <body>
 
@@ -25,7 +26,9 @@
     <span class="tex-logo brand-mark">Bl<span class="up">a</span>ttB<span class="down">o</span>t</span>
   </a>
   <nav class="site-nav" aria-label="Site">
-    <a href="#how">How it works</a>
+    <a href="#research">Research</a>
+    <a href="#demos">Demos</a>
+    <a href="#how">Get started</a>
     <a href="https://github.com/lckylke/blattbot">GitHub</a>
   </nav>
 </header>
@@ -35,7 +38,8 @@
   <section class="hero">
     <img class="hero-leaf" src="logo.svg" alt="" width="34" height="64">
     <h1 class="tex-logo hero-mark" aria-label="BlattBot"><span class="lt">B</span><span class="lt">l</span><span class="lt"><span class="up">a</span></span><span class="lt">t</span><span class="lt">t</span><span class="lt">B</span><span class="lt"><span class="down">o</span></span><span class="lt">t</span></h1>
-    <p class="claim">An agentic LaTeX editor <em>that syncs with any Overleaf</em>.</p>
+    <p class="claim">Read the papers. Connect the ideas.<br><em>Write with the evidence in reach.</em></p>
+    <p class="hero-description">Your sources, your LaTeX and your AI assistant in one local workspace.<br>Connect to Overleaf whenever you need to.</p>
 
     <button class="install" id="install" type="button" aria-label="Copy the command npx blattbot to the clipboard">
       <span class="install-prompt" aria-hidden="true">$</span>
@@ -45,18 +49,65 @@
     <p class="visually-hidden" role="status" id="copy-status"></p>
 
     <p class="subline">Runs on your machine with Codex, Claude Code, or your own model endpoint.</p>
+    <p class="release-note">Research preview · The demos show the latest source build.<br><a href="https://github.com/LckyLke/blattbot#install-from-source">Get the Research preview <span aria-hidden="true">↗</span></a> · <code>npx</code> installs the stable release.</p>
 
-    <figure class="shot hero-shot">
-      <video autoplay muted loop playsinline preload="auto"
-             poster="assets/demo-poster.png" width="1440" height="900"
-             aria-label="Screen recording of a BlattBot session. A project opens with the chat on the left and the compiled PDF on the right. A prompt asking for three papers is typed, the agent searches the literature, edits, compiles, the PDF updates with the new citations, and the change is reviewed and pushed to Overleaf.">
-        <source src="assets/demo.mp4" type="video/mp4">
-      </video>
-      <figcaption><span class="fig-n">Figure 1:</span> a real agent session: literature search, three citations added and cited in the text, approved and pushed.</figcaption>
-    </figure>
+    <div class="demo-showcase hero-shot" id="demos">
+      <div class="demo-heading"><span class="eyebrow">Inside BlattBot</span><span>Three short walkthroughs</span></div>
+      <div class="demo-tabs" role="tablist" aria-label="Product walkthroughs">
+        <button id="demo-evidence" role="tab" aria-selected="true" aria-controls="demo-panel" data-demo="evidence"><span>01</span> Read &amp; verify</button>
+        <button id="demo-graph" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo="graph"><span>02</span> Connect your sources</button>
+        <button id="demo-writing" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo="writing"><span>03</span> Find &amp; refine</button>
+      </div>
+      <figure class="shot demo-player" id="demo-panel" role="tabpanel" aria-labelledby="demo-evidence" tabindex="0">
+        <video id="walkthrough" muted loop playsinline controls preload="metadata"
+               poster="assets/evidence-poster.webp" width="1600" height="1000"
+               aria-label="Read and verify: inspect cited claims, open their original evidence and search the paper library.">
+          <source src="assets/evidence.mp4" type="video/mp4">
+          <track kind="captions" src="assets/evidence.vtt" srclang="en" label="English">
+          Your browser cannot play this video. <a href="assets/evidence.mp4">Download the walkthrough.</a>
+        </video>
+        <figcaption id="demo-caption">Follow a citation back to the paper, then find relevant passages across your library.</figcaption>
+      </figure>
+      <div class="demo-meta"><span>Actual app · sample project · silent, edited walkthroughs</span><button id="demo-play" type="button">Play walkthrough <span aria-hidden="true">▶</span></button></div>
+      <details class="demo-transcript"><summary>Read the walkthrough</summary><ol id="demo-transcript"><li>Open Evidence to inspect the status of cited passages in the draft.</li><li>Expand an assessment and open its quoted source passage with the PDF page number.</li><li>Search the indexed library for passages from the project’s papers.</li><li>Turn on strict mode to keep unresolved evidence visible before approval.</li></ol><p>Evidence assessments and the citation index are prepared before recording. Model checks remain fallible; read the source and review the result.</p></details>
+      <noscript><p class="demo-transcript">Watch: <a href="assets/evidence.mp4">Read &amp; verify</a> · <a href="assets/graph.mp4">Connect your sources</a> · <a href="assets/writing.mp4">Find &amp; refine</a>.</p></noscript>
+    </div>
   </section>
 
   <hr class="booktabs" aria-hidden="true">
+
+  <section class="feature" id="research" aria-labelledby="f-evidence">
+    <div class="feature-text">
+      <p class="eyebrow">\section{evidence}</p>
+      <h2 id="f-evidence">A citation should lead somewhere.</h2>
+      <p>Open the source behind a sentence. BlattBot reads available paper text, checks the claim against it and keeps the quotation and page number alongside its assessment.</p>
+      <p>Missing papers, abstract-only access and uncertain evidence stay visible. Optional strict mode holds approval until you resolve the open passages or record your reason for an exception.</p>
+      <a class="text-link" href="#demos" data-watch="evidence">Watch the evidence walkthrough <span aria-hidden="true">↗</span></a>
+    </div>
+    <figure class="shot">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the evidence workspace"><img src="assets/research-evidence.webp" width="1600" height="1000" loading="lazy" alt="The current BlattBot workspace showing a manuscript beside its source-backed evidence assessment and original quotation."></button>
+      <figcaption>From the sentence in your draft to the passage in the paper.</figcaption>
+    </figure>
+  </section>
+
+  <section class="feature flip" aria-labelledby="f-graph">
+    <div class="feature-text">
+      <p class="eyebrow">\section{connections}</p>
+      <h2 id="f-graph">See the literature around your literature.</h2>
+      <p>The citation graph builds automatically for existing projects. Explore connections between your papers, compare shared references and find works they cite that are still missing from your bibliography.</p>
+      <p>Your assistant can query the same graph: neighbors, shared references, citation paths and missing sources. Every connection keeps its provenance.</p>
+      <a class="text-link" href="#demos" data-watch="graph">Explore the graph walkthrough <span aria-hidden="true">↗</span></a>
+    </div>
+    <figure class="shot">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the citation graph"><img src="assets/research-graph.webp" width="1600" height="1000" loading="lazy" alt="An interactive citation graph of BERT and T5 literature, distinguishing project papers from external references."></button>
+      <figcaption>Arrows mean “cites.” A connection is a reading lead, not evidence for a claim.</figcaption>
+    </figure>
+  </section>
+
+  <section class="research-workflow" aria-labelledby="f-related">
+    <div><p class="eyebrow">\section{related_work}</p><h2 id="f-related">Give the writing a foundation.</h2><p>Compare the papers before asking for the paragraph.</p></div>
+    <ol class="workflow-steps"><li><span>01</span><h3>Read &amp; compare</h3><p>Build a literature matrix of methods, data, results and limitations, with original quotations.</p></li><li><span>02</span><h3>Review the outline</h3><p>Check the comparison and approve a plan that makes gaps and incomparable results explicit.</p></li><li><span>03</span><h3>Write &amp; review</h3><p>Draft Related Work from the reviewed material. Read the diff and decide what belongs in your paper.</p></li></ol>
+  </section>
 
   <section class="feature" aria-labelledby="f-proof">
     <div class="feature-text">
@@ -65,11 +116,11 @@
       <p>The agent works in a local git checkout and compiles after editing to check its own work. You can watch the diff grow during the turn. Keep what you want and discard the rest — as a text diff or as a rendered PDF diff that highlights the pages that visually changed. On a connected project, approved changes are pushed to Overleaf with a normal history entry; if Overleaf changed in the meantime, a conflicting push is blocked until you resolve it.</p>
     </div>
     <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge figure 2">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the review diff">
         <img src="assets/review-proof.png" width="1600" height="1000" loading="lazy"
              alt="The chat on the left with the agent's full turn, reading files, editing, compiling and summarizing its changes. On the right the Proof tab with diffs for main.tex and refs.bib, a commit message field, and buttons to approve and push or discard.">
       </button>
-      <figcaption><span class="fig-n">Figure 2:</span> an actual edit. The full turn on the left, the diff it produced on the right, ready to approve and push.</figcaption>
+      <figcaption>an actual edit. The full turn on the left, the diff it produced on the right, ready to approve and push.</figcaption>
     </figure>
   </section>
 
@@ -77,14 +128,14 @@
     <div class="feature-text">
       <p class="eyebrow">\section{editor}</p>
       <h2 id="f-editor">A full editor on its own</h2>
-      <p>Projects can live entirely on your machine. Saving triggers a compile and the PDF sits next to the source. Double-click a line in the PDF to jump back to the code, or send a sentence from the PDF into the chat.</p>
+      <p>Keep LaTeX and the compiled PDF side by side. Ctrl/Cmd+F searches the pane you are using, with match counts, case and whole-word options. Source search adds regular expressions and replacement; PDF search handles ligatures and line hyphenation with precise, persistent highlights.</p>
     </div>
     <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge figure 3">
-        <img src="assets/editor-source-pdf.png" width="1600" height="1000" loading="lazy"
+      <button class="figure-zoom" type="button" aria-label="Enlarge source and PDF search">
+        <img src="assets/editor-search.webp" width="1600" height="1000" loading="lazy"
              alt="Source and PDF side by side. A LaTeX file with syntax highlighting in the editor pane and the freshly compiled document in the PDF pane.">
       </button>
-      <figcaption><span class="fig-n">Figure 3:</span> the source beside the compiled PDF.</figcaption>
+      <figcaption>Find the passage, refine the source, inspect the compiled result.</figcaption>
     </figure>
   </section>
 
@@ -95,11 +146,11 @@
       <p>Search OpenAlex, Semantic Scholar, DBLP, and Crossref from inside the app. Each paper comes with a one-line summary so you can judge relevance quickly. New entries are deduped and normalized on the way in, and a citation audit checks each one against Crossref and OpenAlex, badging it verified, unresolved, or mismatched. The References tab shows where every entry is cited and flags the ones that never get used. BibTeX import and export are there too.</p>
     </div>
     <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge figure 4">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the references workspace">
         <img src="assets/references-usage.png" width="1600" height="1000" loading="lazy"
              alt="The References tab beside the chat, listing four bibliography entries with cite keys, years and usage counts, three of them just added by the agent, each with PDF, TL;DR and edit actions next to Import and Export buttons.">
       </button>
-      <figcaption><span class="fig-n">Figure 4:</span> the References tab after the turn. Three entries the agent found and added, each already cited.</figcaption>
+      <figcaption>the References tab after the turn. Three entries the agent found and added, each already cited.</figcaption>
     </figure>
   </section>
 
@@ -110,11 +161,11 @@
       <p>Overleaf.com works, and so does a self-hosted server — even without a git bridge, through your existing browser session. Pushes update documents in place, so comments, tracked changes, and history survive, and a Verify button runs Overleaf's own compiler on the pushed state. You can keep several accounts side by side. When a local project is ready to share, publish it to Overleaf.</p>
     </div>
     <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge figure 5">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the project dashboard">
         <img src="assets/dashboard-accounts.png" width="1600" height="1000" loading="lazy"
              alt="The projects dashboard with an Overleaf account section listing five projects, two of them connected and the rest with an Import button, a separate section for local and git projects, and buttons to add an account, create a blank project, or connect a git repository.">
       </button>
-      <figcaption><span class="fig-n">Figure 5:</span> a workspace of several projects, two imported and the rest one click away.</figcaption>
+      <figcaption>a workspace of several projects, two imported and the rest one click away.</figcaption>
     </figure>
   </section>
 
@@ -125,15 +176,22 @@
       <p>The server listens on loopback only and requires a token on every request. Secrets live in your data dir with <code>0600</code> permissions. Every turn shows what it cost, and a disclosure generator writes an AI-use statement from your actual usage logs. Source-available under PolyForm Noncommercial.</p>
     </div>
     <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge figure 6">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the agent settings">
         <img src="assets/settings-transparency.png" width="1500" height="920" loading="lazy"
              alt="The Agent settings panel showing the backend, model and endpoint in plain text, the full system prompt BlattBot appends, and the instructions for the Research operating mode.">
       </button>
-      <figcaption><span class="fig-n">Figure 6:</span> the agent settings, system prompt included.</figcaption>
+      <figcaption>the agent settings, system prompt included.</figcaption>
     </figure>
   </section>
 
   <hr class="booktabs" aria-hidden="true">
+
+  <section class="research-details" aria-label="More research tools">
+    <article><h3>Search the full-text library</h3><p>Retrieve passages across indexed papers, with page locations and optional synonyms. Changed sources are excluded until refreshed.</p></article>
+    <article><h3>Leave long checks running</h3><p>Pause, cancel or resume research tasks. Saved progress survives a restart, and service limits pause the work.</p></article>
+    <article><h3>Check more than citation keys</h3><p>Audit bibliography structure and publication identities. Review numerical claims, comparisons and consistency across your manuscript.</p></article>
+    <article><h3>Evaluate the evaluator</h3><p>Run reference cases through the evidence judge. Import your own dataset; quality scores count only reviewed, unchanged labels.</p></article>
+  </section>
 
   <section class="how" id="how" aria-labelledby="how-h">
     <p class="eyebrow">\begin{enumerate}</p>
@@ -144,15 +202,15 @@
     <ol class="steps">
       <li>
         <h3><code>npx blattbot</code></h3>
-        <p>Starts the local server and opens the app.</p>
+        <p>Starts the stable release. For the Research features shown here, <a href="https://github.com/LckyLke/blattbot#install-from-source">install the latest source build</a>.</p>
       </li>
       <li>
         <h3>Create or connect a project</h3>
         <p>Start with a blank local project, or paste an Overleaf link. BlattBot imports the session from your browser.</p>
       </li>
       <li>
-        <h3>Ask, then approve</h3>
-        <p>Ask for an edit and read the diff. Approve it and it's committed.</p>
+        <h3>Read, write, then approve</h3>
+        <p>Attach your sources, explore Research, or ask for an edit. Review the evidence and the diff before approving.</p>
       </li>
     </ol>
     <p class="eyebrow end">\end{enumerate}</p>
@@ -173,6 +231,7 @@
   </div>
 </footer>
 
+<script src="demos.js?v=research-20260914" defer></script>
 <script>
   (function () {
     var btn = document.getElementById('install');
@@ -385,47 +444,6 @@
       });
     });
 
-    // Hero tilt fallback for browsers without CSS scroll-driven animations.
-    // The primary implementation is pure CSS (animation-timeline: view()).
-    var heroVideo = document.querySelector('.hero-shot video');
-    var nativeTimeline = window.CSS && CSS.supports && CSS.supports('animation-timeline: view()');
-    var smallScreen = window.matchMedia('(max-width: 880px)').matches;
-    if (heroVideo && !reduceMotion && !nativeTimeline && !smallScreen && 'IntersectionObserver' in window) {
-      var ticking = false;
-      var near = true;
-
-      function tilt() {
-        ticking = false;
-        var r = heroVideo.getBoundingClientRect();
-        var vh = window.innerHeight || document.documentElement.clientHeight;
-        var entered = (vh - r.top) / Math.min(r.height, vh);
-        var p = Math.max(0, Math.min(1, entered));
-        var rest = 1 - p; // 1 = fully tilted, 0 = flat
-        if (rest < 0.005) {
-          heroVideo.style.transform = '';
-        } else {
-          heroVideo.style.transform =
-            'perspective(1200px) rotateX(' + (7 * rest).toFixed(2) + 'deg) ' +
-            'scale(' + (1 - 0.04 * rest).toFixed(4) + ')';
-        }
-      }
-
-      function queue() {
-        if (near && !ticking) {
-          ticking = true;
-          requestAnimationFrame(tilt);
-        }
-      }
-
-      var hio = new IntersectionObserver(function (entries) {
-        near = entries[0].isIntersecting;
-        if (near) queue();
-      }, { rootMargin: '25% 0px 25% 0px' });
-      hio.observe(heroVideo);
-      window.addEventListener('scroll', queue, { passive: true });
-      window.addEventListener('resize', queue, { passive: true });
-      tilt();
-    }
   })();
 </script>
 

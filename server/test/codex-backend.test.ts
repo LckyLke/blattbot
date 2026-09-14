@@ -72,7 +72,8 @@ describe("Codex background harness", () => {
     const start = log().find((m) => m.method === "thread/start").params;
     expect(start).toMatchObject({ sandbox: "read-only", approvalPolicy: "never" });
     expect(start.cwd).not.toBe(ctx.dir);
-    expect(start.config['mcp_servers."private.server".enabled']).toBe(false);
+    expect(start.config.mcp_servers).toEqual({ "private.server": { command: "unused", enabled: false } });
+    expect(Object.keys(start.config).some(k => k.startsWith("mcp_servers."))).toBe(false);
     expect(start.config["features.shell_tool"]).toBe(false);
     expect(start.dynamicTools.some((t: any) => t.name === "verify_citation_support")).toBe(true);
     expect(start.model).toBeUndefined(); // inherit Codex's configured model
