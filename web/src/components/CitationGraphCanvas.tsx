@@ -229,6 +229,7 @@ export default forwardRef<GraphCamera, Props>(
         model.current.mergeNodeAttributes(dragged, {
           x: point.x + offset.x,
           y: point.y + offset.y,
+          fixed: true,
         });
       };
       const touchMove = (event: TouchCoords) => {
@@ -307,7 +308,7 @@ export default forwardRef<GraphCamera, Props>(
             : undefined;
         graph.addNode(node.id, {
           ...positions.get(node.id),
-          ...(old ? { x: old.x, y: old.y } : {}),
+          ...(old ? { x: old.x, y: old.y, fixed: old.fixed } : {}),
           size: node.inProject
             ? Math.min(9, 4.5 + Math.log2(1 + (degree.get(node.id) ?? 0)) / 2)
             : Math.max(
@@ -343,7 +344,7 @@ export default forwardRef<GraphCamera, Props>(
       model.current = graph;
       const sigma = renderer.current;
       if (!sigma) return;
-      sigma.setCustomBBox(null);
+      if (!preserve) sigma.setCustomBBox(null);
       sigma.setGraph(graph);
       if (!preserve) sigma.getCamera().animatedReset({ duration: duration() });
       let worker: FA2Layout | undefined;

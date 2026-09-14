@@ -217,6 +217,7 @@ export async function verifyGraphExplorer(
               title,
             );
             graph.nodes[0].venue = "Updated venue";
+            graph.nodes[0].year += 1;
             // The production poll is 15 seconds when ready.
             await page.waitForResponse((response) =>
               response.url().endsWith(`/research/graph`),
