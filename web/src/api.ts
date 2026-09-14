@@ -500,6 +500,8 @@ export const api = {
       body: JSON.stringify({ url }),
     }),
   deleteProject: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
+  inlineQuestion: (id: string, body: { selection: string; location: string; context: string; messages: { role: "user" | "assistant"; text: string }[] }, signal?: AbortSignal) =>
+    request<{ answer: string }>(`/api/projects/${id}/inline-question`, { method: "POST", body: JSON.stringify(body), signal }),
   chat: (id: string, message: string, mode?: string, files?: string[], images?: string[]) =>
     request<{ ok: boolean }>(`/api/projects/${id}/chat`, {
       method: "POST",

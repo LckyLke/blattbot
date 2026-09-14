@@ -1322,7 +1322,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   }, [quoteChip]);
 
   return (
-    <div className="flex h-full" data-source-panel onPointerDownCapture={() => { document.documentElement.dataset.findScope = "source"; }} onFocusCapture={() => { document.documentElement.dataset.findScope = "source"; }}>
+    <div className="flex h-full" data-source-panel data-selection-location={sel || "Source"} onPointerDownCapture={() => { document.documentElement.dataset.findScope = "source"; }} onFocusCapture={() => { document.documentElement.dataset.findScope = "source"; }}>
       {!embedded && <aside className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
         {files.length === 0 ? (
           <p className="px-3 py-2 text-xs text-graphite">No files.</p>

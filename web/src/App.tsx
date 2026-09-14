@@ -1,3 +1,4 @@
+import InlineQuestion from "./components/InlineQuestion";
 import { appUrl } from "./urls";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { modelSettingPatch } from "./models";
@@ -1686,6 +1687,7 @@ function AppShell() {
 
   return (
     <div className="flex h-full flex-col">
+      {inProject && <InlineQuestion key={selected!.id} projectId={selected!.id} />}
       <header className="blattbot-header flex h-12 shrink-0 items-center gap-4 border-b border-rule bg-ink-2 px-4">
         {inProject && <button className="mobile-files-toggle" aria-label="Toggle project files" aria-expanded={mobileFiles} onClick={() => setMobileFiles(v => !v)}>{mobileFiles ? "✕" : "☰"}</button>}
         <button

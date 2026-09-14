@@ -366,7 +366,7 @@ function FileDiff({
   const [confirmFile, setConfirmFile] = useState(false);
   const badge = STATUS_BADGE[file.status];
   return (
-    <section className="mb-4">
+    <section className="mb-4" data-selection-location={`${file.path} (diff)`}>
       <div className="booktabs flex w-full items-baseline gap-2 px-1 pb-1 pt-2">
         <button
           onClick={() => setCollapsed((c) => !c)}

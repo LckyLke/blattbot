@@ -839,6 +839,53 @@ async function main() {
     // An outdated conditional save must never overwrite a newer version.
     const staleSave = await afetch(`${apiBase}/projects/${mockProjectId}/file`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "main.tex", content: beforeInline, base: beforeInline }) });
     if (staleSave.status !== 409 || await getFile("main.tex") !== afterInline) throw new Error("Stale inline save overwrote source");
+    if (process.env.INLINE_QUESTION_ONLY === "1") {
+      const chatBefore = JSON.stringify(await getChats());
+      const fileBefore = await getFile("main.tex");
+      const requests: any[] = [];
+      await page.route("**/api/projects/*/inline-question", async route => {
+        requests.push(route.request().postDataJSON());
+        await route.fulfill({ json: { answer: requests.length === 1 ? "This is a **local comment** in the selected passage." : "Here is a short example." } });
+      });
+      const selectedLine = proof().getByText("% edited in green passage", { exact: true });
+      await selectedLine.evaluate(el => {
+        const selection = window.getSelection()!;
+        const range = document.createRange(); range.selectNodeContents(el);
+        selection.removeAllRanges(); selection.addRange(range);
+        el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+      });
+      await page.getByRole("button", { name: "Ask inline", exact: true }).click();
+      const quick = page.getByRole("dialog", { name: "Inline question", exact: true });
+      await quick.getByRole("textbox").fill("What does this mean?");
+      await quick.getByRole("button", { name: "Ask", exact: true }).click();
+      await quick.getByText("local comment", { exact: true }).waitFor();
+      await quick.getByRole("textbox").fill("Can you give an example?");
+      await quick.getByRole("textbox").press("Enter");
+      await quick.getByText("Here is a short example.", { exact: true }).waitFor();
+      if (requests[0].selection !== "% edited in green passage" || !requests[0].location.includes("main.tex") || requests[1].messages.length !== 3) throw new Error("Inline question lost selection or follow-up context");
+      await shot("25c-inline-question-diff");
+      await quick.getByRole("button", { name: "Minimize inline question" }).click();
+      await page.getByRole("button", { name: "Quick question", exact: true }).click();
+      await quick.getByText("Here is a short example.", { exact: true }).waitFor();
+      await quick.getByRole("textbox").press("Escape");
+      await aside().getByRole("tab", { name: "Source", exact: true }).click();
+      const sourceText = page.locator("#pane-panel-source .cm-content");
+      await sourceText.click();
+      await page.keyboard.press("Control+Home");
+      await page.keyboard.press("Shift+End");
+      await page.getByRole("button", { name: "Ask inline", exact: true }).click();
+      await quick.getByRole("textbox").fill("Explain this source line");
+      await quick.getByRole("textbox").press("Enter");
+      await quick.getByText("Here is a short example.", { exact: true }).waitFor();
+      if (!requests[2].selection.includes("documentclass") || !requests[2].location.includes("main.tex:1")) throw new Error("Source selection lacks exact text/location");
+      if (JSON.stringify(await getChats()) !== chatBefore || await getFile("main.tex") !== fileBefore) throw new Error("Inline question changed main chat or source");
+      await page.setViewportSize({ width: 390, height: 844 });
+      await shot("25d-inline-question-mobile");
+      const bounds = await quick.boundingBox();
+      if (!bounds || bounds.x < 0 || bounds.x + bounds.width > 390) throw new Error("Inline question overflows mobile viewport");
+      console.log("✅ Inline question UI passed: diff, source keyboard selection, follow-ups, minimize, mobile, unchanged main chat and paper");
+      return;
+    }
     if (process.env.PROOF_INLINE_ONLY === "1") {
       console.log("✅ Inline Proof checks passed: double-click, double-tap, keyboard, cancel, save, approval guard, stale-write protection");
       return;

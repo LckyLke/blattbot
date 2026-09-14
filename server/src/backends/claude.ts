@@ -821,6 +821,7 @@ export async function runOneShot(prompt: string, images: string[] = [], signal?:
     options: {
       abortController: controller,
       maxTurns: 1,
+      tools: [],
       allowedTools: [],
       permissionMode: "bypassPermissions",
       settingSources: [],

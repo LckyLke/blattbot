@@ -1,3 +1,4 @@
+import { registerInlineQuestions, isInlineQuestionActive } from "./inline-questions.js";
 import { researchJobs, listResearchJobs } from "./research/jobs.js";
 import { registerDeployment } from "./deployment.js";
 import Fastify from "fastify";
@@ -200,6 +201,7 @@ app.addHook("onRequest", async (req, reply) => {
 });
 
 registerDeployment(app, () => listProjects().some((p) =>
+  isInlineQuestionActive(p.id) ||
   isTurnActive(p.id) || listResearchJobs(p.id).some((j) => ["queued", "running"].includes(j.state)),
 ));
 const graphIndexer = new GraphIndexer();
@@ -1669,6 +1671,8 @@ app.delete<{ Params: { id: string; chatId: string } }>(
     return { ok: true, chats: listChats(project.id).map(publicChat), activeChatId: active.id };
   },
 );
+
+registerInlineQuestions(app);
 
 // AI-use disclosure: deterministic facts from the stored chats, composed into
 // a factual paragraph; the agent may polish the phrasing, but any failure
