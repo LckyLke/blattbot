@@ -815,6 +815,34 @@ async function main() {
     // ---- Edit directly in Proof: shared drafts, recovery and an in-flight save ----
     const proof = () => page.locator("#pane-panel-proof");
     const proofEditor = () => proof().getByRole("tabpanel", { name: "Proof editor", exact: true });
+    const addedPassage = () => proof().getByRole("button", { name: /^Edit added passage in main.tex at line/ }).first();
+    const inlineText = () => proof().getByRole("textbox", { name: "Edit added passage in main.tex", exact: true });
+    const beforeInline = await getFile("main.tex");
+    await addedPassage().dblclick();
+    const originalPassage = await inlineText().inputValue();
+    await inlineText().fill(originalPassage + "\n% inline cancelled");
+    if (!await proof().getByRole("button", { name: "Approve & push" }).isDisabled()) throw new Error("Inline draft allowed approval");
+    await inlineText().press("Escape");
+    if (await getFile("main.tex") !== beforeInline) throw new Error("Cancelling inline edit changed source");
+    await addedPassage().dispatchEvent("pointerup", { pointerType: "touch" });
+    await addedPassage().dispatchEvent("pointerup", { pointerType: "touch" });
+    await inlineText().waitFor({ state: "visible" });
+    await inlineText().press("Escape");
+    await addedPassage().focus();
+    await page.keyboard.press("Enter");
+    await inlineText().fill(originalPassage + "\n% edited in green passage");
+    await shot("25b-proof-green-inline-edit");
+    await inlineText().press("Control+Enter");
+    await inlineText().waitFor({ state: "detached" });
+    const afterInline = await getFile("main.tex");
+    if (afterInline !== beforeInline.replace(originalPassage, originalPassage + "\n% edited in green passage")) throw new Error("Inline edit changed unrelated text");
+    // An outdated conditional save must never overwrite a newer version.
+    const staleSave = await afetch(`${apiBase}/projects/${mockProjectId}/file`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "main.tex", content: beforeInline, base: beforeInline }) });
+    if (staleSave.status !== 409 || await getFile("main.tex") !== afterInline) throw new Error("Stale inline save overwrote source");
+    if (process.env.PROOF_INLINE_ONLY === "1") {
+      console.log("✅ Inline Proof checks passed: double-click, double-tap, keyboard, cancel, save, approval guard, stale-write protection");
+      return;
+    }
     const proofSavedBefore = await getFile("main.tex");
     await proof().getByRole("button", { name: /^Edit main\.tex lines? .+ in Proof$/ }).first().click();
     await proofEditor().locator(".cm-content").waitFor({ state: "visible" });

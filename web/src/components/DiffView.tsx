@@ -1,14 +1,27 @@
+import InlineDiffEdit from "./InlineDiffEdit";
 import type { DiffFile, DiffHunk } from "../diff";
 
 /**
  * The hunk line table shared by the Proof panel and the chat's per-edit
  * expander: old/new line numbers, +/− gutter, and the line text.
  */
-export function HunkLines({ hunk }: { hunk: DiffHunk }) {
+export function HunkLines({ hunk, editablePath }: { hunk: DiffHunk; editablePath?: string }) {
   return (
     <table className="w-full border-collapse font-mono text-[12.5px] leading-[1.55]">
       <tbody>
-        {hunk.lines.map((line, li) => (
+        {hunk.lines.map((line, li) => {
+          if (editablePath && line.kind === "add") {
+            if (hunk.lines[li - 1]?.kind === "add") return null;
+            const end = hunk.lines.findIndex((next, index) => index > li && next.kind !== "add");
+            const added = hunk.lines.slice(li, end < 0 ? undefined : end);
+            return <tr key={li} className="bg-leaf/10 text-paper">
+              <td className="w-9 border-r border-rule/60" />
+              <td className="w-9 select-none whitespace-pre border-r border-rule pr-1.5 text-right align-top text-[10px] text-graphite/70">{added.length === 1 ? added[0].newNo : `${added[0].newNo}–${added[added.length - 1].newNo}`}</td>
+              <td className="w-4 select-none whitespace-pre text-center align-top text-leaf">+</td>
+              <td className="pl-1 align-top"><InlineDiffEdit path={editablePath} lines={added} /></td>
+            </tr>;
+          }
+          return (
           <tr
             key={li}
             className={
@@ -38,7 +51,7 @@ export function HunkLines({ hunk }: { hunk: DiffHunk }) {
             </td>
             <td className="whitespace-pre-wrap break-all pl-1 pr-3 align-top">{line.text || " "}</td>
           </tr>
-        ))}
+        );})}
       </tbody>
     </table>
   );

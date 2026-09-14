@@ -489,10 +489,10 @@ export const api = {
     request<ProjectContext>(`/api/projects/${id}/context/upload/${encodeURIComponent(name)}`, {
       method: "DELETE",
     }),
-  saveFile: (id: string, path: string, content: string) =>
+  saveFile: (id: string, path: string, content: string, base?: string) =>
     request<{ ok: boolean; diff: string }>(`/api/projects/${id}/file`, {
       method: "PUT",
-      body: JSON.stringify({ path, content }),
+      body: JSON.stringify({ path, content, base }),
     }),
   cookieViaBrowser: (url: string) =>
     request<{ cookie: string; source: string }>("/api/cookies/browser", {

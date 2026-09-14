@@ -110,3 +110,15 @@ export function buildHunkPatch(file: DiffFile, hunk: DiffHunk): string {
   out.push(hunk.rawHeader, ...hunk.rawLines);
   return out.join("\n") + "\n";
 }
+
+/** Replace only the selected added lines, preserving the file's final newline. */
+export function passageRange(content: string, lines: DiffLine[]): { start: number; end: number; text: string } {
+  const rows = content.split("\n");
+  const first = (lines[0].newNo ?? 0) - 1;
+  if (first < 0 || lines.some((line, i) => rows[first + i] !== line.text)) {
+    throw new Error("This passage has changed. Refresh the diff before editing it.");
+  }
+  const start = rows.slice(0, first).reduce((n, row) => n + row.length + 1, 0);
+  const text = lines.map(line => line.text).join("\n");
+  return { start, end: start + text.length, text };
+}

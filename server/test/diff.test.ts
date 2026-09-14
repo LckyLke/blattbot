@@ -1,3 +1,4 @@
+import { passageRange } from "../../web/src/diff.js";
 import { describe, expect, it } from "vitest";
 import { buildHunkPatch, parseDiff } from "../../web/src/diff.js";
 
@@ -96,5 +97,24 @@ describe("buildHunkPatch", () => {
     expect(patch).toContain("--- /dev/null");
     expect(patch).toContain("+++ b/references.bib");
     expect(patch.endsWith("+}\n")).toBe(true);
+  });
+});
+
+
+describe("inline added passage ranges", () => {
+  it("preserves surrounding lines and the final newline", () => {
+    const source = "before\nnew one\nnew two\nafter\n";
+    const range = passageRange(source, [
+      { kind: "add", text: "new one", newNo: 2 },
+      { kind: "add", text: "new two", newNo: 3 },
+    ]);
+    expect(source.slice(0, range.start) + "replacement" + source.slice(range.end)).toBe("before\nreplacement\nafter\n");
+  });
+  it("supports a new file without a final newline and empty added lines", () => {
+    expect(passageRange("new", [{ kind: "add", text: "new", newNo: 1 }])).toEqual({ start: 0, end: 3, text: "new" });
+    expect(passageRange("before\n\nafter", [{ kind: "add", text: "", newNo: 2 }])).toEqual({ start: 7, end: 7, text: "" });
+  });
+  it("rejects stale passages instead of editing the wrong lines", () => {
+    expect(() => passageRange("before\nchanged", [{ kind: "add", text: "old", newNo: 2 }])).toThrow("changed");
   });
 });

@@ -1,3 +1,4 @@
+import { InlineDiffContext } from "./InlineDiffEdit";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { tabStripKeyDown } from "../a11y";
 import { buildHunkPatch, parseDiff, type DiffFile, type DiffHunk } from "../diff";
@@ -245,6 +246,7 @@ export default function ProofPanel({
           aria-label="Text diff"
           className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
         >
+          <InlineDiffContext.Provider value={{ projectId, busy: busy || acting !== null, onDiff, onSaved }}>
           {files.map((file) => (
             <FileDiff
               key={file.path}
@@ -257,6 +259,7 @@ export default function ProofPanel({
               onJump={onJump}
             />
           ))}
+          </InlineDiffContext.Provider>
           {files.length === 0 && (
             <p className="py-6 text-center text-sm text-graphite">Save your edits to see them in the diff.</p>
           )}
@@ -532,7 +535,7 @@ function HunkBlock({
         </span>
       </div>
       <div className="overflow-x-auto">
-        <HunkLines hunk={hunk} />
+        <HunkLines hunk={hunk} editablePath={file.status !== "deleted" ? file.path : undefined} />
       </div>
     </div>
   );

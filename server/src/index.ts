@@ -1305,7 +1305,7 @@ app.get<{ Params: { id: string }; Querystring: { path?: string } }>(
   },
 );
 
-app.put<{ Params: { id: string }; Body: { path?: string; content?: string } }>(
+app.put<{ Params: { id: string }; Body: { path?: string; content?: string; base?: string } }>(
   "/api/projects/:id/file",
   async (req, reply) => {
     const project = getProject(req.params.id);
@@ -1329,6 +1329,9 @@ app.put<{ Params: { id: string }; Body: { path?: string; content?: string } }>(
       if (!statSync(abs).isFile()) return reply.code(400).send({ error: "not a file" });
     } catch {
       return reply.code(404).send({ error: "no such file" });
+    }
+    if (req.body.base !== undefined && (typeof req.body.base !== "string" || readFileSync(abs, "utf8") !== req.body.base)) {
+      return reply.code(409).send({ error: "This file changed since you opened the passage. Your draft is preserved; open it in Source to reconcile the changes." });
     }
     writeFileSync(abs, content);
     const diff = await git.workingDiff(dir).catch(() => "");
