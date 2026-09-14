@@ -124,7 +124,7 @@ export const RESEARCH_TOOLS = [
   ),
   define(
     "literature_matrix",
-    "Read the project's literature comparison matrix, analyze a paper into source-backed fields, or draft an outline from user-reviewed rows. The user reviews rows and approves the outline in Research. writing_prompt returns the approved writing plan. Never treat unchecked/missing cells as facts.",
+    "Optional literature analysis: read a comparison matrix, analyze a paper into source-backed fields, or draft an outline when requested. These steps are not prerequisites for writing. writing_prompt supports drafting directly into the editable Proof diff; the user edits and approves that draft. Verify original sources and never treat unchecked/missing cells as facts.",
     {
       action: z.enum(["read", "analyze", "outline", "writing_prompt"]),
       key: key.optional(),

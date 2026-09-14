@@ -100,7 +100,9 @@ describe("research HTTP workspace", () => {
     expect(
       (await call("/graph/query", { query: "missing", limit: 9000 })).status,
     ).toBe(400);
-    expect((await call("/writing-prompt")).status).toBe(422);
+    const writing = await call("/writing-prompt");
+    expect(writing.status).toBe(200);
+    expect(((await writing.json()) as { prompt: string }).prompt).toContain("normal editable Proof diff");
   });
   it("never returns Zotero secrets and denies reading them as attached context", async () => {
     expect(

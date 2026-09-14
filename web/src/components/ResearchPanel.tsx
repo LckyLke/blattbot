@@ -14,13 +14,10 @@ import {
 } from "react";
 import { api } from "../api";
 import {
-  matrixFields,
   memoryLabels,
   type Evidence,
-  type MatrixRow,
   type Memory,
   type MemoryFields,
-  type Outline,
   type Quote,
   type ResearchData,
   type ReviewIssue,
@@ -44,7 +41,6 @@ interface Props {
   stamp: number;
   busy: boolean;
   onJump: (file: string, line: number) => void;
-  onWrite: (prompt: string) => void;
 }
 const labels: Record<string, string> = {
   unchecked: "Not checked",
@@ -138,7 +134,6 @@ export default function ResearchPanel({
   stamp,
   busy,
   onJump,
-  onWrite,
 }: Props) {
   const [data, setData] = useState<ResearchData>();
   const [refreshVersion, setRefreshVersion] = useState(0);
@@ -151,7 +146,6 @@ export default function ResearchPanel({
   const [source, setSource] = useState<SourcePage>();
   const [showImage, setShowImage] = useState(false);
   const [imageError, setImageError] = useState(false);
-  const [selected, setSelected] = useState<string[]>([]);
   const alive = useRef(true);
   const operation = useRef(false);
   const generation = useRef(0);
@@ -225,7 +219,6 @@ export default function ResearchPanel({
     ["graph", "Graph"],
     ["evidence", "Evidence"],
     ["library", "Library"],
-    ["literature", "Related Work"],
     ["checks", "Checks"],
     ["memory", "Memory"],
     ["discover", "Discover"],
@@ -286,7 +279,7 @@ export default function ResearchPanel({
             if (["evidence", "strict-audit"].includes(job.kind))
               return tab === "evidence";
             if (["matrix", "outline"].includes(job.kind))
-              return tab === "literature";
+              return false;
             return tab === "checks";
           })}
           onChanged={load}
@@ -384,146 +377,6 @@ export default function ResearchPanel({
                 act={act}
                 open={open}
               />
-            </>
-          )}
-          {tab === "literature" && (
-            <>
-              <p className="research-intro">
-                Choose papers → compare source passages → review each row →
-                approve an outline → write.
-              </p>
-              <div className="research-card">
-                <h3>Papers to compare</h3>
-                <div className="research-checklist">
-                  {data.refs.map((ref) => (
-                    <label key={ref.key}>
-                      <input
-                        type="checkbox"
-                        checked={selected.includes(ref.key)}
-                        onChange={(e) =>
-                          setSelected((prev) =>
-                            e.target.checked
-                              ? [...prev, ref.key]
-                              : prev.filter((k) => k !== ref.key),
-                          )
-                        }
-                      />
-                      <span>
-                        <strong>{ref.key}</strong> · {ref.title}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-                {!data.refs.length && (
-                  <Empty>Add papers in References or Discover first.</Empty>
-                )}
-                <div className="research-actions">
-                  <button
-                    type="button"
-                    className="research-primary"
-                    disabled={!selected.length}
-                    onClick={() =>
-                      void act("Scheduling paper comparison…", () =>
-                        api.research(projectId, "/jobs", {
-                          kind: "matrix",
-                          keys: selected,
-                        }),
-                      )
-                    }
-                  >
-                    Analyze selected papers
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!data.matrix.length}
-                    onClick={() =>
-                      void act("Exporting…", async () => {
-                        const result = await api.research<{ markdown: string }>(
-                          projectId,
-                          "/matrix/export",
-                        );
-                        download("literature-matrix.md", result.markdown);
-                      })
-                    }
-                  >
-                    Export comparison
-                  </button>
-                </div>
-              </div>
-              {data.matrix.map((row) => (
-                <MatrixCard
-                  key={`${row.key}:${row.at}`}
-                  row={row}
-                  open={open}
-                  save={(notes, reviewed) =>
-                    void act("Saving review…", () =>
-                      api.research(
-                        projectId,
-                        "/matrix/review",
-                        { key: row.key, notes, reviewed, at: row.at },
-                        "PUT",
-                      ),
-                    )
-                  }
-                  remove={() =>
-                    void act("Removing row…", () =>
-                      api.research(
-                        projectId,
-                        `/matrix/${encodeURIComponent(row.key)}`,
-                        {},
-                        "DELETE",
-                      ),
-                    )
-                  }
-                />
-              ))}
-              <div className="research-card">
-                <h3>Outline & writing</h3>
-                <p>
-                  Only reviewed, current rows enter the outline. Missing
-                  evidence stays visible.
-                </p>
-                <button
-                  type="button"
-                  disabled={
-                    !data.matrix.length ||
-                    data.matrix.some((row) => !row.reviewed || row.stale)
-                  }
-                  onClick={() =>
-                    void act("Scheduling the outline…", () =>
-                      api.research(projectId, "/jobs", { kind: "outline" }),
-                    )
-                  }
-                >
-                  Generate outline
-                </button>
-                {data.outline && (
-                  <OutlineEditor
-                    key={data.outline.at}
-                    outline={data.outline}
-                    busy={busy}
-                    approve={(text) =>
-                      void act("Saving approved outline…", () =>
-                        api.research(
-                          projectId,
-                          "/outline",
-                          { text, at: data.outline!.at },
-                          "PUT",
-                        ),
-                      )
-                    }
-                    write={() =>
-                      void act("Preparing writing request…", async () => {
-                        const result = await api.research<{ prompt: string }>(
-                          projectId,
-                          "/writing-prompt",
-                        );
-                        onWrite(result.prompt);
-                      })
-                    }
-                  />
-                )}
-              </div>
             </>
           )}
           {tab === "checks" && (
@@ -658,147 +511,6 @@ function EvidenceCard({
         </details>
       )}
     </article>
-  );
-}
-function MatrixCard({
-  row,
-  open,
-  save,
-  remove,
-}: {
-  row: MatrixRow;
-  open: (key: string, page: number) => void;
-  save: (notes: string, reviewed: boolean) => void;
-  remove: () => void;
-}) {
-  const [notes, setNotes] = useState(row.notes);
-  const [reviewed, setReviewed] = useState(row.reviewed);
-  return (
-    <article className="research-card">
-      <div className="research-actions">
-        <h3>{row.key}</h3>
-        <Badge
-          value={
-            row.stale
-              ? "stale"
-              : row.reviewed
-                ? "User reviewed"
-                : "Needs review"
-          }
-        />
-        <button type="button" onClick={remove}>
-          Remove row
-        </button>
-      </div>
-      <p>{row.title}</p>
-      <div className="research-matrix">
-        {matrixFields.map((field) => (
-          <div key={field}>
-            <h4>{field}</h4>
-            <p>{row.fields[field].text}</p>
-            {!!row.fields[field].quotes.length && (
-              <details className="research-cell-source">
-                <summary>
-                  Source passages · {row.fields[field].quotes.length}
-                </summary>
-                <Quotes
-                  quotes={row.fields[field].quotes}
-                  sourceKey={row.key}
-                  open={open}
-                />
-              </details>
-            )}
-          </div>
-        ))}
-      </div>
-      <SourceMeta source={row.source} limited={row.limited} />
-      <label>
-        Review notes
-        <textarea
-          value={notes}
-          maxLength={8000}
-          onChange={(e) => {
-            setNotes(e.target.value);
-            setReviewed(false);
-          }}
-        />
-      </label>
-      <label className="research-inline">
-        <input
-          type="checkbox"
-          checked={reviewed}
-          disabled={row.stale}
-          onChange={(e) => setReviewed(e.target.checked)}
-        />
-        I reviewed these fields against the source, including gaps.
-      </label>
-      <button
-        type="button"
-        className="research-primary"
-        disabled={row.stale}
-        onClick={() => save(notes, reviewed)}
-      >
-        Save row review
-      </button>
-    </article>
-  );
-}
-function OutlineEditor({
-  outline,
-  busy,
-  approve,
-  write,
-}: {
-  outline: Outline;
-  busy: boolean;
-  approve: (text: string) => void;
-  write: () => void;
-}) {
-  const [text, setText] = useState(outline.text);
-  return (
-    <>
-      <Badge
-        value={
-          outline.stale
-            ? "stale"
-            : outline.approved
-              ? "Approved by you"
-              : "Needs approval"
-        }
-      />
-      <label>
-        Outline
-        <textarea
-          rows={10}
-          value={text}
-          maxLength={40000}
-          onChange={(e) => setText(e.target.value)}
-        />
-      </label>
-      <div className="research-actions">
-        <button
-          type="button"
-          disabled={outline.stale || !text.trim()}
-          onClick={() => approve(text)}
-        >
-          Approve this outline
-        </button>
-        <button
-          type="button"
-          disabled={
-            busy || outline.stale || !outline.approved || text !== outline.text
-          }
-          className="research-primary"
-          onClick={write}
-        >
-          Write Related Work in chat
-        </button>
-      </div>
-      <p className="research-meta">
-        Writing uses the usual editable diff. Approve any outline edits before
-        starting.
-      </p>
-    </>
   );
 }
 function MemoryEditor({

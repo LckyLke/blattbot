@@ -1594,7 +1594,7 @@ function AppShell() {
           />
         );
       case "research":
-        return <ResearchPanel key={selectedId!} projectId={selectedId!} stamp={sourceStamp + chat.length} busy={busy} onJump={revealInSource} onWrite={fixWithAgent} />;
+        return <ResearchPanel key={selectedId!} projectId={selectedId!} stamp={sourceStamp + chat.length} busy={busy} onJump={revealInSource} />;
       case "refs":
         return (
           <RefsPanel

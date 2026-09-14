@@ -184,12 +184,11 @@ describe("reviewed literature workflow", () => {
       ),
     };
   }
-  it("requires human-reviewed rows and outline approval before writing", async () => {
+  it("allows direct drafting without row reviews or outline approval", async () => {
     const { m, row } = await analyze();
-    await expect(
-      m.buildOutline("p1", dir, async () => "Outline"),
-    ).rejects.toThrow(/Review every/);
-    expect(() => m.relatedWritingPrompt("p1", dir)).toThrow(/Approve/);
+    expect(m.relatedWritingPrompt("empty", dir)).toContain("normal editable Proof diff");
+    await expect(m.buildOutline("p1", dir, async () => "Outline")).resolves.toMatchObject({ approved: false });
+    expect(m.relatedWritingPrompt("p1", dir)).toContain("Outline");
     m.reviewMatrixRow(
       "p1",
       dir,
@@ -203,13 +202,14 @@ describe("reviewed literature workflow", () => {
       dir,
       async () => "## Baselines\nCompare alpha, preserve dataset qualifiers.",
     );
-    expect(() => m.relatedWritingPrompt("p1", dir)).toThrow(/Approve/);
+    expect(m.relatedWritingPrompt("p1", dir)).toContain("normal editable Proof diff");
     m.approveOutline("p1", dir, outline.text, outline.at);
     expect(m.relatedWritingPrompt("p1", dir)).toContain("Compare alpha");
     const current = m.readMatrix("p1", dir)[0];
     m.reviewMatrixRow("p1", dir, "alpha", "Changed note", true, current.at);
     expect(m.getOutline("p1", dir)?.stale).toBe(true);
-    expect(() => m.relatedWritingPrompt("p1", dir)).toThrow(/Approve/);
+    expect(m.relatedWritingPrompt("p1", dir)).not.toContain("Compare alpha");
+    expect(m.relatedWritingPrompt("p1", dir)).toContain("normal editable Proof diff");
   });
   it("marks unlocatable extracted fields missing", async () => {
     const m = await import("../src/research/matrix.js");

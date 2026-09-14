@@ -298,65 +298,12 @@ try {
   await research.locator(".research-source img").waitFor();
   await page.screenshot({ path: join(shots, "01-evidence.png") });
   await research.getByRole("button", { name: "Close source" }).click();
-  await research
-    .getByRole("button", { name: "Related Work", exact: true })
-    .click();
-  if (await research.locator(".research-task-list").count())
-    throw new Error("Unrelated evidence tasks leaked into Related Work");
-  await research
-    .locator(".research-checklist")
-    .getByLabel("alpha · Graph Models", { exact: true })
-    .check();
-  modelDelay = 1800;
-  await research
-    .getByRole("button", { name: "Analyze selected papers" })
-    .click();
-  const tasks = research.locator(".research-task-list");
-  await tasks.locator(":scope > summary").click();
-  await tasks.getByRole("button", { name: "Pause", exact: true }).click();
-  await tasks.getByText("Paused. Saved items are retained.", { exact: true }).waitFor();
-  await page.screenshot({ path: join(shots, "10-tasks.png") });
+  if (await research.getByRole("button", { name: "Related Work", exact: true }).count())
+    throw new Error("The removed Related Work tab is still visible");
   await research.getByRole("button", { name: "Library", exact: true }).click();
   if (await research.locator(".research-task strong").filter({ hasText: /matrix|outline/ }).count())
-    throw new Error("Related Work tasks leaked into Library");
-  await research.getByRole("button", { name: "Related Work", exact: true }).click();
-  if (await tasks.getAttribute("open") !== null)
-    throw new Error("Task details stayed expanded after switching tabs");
-  await tasks.locator(":scope > summary").click();
-  modelDelay = 0;
-  await page.waitForTimeout(200);
-  await tasks.getByRole("button", { name: "Resume / retry", exact: true }).click();
-  await tasks.locator(":scope > summary").click();
-  await research.getByRole("heading", { name: "alpha", exact: true }).waitFor();
-  await research
-    .getByLabel("Review notes", { exact: true })
-    .fill("Use only the comparable dataset A result.");
-  await research
-    .getByLabel("I reviewed these fields against the source, including gaps.")
-    .check();
-  await research.getByRole("button", { name: "Save row review" }).click();
-  await research.getByRole("button", { name: "Generate outline" }).click();
-  await research
-    .getByRole("button", { name: "Approve this outline" })
-    .waitFor();
-  if (
-    await research
-      .getByRole("button", { name: "Write Related Work in chat" })
-      .isEnabled()
-  )
-    throw new Error("Writing enabled before outline approval");
-  await research.getByRole("button", { name: "Approve this outline" }).click();
-  await research.getByText("Approved by you", { exact: true }).waitFor();
-  if (
-    !(await research
-      .getByRole("button", { name: "Write Related Work in chat" })
-      .isEnabled())
-  )
-    throw new Error("Approved writing action is unavailable");
-  await research
-    .getByRole("button", { name: "Write Related Work in chat" })
-    .scrollIntoViewIfNeeded();
-  await page.screenshot({ path: join(shots, "02-related-work.png") });
+    throw new Error("Optional analysis tasks leaked into Library");
+  await page.screenshot({ path: join(shots, "02-research-library.png") });
   await research.getByRole("button", { name: "Checks", exact: true }).click();
   await research
     .getByRole("button", { name: "Review manuscript", exact: true })
