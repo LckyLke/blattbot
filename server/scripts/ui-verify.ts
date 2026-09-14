@@ -843,8 +843,15 @@ async function main() {
       const chatBefore = JSON.stringify(await getChats());
       const fileBefore = await getFile("main.tex");
       const requests: any[] = [];
+      let releaseInlineAnswer!: () => void;
+      const inlineAnswerGate = new Promise<void>(resolve => { releaseInlineAnswer = resolve; });
       await page.route("**/api/projects/*/inline-question", async route => {
         requests.push(route.request().postDataJSON());
+        if (requests.at(-1).messages.at(-1).text === "Slow question") {
+          await inlineAnswerGate;
+          await route.fulfill({ json: { answer: "Late answer must not reappear" } }).catch(() => {});
+          return;
+        }
         await route.fulfill({ json: { answer: requests.length === 1 ? "This is a **local comment** in the selected passage." : "Here is a short example." } });
       });
       const selectedLine = proof().getByText("% edited in green passage", { exact: true });
@@ -861,12 +868,24 @@ async function main() {
       await quick.getByText("local comment", { exact: true }).waitFor();
       await quick.getByRole("textbox").fill("Can you give an example?");
       await quick.getByRole("textbox").press("Enter");
-      await quick.getByText("Here is a short example.", { exact: true }).waitFor();
+      await quick.getByText("Here is a short example.", { exact: true }).last().waitFor();
       if (requests[0].selection !== "% edited in green passage" || !requests[0].location.includes("main.tex") || requests[1].messages.length !== 3) throw new Error("Inline question lost selection or follow-up context");
       await shot("25c-inline-question-diff");
+      const initialBox = (await quick.boundingBox())!;
+      const handle = quick.getByRole("button", { name: "Move inline question" });
+      const handleBox = (await handle.boundingBox())!;
+      await page.mouse.move(handleBox.x + 30, handleBox.y + 15);
+      await page.mouse.down();
+      await page.mouse.move(handleBox.x - 170, handleBox.y - 65, { steps: 8 });
+      await page.mouse.up();
+      const movedBox = (await quick.boundingBox())!;
+      if (movedBox.x >= initialBox.x - 150 || movedBox.y >= initialBox.y - 50) throw new Error("Inline chat did not drag");
+      await handle.focus(); await page.keyboard.press("ArrowLeft");
+      const placedBox = (await quick.boundingBox())!;
+      if (placedBox.x !== movedBox.x - 10) throw new Error("Keyboard movement failed");
       await quick.getByRole("button", { name: "Minimize inline question" }).click();
       await page.getByRole("button", { name: "Quick question", exact: true }).click();
-      await quick.getByText("Here is a short example.", { exact: true }).waitFor();
+      await quick.getByText("Here is a short example.", { exact: true }).last().waitFor();
       await quick.getByRole("textbox").press("Escape");
       await aside().getByRole("tab", { name: "Source", exact: true }).click();
       const sourceText = page.locator("#pane-panel-source .cm-content");
@@ -876,14 +895,29 @@ async function main() {
       await page.getByRole("button", { name: "Ask inline", exact: true }).click();
       await quick.getByRole("textbox").fill("Explain this source line");
       await quick.getByRole("textbox").press("Enter");
-      await quick.getByText("Here is a short example.", { exact: true }).waitFor();
+      await quick.getByText("Here is a short example.", { exact: true }).last().waitFor();
+      if (requests[2].messages.length !== 5 || requests[2].messages[0].passage.text !== "% edited in green passage" || !requests[2].messages[4].passage.text.includes("documentclass")) throw new Error("New selection lost conversation or original passage context");
+      if ((await quick.boundingBox())!.x !== placedBox.x) throw new Error("New selection reset chat position");
+      await quick.getByRole("button", { name: "Clear inline conversation" }).click();
+      if (await quick.getByText("Here is a short example.", { exact: true }).count()) throw new Error("Clear left old messages");
+      await quick.getByRole("textbox").fill("Fresh question");
+      await quick.getByRole("textbox").press("Enter");
+      await quick.getByText("Here is a short example.", { exact: true }).last().waitFor();
+      if (requests[3].messages.length !== 1) throw new Error("Clear sent old conversation to model");
       if (!requests[2].selection.includes("documentclass") || !requests[2].location.includes("main.tex:1")) throw new Error("Source selection lacks exact text/location");
       if (JSON.stringify(await getChats()) !== chatBefore || await getFile("main.tex") !== fileBefore) throw new Error("Inline question changed main chat or source");
+      await quick.getByRole("textbox").fill("Slow question");
+      await quick.getByRole("textbox").press("Enter");
+      await quick.getByRole("status").waitFor();
+      await quick.getByRole("button", { name: "Clear inline conversation" }).click();
+      releaseInlineAnswer();
+      await page.waitForTimeout(200);
+      if (await quick.getByText("Late answer must not reappear", { exact: true }).count() || await quick.getByRole("textbox").inputValue()) throw new Error("Clear allowed a stale response or draft to return");
       await page.setViewportSize({ width: 390, height: 844 });
       await shot("25d-inline-question-mobile");
       const bounds = await quick.boundingBox();
       if (!bounds || bounds.x < 0 || bounds.x + bounds.width > 390) throw new Error("Inline question overflows mobile viewport");
-      console.log("✅ Inline question UI passed: diff, source keyboard selection, follow-ups, minimize, mobile, unchanged main chat and paper");
+      console.log("✅ Inline question UI passed: drag, keyboard movement, reuse with new passage, clear, late-answer protection, mobile, unchanged main chat and paper");
       return;
     }
     if (process.env.PROOF_INLINE_ONLY === "1") {
