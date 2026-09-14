@@ -63,6 +63,8 @@ export interface BackendTurnContext {
   signal: AbortSignal;
   /** Settings snapshot taken at turn start. */
   settings: Settings;
+  /** Source access in this turn, used to disclose changed citations without a source read. */
+  paperReads?: Set<string>;
   emit: EventSink;
 }
 
@@ -165,6 +167,10 @@ export const AGENT_TOOL_INFO = [
     description:
       "Check whether a cited paper's own content actually supports a specific claim attributed to it — unlike audit_citations, which only confirms the reference is real, this reads the paper (its cached open-access PDF, or its abstract when no PDF is available) and judges the claim against it. Pass the cite key and the exact claim/sentence. Returns SUPPORTED, PARTIALLY_SUPPORTED, NOT_SUPPORTED, or UNCLEAR with an explanation.",
   },
+  {
+    name: "read_paper",
+    description: "Read a cited paper's actual content before writing about it. Pass its bibliography key; optionally supply the path of an uploaded/attached PDF. Returns PDF text with page labels, abstract only, or an explicit missing-source report. Use query to find exact phrases throughout the paper; use offset/limit to read later text or more search matches. Excerpts and missing text are labeled. Local PDFs must match the bibliography title; never infer content from metadata or search results.",
+  },
 ] as const;
 
 /**
@@ -217,6 +223,7 @@ export const RESULT_HEAD_TOOLS = new Set([
   "list_files",
   "mcp__blattbot__search_papers",
   "mcp__blattbot__list_citations",
+  "mcp__blattbot__read_paper",
 ]);
 
 /**
@@ -244,6 +251,21 @@ export const DISALLOWED_TOOLS = [
   "Bash(git rebase:*)",
 ];
 
+/** Shared by every backend, including Codex's dynamic tool loop. */
+export const PAPER_READING_RULES = `
+- Use query_citation_graph for structured directed citation relationships, shared references, absent works and paths. update_citation_graph fetches more metadata. Graph links indicate citations, not scientific support; always read candidates before citing them. Report unresolved sources and the limits of the loaded graph.
+- Use check_bibliography to detect undefined or duplicate keys and structural metadata issues; audit_citations verifies publication identity. Citation key spelling is arbitrary, but definitions must be unambiguous.
+
+Source-based writing (including Related Work, comparisons, and literature reviews):
+- Before writing or substantively revising prose about a cited work, call read_paper for that key and read the relevant passages. Bibliography metadata, search hits, TL;DR summaries, and model memory are not source evidence. A citation-support verdict is not a substitute for reading the source to synthesize it.
+- Inspect the attached-context manifest for supplied PDFs. Pass path to read_paper when the filename is not the cite key; otherwise it tries a matching local PDF, then an open-access PDF, then the abstract. If the PDF cannot be matched to the entry, inspect it and resolve the mismatch before attributing claims.
+- Follow the returned offsets to read further, or search with query and open the surrounding passages. Search excerpts, partial reads, and unreadable pages must never be described as a whole paper having been read. A text extraction cannot establish what an image-only figure or table says.
+- If only the abstract is available, disclose that limitation and use only what it explicitly supports. For missing method details, results, comparisons, or limitations, ask the user for the PDF or specific passages via External context. Name the paper/title and precisely what is missing. Continue supported parts and leave the affected claims as clearly marked TODOs; do not fill gaps from memory.
+- If there is no readable source, report it before drafting claims about that work. Do not silently skip requested papers, imply that they were read, or treat an unresolved source as verified. End source-based writing tasks with a concise account of the sources used and any remaining gaps.
+- After drafting, use verify_citation_support for factual claims and comparisons, checking each cited work against the exact claim it is intended to support. Fix or disclose PARTIALLY_SUPPORTED, NOT_SUPPORTED, and UNCLEAR results. These tools are available with the mcp__blattbot__ prefix on Claude.
+- Research workspace: use list_evidence and verify_evidence to maintain quotations, page references and source versions for each cited claim, including later uses of the same paper. A stale result must be checked again. Use literature_matrix to analyze sources before drafting Related Work; the user reviews the comparison rows and approves the outline in Research. Use review_manuscript for cross-document scientific consistency, project_memory for approved context and proposed updates, explore_citations for forward/backward search, and check_publication_status for indexed withdrawal/correction flags. For difficult sources use search_paper_content (meaning-based retrieval), read_paper with ocr=true, or inspect_paper_page (visual reading). These capabilities report their limits; do not treat model interpretations as exact transcriptions.
+`.trim();
+
 export const SYSTEM_APPEND = `
 You are BlattBot, an expert LaTeX writing assistant operating on a snapshot of an Overleaf project.
 
@@ -261,6 +283,8 @@ Citations:
 - Use mcp__blattbot__audit_citations to re-check entries, and always run it on BibTeX you wrote by hand rather than through add_citation.
 - audit_citations and add_citation only confirm a reference is real — never that the paper says what you are citing it for. When you attach a citation to a specific factual, numeric, or methodological claim (not a generic "prior work has explored this" nod), use mcp__blattbot__verify_citation_support with the cite key and the exact sentence. On NOT_SUPPORTED or UNCLEAR, fix the claim, find a better citation, or tell the user — never leave a claim resting on a citation that does not actually back it.
 - Match the document's existing citation commands. Use plain \\cite{...} unless the preamble already loads natbib or biblatex — never introduce \\citep, \\citet, or \\autocite into a document whose preamble does not support them.
+
+${PAPER_READING_RULES}
 
 Style:
 - Preserve the document's existing LaTeX conventions (macros, environments, label naming, bibliography style).

@@ -79,8 +79,9 @@ describe("Codex background harness", () => {
   });
 
   it("resumes Codex sessions and counts only this turn's tokens", async () => {
-    const { codexBackend } = await import("../src/backends/codex.js");
+    const { codexBackend, recordCodexToolset } = await import("../src/backends/codex.js");
     ctx.session.sessionId = "codex-01900000-0000-7000-8000-000000000001";
+    recordCodexToolset(ctx.session.sessionId.slice(6));
     ctx.model = "custom-codex-model";
     ctx.settings.codexEffort = "high";
     await codexBackend.runTurn(ctx);
@@ -88,6 +89,21 @@ describe("Codex background harness", () => {
     expect(log().find((m) => m.method === "turn/start").params.effort).toBe("high");
     expect(events.find((e) => e.type === "turn_end")).toMatchObject({ inputTokens: 100, outputTokens: 20 });
     expect(ctx.session.onSessionId).not.toHaveBeenCalled();
+  });
+
+  it("upgrades an older session's fixed tool catalog and carries recent conversation text", async () => {
+    const { codexBackend } = await import("../src/backends/codex.js");
+    const { createChat, updateChat, appendEvent } = await import("../src/chats.js");
+    ctx.session.sessionId = "codex-01900000-0000-7000-8000-000000000001";
+    const chat = createChat(ctx.project.id);
+    updateChat(ctx.project.id, chat.id, { sessionId: ctx.session.sessionId });
+    appendEvent(ctx.project.id, chat.id, { type: "user_message", text: "Compare graph models and their limitations." });
+    await codexBackend.runTurn(ctx);
+    const start = log().find((message) => message.method === "thread/start").params;
+    expect(start.dynamicTools.some((tool: any) => tool.name === "read_paper")).toBe(true);
+    expect(log().find((message) => message.method === "turn/start").params.input[0].text).toContain("Compare graph models");
+    expect(ctx.session.onSessionId).toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({ type: "notice", text: expect.stringContaining("paper-reading tools") }));
   });
 
   it("starts a separate Codex conversation when switching from Claude", async () => {

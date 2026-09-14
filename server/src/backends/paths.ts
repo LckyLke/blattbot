@@ -25,7 +25,38 @@ const READ_TOOLS = new Set(["Read", "NotebookRead", "Glob", "Grep", "LS"]);
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
 export function isInside(abs: string, root: string): boolean {
+  if (process.platform === "win32") { abs = abs.toLowerCase(); root = root.toLowerCase(); }
   return abs === root || abs.startsWith(root + sep);
+}
+
+
+/** Resolve reads for file tools and local paper sources through the same fence. */
+export function resolveReadPath(
+  dir: string,
+  contextDirs: string[],
+  raw: unknown,
+  extraRoots: string[] = [],
+): string {
+  if (typeof raw !== "string" || !raw.trim()) throw new Error("path is required");
+  const p = raw.trim();
+  const checked = (root: string, abs: string) => {
+    if (isInside(abs, join(dir, ".git"))) throw new Error("the .git directory is off-limits");
+    if (!isInside(abs, dir) && secretRoots().some((secret) => isInside(abs, secret))) throw new Error("this path contains credentials or private application data");
+    if (lstatSync(root).isSymbolicLink()) throw new Error("symbolic links are not allowed in agent file paths");
+    assertNoSymlinkPath(root, abs);
+    return abs;
+  };
+  if (isAbsolute(p)) {
+    const abs = resolve(p);
+    if (isInside(abs, dir)) return checked(dir, abs);
+    for (const c of [...contextDirs, ...extraRoots]) {
+      if (isInside(abs, c)) return checked(c, abs);
+    }
+    throw new Error(`path is outside the project and its read-only context: ${p}`);
+  }
+  const abs = resolve(dir, p);
+  if (abs === dir || !abs.startsWith(dir + sep)) throw new Error(`invalid path: ${p}`);
+  return checked(dir, abs);
 }
 
 /** Refuse symlinks below an allowed root, including dangling links and
@@ -74,6 +105,7 @@ export function secretRoots(): string[] {
     join(DATA_DIR, "auth-token"),
     join(DATA_DIR, "oai-sessions"),
     join(DATA_DIR, "chats"),
+    join(DATA_DIR, "research-secrets"),
     join(home, ".ssh"),
     join(home, ".aws"),
     join(home, ".gnupg"),

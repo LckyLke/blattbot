@@ -1,3 +1,4 @@
+import { findPdfMatches } from "../pdf-search";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { GlobalWorkerOptions, TextLayer, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -178,6 +179,7 @@ function formatAuthors(author: string | null): string | null {
 
 /** Where a find landed: a char range in page `page`'s joined item text. */
 interface FindHighlight {
+  persistent?: boolean;
   nonce: number;
   page: number;
   start: number;
@@ -353,6 +355,10 @@ export default function PdfPanel({
   const [searchHits, setSearchHits] = useState<{ page: number; start: number; end: number }[]>([]);
   const [searchIdx, setSearchIdx] = useState(0);
   const [searching, setSearching] = useState(false);
+  const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
+  const [searchTruncated, setSearchTruncated] = useState(false);
+  const [searchError, setSearchError] = useState("");
   const [searchedQuery, setSearchedQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   /** Per-page joined text, rebuilt when the document changes. */
@@ -362,6 +368,7 @@ export default function PdfPanel({
     setSearchHits([]);
     setSearchIdx(0);
     setSearchedQuery("");
+    setFindHl(null);
   }, [doc]);
 
   const pageText = useCallback(
@@ -382,51 +389,45 @@ export default function PdfPanel({
   // Debounced scan of the whole document for the current query.
   useEffect(() => {
     const q = searchQuery.trim();
-    if (!doc || q.length < 2) {
+    if (!doc || !q.length || !searchOpen) {
+      setSearchError("");
       setSearchHits([]);
       setSearchIdx(0);
       setSearching(false);
+      setFindHl(null);
       return;
     }
     let cancelled = false;
     setSearching(true);
+    setSearchError("");
+    setSearchTruncated(false);
+    setSearchHits([]);
+    setFindHl(null);
     const timer = setTimeout(() => {
       void (async () => {
         const hits: { page: number; start: number; end: number }[] = [];
-        // Fold the query the same way the page text is folded, so ligatures
-        // and hyphenation do not hide matches.
-        const needle = normalizePdfText(q).toLowerCase();
+        let truncated = false;
         try {
           for (let p = 1; p <= doc.numPages; p++) {
             const raw = await pageText(p);
             if (cancelled) return;
-            const hay = normalizePdfText(raw).toLowerCase();
-            // Map normalized offsets back is lossy; search the RAW text too so
-            // the highlight range lines up with the page's own item text.
-            const rawHay = raw.toLowerCase();
-            let from = 0;
-            while (hits.length < 500) {
-              const at = rawHay.indexOf(q.toLowerCase(), from);
-              if (at === -1) break;
-              hits.push({ page: p, start: at, end: at + q.length });
-              from = at + Math.max(1, q.length);
-            }
-            // Fall back to the folded text when the raw form has no hit but
-            // the folded one does (ligatures, collapsed whitespace).
-            if (!rawHay.includes(q.toLowerCase()) && hay.includes(needle)) {
-              hits.push({ page: p, start: 0, end: Math.min(raw.length, 1) });
-            }
+            const found = findPdfMatches(raw, q, { caseSensitive: matchCase, wholeWord, limit: 500 - hits.length });
+            hits.push(...found.hits.map(hit => ({ page: p, ...hit })));
+            truncated ||= found.truncated;
+            if (truncated) break;
           }
           if (cancelled) return;
+          setSearchTruncated(truncated);
           setSearchHits(hits);
           setSearchIdx(0);
           setSearchedQuery(q);
           setSearching(false);
           if (hits.length > 0) {
-            setFindHl((prev) => ({ nonce: (prev?.nonce ?? 0) + 1, ...hits[0] }));
+            setFindHl((prev) => ({ nonce: (prev?.nonce ?? 0) + 1, persistent: true, ...hits[0] }));
           }
-        } catch {
+        } catch (error) {
           if (!cancelled) {
+            setSearchError(error instanceof Error ? error.message : "PDF search failed. Try again.");
             setSearchHits([]);
             setSearchedQuery(q);
             setSearching(false);
@@ -438,23 +439,24 @@ export default function PdfPanel({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [searchQuery, doc, pageText]);
+  }, [searchQuery, doc, pageText, searchOpen, matchCase, wholeWord]);
 
   const gotoHit = useCallback(
     (delta: number) => {
-      if (searchHits.length === 0) return;
+      if (searching || searchHits.length === 0) return;
       const next = (searchIdx + delta + searchHits.length) % searchHits.length;
       setSearchIdx(next);
-      setFindHl((prev) => ({ nonce: (prev?.nonce ?? 0) + 1, ...searchHits[next] }));
+      setFindHl((prev) => ({ nonce: (prev?.nonce ?? 0) + 1, persistent: true, ...searchHits[next] }));
     },
-    [searchHits, searchIdx],
+    [searchHits, searchIdx, searching],
   );
 
   // Ctrl/Cmd+F opens the search box while this panel is on screen.
   useEffect(() => {
     if (!hasPdf) return;
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+      if (!e.defaultPrevented && !e.shiftKey && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        if (document.documentElement.dataset.findScope === "source" || (e.target as Element)?.closest?.(".cm-editor")) return;
         const wrap = overlayRef.current;
         if (!wrap || !wrap.offsetParent) return; // this pane is hidden
         e.preventDefault();
@@ -646,7 +648,7 @@ export default function PdfPanel({
   const pageWidth = Math.max(180, (containerWidth - 40) * zoom);
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col" tabIndex={-1} onPointerDownCapture={e => { document.documentElement.dataset.findScope = "pdf"; if (!(e.target as Element).closest("input,button,select,textarea,a")) e.currentTarget.focus({ preventScroll: true }); }} onFocusCapture={() => { document.documentElement.dataset.findScope = "pdf"; }}>
       {remoteStamp > 0 && (
         <div
           role="tablist"
@@ -716,7 +718,7 @@ export default function PdfPanel({
       )}
 
       {hasPdf && doc && (
-        <div className="flex shrink-0 items-center gap-1 border-b border-rule px-3 py-1 text-xs text-paper-dim">
+        <div className="flex shrink-0 flex-wrap items-center gap-1 whitespace-nowrap border-b border-rule px-3 py-1 text-xs text-paper-dim">
           <button
             onClick={() => setZoom((z) => Math.max(ZOOM_MIN, z / 1.15))}
             aria-label="Zoom out"
@@ -727,62 +729,7 @@ export default function PdfPanel({
           <span className="w-11 text-center font-mono text-[11px] text-graphite">
             {Math.round(zoom * 100)}%
           </span>
-          {searchOpen ? (
-            <span className="ml-1 flex items-center gap-1">
-              <input
-                ref={searchInputRef}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    gotoHit(e.shiftKey ? -1 : 1);
-                  } else if (e.key === "Escape") {
-                    setSearchOpen(false);
-                    setSearchQuery("");
-                  }
-                }}
-                placeholder="Find in PDF…"
-                aria-label="Find in PDF"
-                className="w-36 rounded border border-rule bg-ink-2 px-2 py-0.5 text-[11.5px] text-paper placeholder:text-graphite/60"
-              />
-              <span className="w-14 text-center font-mono text-[10.5px] text-graphite" role="status">
-                {searchQuery.trim().length < 2
-                  ? ""
-                  : searching || searchedQuery !== searchQuery.trim()
-                    ? "…"
-                    : searchHits.length === 0
-                      ? "no hits"
-                      : `${searchIdx + 1}/${searchHits.length}`}
-              </span>
-              <button
-                onClick={() => gotoHit(-1)}
-                disabled={searchHits.length === 0}
-                aria-label="Previous match"
-                className="rounded px-1 transition-colors hover:bg-ink-3 hover:text-paper disabled:opacity-40"
-              >
-                ↑
-              </button>
-              <button
-                onClick={() => gotoHit(1)}
-                disabled={searchHits.length === 0}
-                aria-label="Next match"
-                className="rounded px-1 transition-colors hover:bg-ink-3 hover:text-paper disabled:opacity-40"
-              >
-                ↓
-              </button>
-              <button
-                onClick={() => {
-                  setSearchOpen(false);
-                  setSearchQuery("");
-                }}
-                aria-label="Close find"
-                className="rounded px-1 transition-colors hover:bg-ink-3 hover:text-paper"
-              >
-                ×
-              </button>
-            </span>
-          ) : (
+          {!searchOpen && (
             <button
               onClick={() => {
                 setSearchOpen(true);
@@ -821,6 +768,72 @@ export default function PdfPanel({
           >
             open ↗
           </a>
+        </div>
+      )}
+
+      {hasPdf && doc && searchOpen && (
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-rule px-3 py-2 text-xs text-paper-dim" role="search" aria-label="PDF search">
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                gotoHit(e.shiftKey ? -1 : 1);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setFindHl(null);
+                setSearchOpen(false);
+                setSearchQuery("");
+              }
+            }}
+            placeholder="Find in PDF…"
+            aria-label="Find in PDF"
+            className="min-w-24 flex-1 rounded border border-rule bg-ink-2 px-2 py-0.5 text-[11.5px] text-paper placeholder:text-graphite/60"
+          />
+          <span className="w-14 text-center font-mono text-[10.5px] text-graphite" role="status">
+            {searchQuery.trim().length < 1
+              ? ""
+              : searching || searchedQuery !== searchQuery.trim()
+                ? "…"
+                : searchError
+                  ? "failed"
+                : searchHits.length === 0
+                  ? "no hits"
+                  : `${searchIdx + 1}/${searchHits.length}${searchTruncated ? "+" : ""}`}
+          </span>
+          <button type="button" aria-label="PDF match case" aria-pressed={matchCase} onClick={() => setMatchCase(v => !v)} className="rounded border border-rule px-1 aria-pressed:text-leaf">Aa</button>
+          <button type="button" aria-label="PDF whole words" aria-pressed={wholeWord} onClick={() => setWholeWord(v => !v)} className="rounded border border-rule px-1 aria-pressed:text-leaf">Word</button>
+          {searchError && <span role="alert" className="text-pencil">{searchError}</span>}
+          <button
+            onClick={() => gotoHit(-1)}
+            disabled={searching || searchHits.length === 0}
+            aria-label="Previous match"
+            className="rounded px-1 transition-colors hover:bg-ink-3 hover:text-paper disabled:opacity-40"
+          >
+            ↑
+          </button>
+          <button
+            onClick={() => gotoHit(1)}
+            disabled={searching || searchHits.length === 0}
+            aria-label="Next match"
+            className="rounded px-1 transition-colors hover:bg-ink-3 hover:text-paper disabled:opacity-40"
+          >
+            ↓
+          </button>
+          <button
+            onClick={() => {
+              setFindHl(null);
+              setSearchOpen(false);
+              setSearchQuery("");
+            }}
+            aria-label="Close find"
+            className="rounded px-1 transition-colors hover:bg-ink-3 hover:text-paper"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -945,6 +958,7 @@ function PdfPage({
   const holderRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
+  const highlightRef = useRef<HTMLDivElement>(null);
   /** The rendered text layer's spans and their item strings, for dblclick context. */
   const itemsRef = useRef<{ divs: HTMLElement[]; strs: string[] }>({ divs: [], strs: [] });
   const [near, setNear] = useState(false);
@@ -952,45 +966,82 @@ function PdfPage({
   /** This page's citation links, laid out for the current width. */
   const [citeSpots, setCiteSpots] = useState<CiteSpot[]>([]);
   /** A highlight waiting for the (lazily rendered) text layer. */
-  const pendingHl = useRef<{ start: number; end: number } | null>(null);
+  const pendingHl = useRef<{ start: number; end: number; persistent?: boolean } | null>(null);
+  const marked = useRef<HTMLElement[]>([]);
+  const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const currentHighlight = useRef(highlight);
+  currentHighlight.current = highlight;
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
 
   /**
-   * Flash the text-layer spans covering the pending char range. The text
+   * Highlight the exact glyph ranges without modifying PDF.js's text spans. The text
    * layer renders lazily (IntersectionObserver), so this runs both when the
    * highlight arrives (layer may already be up) and again after the layer
    * finishes rendering — whichever comes last applies it.
    */
   const applyHighlight = useCallback(() => {
-    const hl = pendingHl.current;
+    const hl = pendingHl.current ?? (currentHighlight.current?.persistent ? currentHighlight.current : null);
     const { divs, strs } = itemsRef.current;
     if (!hl || divs.length === 0) return;
     pendingHl.current = null;
+    clearTimeout(flashTimer.current);
+    marked.current.forEach(el => el.remove());
+    marked.current = [];
     let off = 0;
-    const hit: HTMLElement[] = [];
+    const hit: { element: HTMLElement; start: number; end: number }[] = [];
     for (let i = 0; i < strs.length; i++) {
       const start = off;
       const end = off + strs[i].length;
-      if (end > hl.start && start < hl.end && divs[i]) hit.push(divs[i]);
+      if (end > hl.start && start < hl.end && divs[i]) hit.push({ element: divs[i], start: Math.max(0, hl.start - start), end: Math.min(strs[i].length, hl.end - start) });
       off = end + 1; // the join space
       if (start >= hl.end) break;
     }
     if (hit.length === 0) return;
-    hit[0].scrollIntoView({ block: "center" });
-    for (const el of hit) el.classList.add("pdf-find-flash");
-    window.setTimeout(() => {
-      for (const el of hit) el.classList.remove("pdf-find-flash");
+    hit[0].element.scrollIntoView({ block: "center" });
+    const parent = highlightRef.current;
+    if (!parent) return;
+    const bounds = parent.getBoundingClientRect();
+    for (const item of hit) {
+      const range = document.createRange();
+      const node = item.element.firstChild;
+      if (!node || node.nodeType !== Node.TEXT_NODE) continue;
+      range.setStart(node, Math.min(item.start, node.textContent?.length ?? 0));
+      range.setEnd(node, Math.min(item.end, node.textContent?.length ?? 0));
+      for (const rect of range.getClientRects()) {
+        const box = document.createElement("div");
+        box.className = "pdf-find-flash";
+        box.dataset.quote = range.toString();
+        Object.assign(box.style, { left: `${rect.left - bounds.left}px`, top: `${rect.top - bounds.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+        parent.append(box);
+        marked.current.push(box);
+      }
+    }
+    if (!hl.persistent) flashTimer.current = setTimeout(() => {
+      marked.current.forEach(el => el.remove());
     }, FIND_FLASH_MS);
   }, []);
 
   // A new find hit: park it, pull the page into view (which triggers the lazy
   // text layer when it wasn't rendered yet), and apply if the layer is up.
-  useEffect(() => {
-    if (!highlight) return;
-    pendingHl.current = { start: highlight.start, end: highlight.end };
+  useLayoutEffect(() => {
+    if (!highlight) {
+      clearTimeout(flashTimer.current);
+      marked.current.forEach(el => el.remove());
+      marked.current = [];
+      pendingHl.current = null;
+      return;
+    }
+    pendingHl.current = { start: highlight.start, end: highlight.end, persistent: highlight.persistent };
     holderRef.current?.scrollIntoView({ block: "start" });
     applyHighlight();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [highlight?.nonce]);
+  }, [highlight, applyHighlight]);
+
+  // Old rectangles use the previous scale. Wait for the new text layer before redrawing.
+  useLayoutEffect(() => {
+    marked.current.forEach(el => el.remove());
+    marked.current = [];
+  }, [width, doc]);
 
   useEffect(() => {
     const el = holderRef.current;
@@ -1156,6 +1207,7 @@ function PdfPage({
     >
       <canvas ref={canvasRef} className="block h-full w-full" />
       <div ref={textRef} onDoubleClick={handleDblClick} className="textLayer" />
+      <div ref={highlightRef} aria-hidden="true" className="pointer-events-none absolute inset-0 z-[2]" />
       {/* Above the text layer (z-index 1), so a citation label answers the
           pointer before the selectable text underneath it does. */}
       {citeSpots.length > 0 && (

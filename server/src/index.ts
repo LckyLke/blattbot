@@ -1,3 +1,4 @@
+import { researchJobs } from "./research/jobs.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
@@ -110,6 +111,9 @@ import {
   updateChat,
 } from "./chats.js";
 import { makeTurnEventSink } from "./livediff.js";
+import { RESEARCH_TOOLS } from "./research/tools.js";
+import { GraphIndexer } from "./research/graph-indexer.js";
+import { registerResearchRoutes } from "./research/routes.js";
 import { OverleafAuthError, OverleafClient, canonicalOrigin, parseProjectUrl } from "./overleaf/olclient.js";
 import { applySnapshot, unpackZip } from "./overleaf/olsync.js";
 import { captureViaBrowser, noSessionMessage, scanBrowsers } from "./overleaf/cookiegrab.js";
@@ -191,6 +195,23 @@ app.addHook("onRequest", async (req, reply) => {
   if (!requestAuthorized(req.headers)) {
     return reply.code(401).send({ error: "unauthorized — reload the BlattBot tab" });
   }
+});
+
+const graphIndexer = new GraphIndexer();
+registerResearchRoutes(app, async (id) => {
+  const diff = await git.workingDiff(projectDir(id));
+  broadcast(id, { type: "diff", diff });
+}, graphIndexer);
+app.addHook("onClose", async () => { await Promise.all([graphIndexer.stop(), researchJobs.stop()]); });
+app.addHook("onResponse", (req, reply, done) => {
+  const id = (req.params as { id?: string })?.id;
+  // Opening a project or completing a mutation schedules any changed entries.
+  // The background scan also catches edits made outside the app.
+  if (reply.statusCode < 400 && id && getProject(id) && !req.url.includes("/research") &&
+      (req.method !== "GET" || /^\/api\/projects\/[^/?]+(?:\?|$)/.test(req.url))) {
+    try { graphIndexer.request(id, projectDir(id)); } catch { /* background scan retries */ }
+  }
+  done();
 });
 
 /** Same-origin token handoff: sets the auth cookie and returns the token. */
@@ -346,7 +367,7 @@ app.get("/api/agent/info", async () => {
     anthropicBaseUrl: s.anthropicBaseUrl || "https://api.anthropic.com",
     systemPromptPreset: "claude_code",
     systemPromptAppend: SYSTEM_APPEND,
-    tools: [...AGENT_TOOL_INFO, ASK_USER_TOOL_INFO],
+    tools: [...AGENT_TOOL_INFO, ...RESEARCH_TOOLS.map(({ name, description }) => ({ name, description })), ASK_USER_TOOL_INFO],
     disallowedTools: DISALLOWED_TOOLS,
     ...common,
   };
@@ -1891,6 +1912,9 @@ try {
   console.error(err);
   process.exit(1);
 }
+
+graphIndexer.start();
+researchJobs.start();
 
 // Warm the update check in the background — never blocks startup, never throws.
 void checkLatestVersion().catch(() => {});

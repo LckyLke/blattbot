@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Added optional strict scientific writing readiness: current claim evidence, uncited-assertion audits, versioned user exceptions and an approval gate that also applies to forced approval.
+- Added a persistent full-text paper library with page-located results, optional model-assisted query expansion, explicit coverage and invalidation of changed sources. All backends can query the index.
+- Added durable Research tasks with item checkpoints, pause/cancel/resume, restart recovery and provider-limit pauses. Cancelled requests cannot save late research results.
+- Added scientific evaluation through the production evidence judge, 15 attributed starter cases, human reference review, dataset import and report export. Scores exclude unreviewed or changed reference labels.
+- Improved Ctrl/Cmd+F in Source and PDF: pane focus, live counts, case/whole-word options, source regex and replacement, normalized PDF matching and exact persistent highlights. Narrow PDF panes keep search on its own row.
+
+- Added Research with per-passage, versioned evidence; exact quotations and source page inspection; a reviewed literature comparison → approved outline → Related Work workflow; scientific consistency checks; and versioned, user-approved project memory.
+- Added PDF page rendering, persistent page OCR, visual figure/table interpretation and semantic passage search through the selected backend. Missing or partial source coverage remains explicit.
+- Added saved literature searches and screening, backward/forward citation lookup, targeted Crossref retraction/update checks and read-only Zotero imports of references, PDFs and notes.
+- Citation graphs now build automatically for existing projects at startup and after bibliography changes, with persisted retry backoff and visible progress. Refreshed Research with dark styling, compact navigation, a graph-first view and collapsible details.
+- Added an interactive directed citation graph, including external references missing from the project, shared references and bounded path search. Codex/Claude/OpenAI can build, expand and query the same persisted graph as structured JSON with provenance and pagination.
+- Added a deterministic bibliography structure tool for undefined/duplicate keys, case collisions, duplicate works and missing metadata. Citation scanning now covers biblatex multicites, uppercase forms and author/year commands, while ignoring verbatim examples.
+- Added isolated backend, integration, authentication and real-browser Research workflow checks. The resizable research pane now reclamps when the window narrows.
+
+- Added direct paper reading across Codex, Claude, and OpenAI-compatible backends, with local PDF association, open-access/abstract fallback, page labels, search, and pagination. Codex/OpenAI file reads now extract uploaded PDFs. Related Work instructions require reading the relevant source passages and disclosing missing evidence.
+- Source gaps now produce chat notices directly; a completion check flags changed citation passages without a paper read. Claim verification reuses local sources, distinguishes no source from abstract-only evidence, and selects relevant excerpts throughout long PDFs. Older Codex sessions upgrade their tool catalog while retaining the chat transcript and carrying recent conversation text.
 - Edit files and passages directly inside Proof with the full source editor, shared live drafts, autocomplete, undo, and save shortcuts. Saves refresh the review diff and visible PDF; approval and discard wait for unsaved drafts to be saved or reverted.
 - Codex is the default background harness, using the installed CLI and its login. Includes streamed replies, resumable chats, images, questions, compile/citation tools, read-only modes, interruption, token usage, and one-shot helpers. Claude and OpenAI-compatible endpoints remain selectable.
 - Settings checks Codex connectivity and offers its model catalog and reasoning efforts. Model picks now save to the active backend's own field; cached suggestions refresh after settings changes. New project overrides are scoped to their backend, and legacy Claude overrides do not leak into Codex.

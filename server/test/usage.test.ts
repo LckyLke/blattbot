@@ -59,7 +59,7 @@ describe("scanCiteUsage", () => {
 
   it("ignores \\nocite{*} and non-cite commands with cite-ish names", () => {
     const usage = scanCiteUsage([
-      { file: "t.tex", content: "\\nocite{*} \\citation{nope} \\textcites{alsonope}" },
+      { file: "t.tex", content: "\\nocite{*} \\citation{nope} \\textcitesExtra{alsonope}" },
     ]);
     expect(usage).toEqual({});
   });
@@ -123,5 +123,16 @@ describe("claimContextAtLine", () => {
     const result = claimContextAtLine(huge, 1);
     expect(result.length).toBe(1501); // 1500 chars + the ellipsis
     expect(result.endsWith("…")).toBe(true);
+  });
+});
+
+describe("extended citation families", () => {
+  it("tracks uppercase natbib commands, biblatex multicites, and author/year citations", () => {
+    const usage = scanCiteUsage([{ file: "main.tex", content: String.raw`\Citep[see][p. 2]{Alpha,beta} \parencites{gamma}[p. 3]{delta}{epsilon} \citeauthor{author} \citeyear{year}` }]);
+    expect(Object.keys(usage)).toEqual(["Alpha", "beta", "gamma", "delta", "epsilon", "author", "year"]);
+  });
+  it("does not count citation examples inside verbatim or commented environments", () => {
+    const usage = scanCiteUsage([{ file: "main.tex", content: String.raw`\verb|\cite{example}| \begin{verbatim}\cite{example2}\end{verbatim} \cite{real}` }]);
+    expect(Object.keys(usage)).toEqual(["real"]);
   });
 });

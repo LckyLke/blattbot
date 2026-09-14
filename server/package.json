@@ -43,6 +43,7 @@
     "typecheck": "tsc --noEmit",
     "codex:check": "tsx scripts/codex-check.ts",
     "test:ui": "tsx scripts/ui-verify.ts",
+    "test:research-ui": "tsx scripts/research-ui-verify.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"
   },

@@ -1,3 +1,4 @@
+import { sourceSearchPanel } from "../source-search";
 import {
   useCallback,
   useEffect,
@@ -26,7 +27,7 @@ import {
   indentUnit,
   syntaxHighlighting,
 } from "@codemirror/language";
-import { gotoLine, highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
+import { gotoLine, highlightSelectionMatches, openSearchPanel, search, searchKeymap } from "@codemirror/search";
 import {
   acceptCompletion,
   autocompletion,
@@ -834,7 +835,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
           drawSelection(),
           bracketMatching(),
           highlightSelectionMatches(),
-          search(),
+          search({ top: true, literal: true, createPanel: sourceSearchPanel }),
           indentUnit.of("  "),
           // Mirrored snippet fields (\begin{env}…\end{env}) edit several
           // ranges at once; drawSelection (above) renders them.
@@ -873,6 +874,16 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
       viewRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const find = (event: KeyboardEvent) => {
+      if (!event.defaultPrevented && !event.shiftKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && document.documentElement.dataset.findScope === "source" && hostRef.current?.offsetParent && hostRef.current.closest("[data-source-panel]")?.contains(event.target as Node) && viewRef.current) {
+        event.preventDefault(); openSearchPanel(viewRef.current);
+      }
+    };
+    window.addEventListener("keydown", find);
+    return () => window.removeEventListener("keydown", find);
   }, []);
 
   // Both panes can show the same file. Mirror edits, undo and saves without
@@ -1311,7 +1322,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   }, [quoteChip]);
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full" data-source-panel onPointerDownCapture={() => { document.documentElement.dataset.findScope = "source"; }} onFocusCapture={() => { document.documentElement.dataset.findScope = "source"; }}>
       {!embedded && <aside className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
         {files.length === 0 ? (
           <p className="px-3 py-2 text-xs text-graphite">No files.</p>

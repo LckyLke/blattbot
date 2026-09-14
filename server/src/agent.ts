@@ -1,3 +1,4 @@
+import { strictPrompt, readResearchPolicy, strictReport } from "./research/strict.js";
 /**
  * Agent turns: mode/scope/prompt assembly, model resolution, and dispatch to
  * the configured backend (Codex by default, Claude, or an OpenAI-compatible
@@ -10,6 +11,8 @@ import { resolve, sep } from "node:path";
 import { projectDir, type Project, type ProjectSettings } from "./config.js";
 import { loadSettings, type Settings } from "./settings.js";
 import { contextDirectories, formatContextManifest } from "./context.js";
+import { citationPassages, unreadCitationChanges } from "./sourcecoverage.js";
+import { memoryPrompt } from "./research/memory.js";
 import { abortQuestion } from "./questions.js";
 import { claudeBackend, runOneShot as runOneShotClaude } from "./backends/claude.js";
 import { openaiBackend, runOneShotOpenai } from "./backends/openai.js";
@@ -94,11 +97,19 @@ export function oneShotBackendId(settings: Settings = loadSettings()): BackendId
  * configured backend (see oneShotBackendId). Same prompt either way; the
  * openai path is a single non-streaming /chat/completions request.
  */
-export async function runOneShot(prompt: string): Promise<string> {
+export async function runOneShot(prompt: string, signal?: AbortSignal): Promise<string> {
   const settings = loadSettings();
-  if (oneShotBackendId(settings) === "codex") return runOneShotCodex(prompt, settings);
-  if (oneShotBackendId(settings) === "openai") return runOneShotOpenai(prompt, settings);
-  return runOneShotClaude(prompt);
+  if (oneShotBackendId(settings) === "codex") return runOneShotCodex(prompt, settings, [], signal);
+  if (oneShotBackendId(settings) === "openai") return runOneShotOpenai(prompt, settings, [], signal);
+  return runOneShotClaude(prompt, [], signal);
+}
+
+export async function runOneShotVision(prompt: string, images: string[]): Promise<string> {
+  if (!images.length || images.length > 3) throw new Error("Visual reading needs one to three page images");
+  const settings = loadSettings();
+  if (oneShotBackendId(settings) === "codex") return runOneShotCodex(prompt, settings, images);
+  if (oneShotBackendId(settings) === "openai") return runOneShotOpenai(prompt, settings, images);
+  return runOneShotClaude(prompt, images);
 }
 
 /** The model a turn on this project runs: project override → global setting → default. */
@@ -294,6 +305,8 @@ export function buildSystemAppend(
   contextDirs: string[] = contextDirectories(project),
 ): string {
   let append = SYSTEM_APPEND;
+  append += memoryPrompt(project.id);
+  append += strictPrompt(project.id);
   if (modeInfo.prompt) append += `\n\n${modeInfo.prompt}`;
   // Per-project style/instructions — directly after the mode block, clearly
   // attributed. Re-capped here in case projects.json was edited by hand.
@@ -315,7 +328,7 @@ export function buildSystemAppend(
       `\n\nExternal read-only context is attached (reference material — code, data, literature). ` +
       `Contents at the start of this turn:\n` +
       formatContextManifest(contextDirs) +
-      `\nRead and search these freely (Read, Grep, Glob — Read handles PDFs too). The listing is a ` +
+      `\nRead and search these freely with your available file tools. For cited PDFs, use read_paper with the cite key and path; it extracts text with page labels and supports pagination/search. The listing is a ` +
       `map, not a substitute for opening the files, and it can go stale within a turn — re-read ` +
       `before relying on anything.\n` +
       `Use them to CHECK the document: when the text states something this material can settle — a ` +
@@ -369,6 +382,9 @@ export async function runTurn(
   const modeInfo = AGENT_MODES.find((m) => m.id === mode) ?? AGENT_MODES[0];
   const contextDirs = contextDirectories(project);
   const backend = activeBackend(settings);
+  let beforeCitations: ReturnType<typeof citationPassages> | undefined;
+  try { beforeCitations = citationPassages(dir); } catch { /* disclose unconfirmed coverage at turn end */ }
+  let coverageReported = false;
 
   // A message may be pictures alone ("here's a screenshot" with no words) —
   // give the model the obvious instruction rather than a bare bracket note.
@@ -393,17 +409,37 @@ export async function runTurn(
     },
     signal: controller.signal,
     settings,
-    emit: onEvent,
+    paperReads: new Set(),
+    emit: (event) => {
+      // Backends emit turn_end themselves. Run this before it so the warning
+      // remains in the transcript even when the model omitted it in prose.
+      if (event.type === "turn_end" && !coverageReported) {
+        coverageReported = true;
+        try {
+          if (!beforeCitations) throw new Error("initial citation snapshot unavailable");
+          const unread = unreadCitationChanges(beforeCitations, citationPassages(dir), ctx.paperReads!);
+          if (readResearchPolicy(project.id).strict) {
+            const report = strictReport(project.id, dir);
+            if (report.open) onEvent({ type: "notice", tone: "warn", text: `Strict writing mode: ${report.open} passages remain open. Review their evidence and uncited assertions in Research before approval.` });
+          }
+          if (unread.length) onEvent({ type: "notice", tone: "warn", text:
+            `Source reading incomplete: new or changed citation passages refer to ${unread.join(", ")}, but these papers were not opened with read_paper in this turn. Their content has not been established by this turn's source-reading tools. Read the relevant papers or provide the missing PDFs/passages before relying on these claims.` });
+        } catch {
+          onEvent({ type: "notice", tone: "warn", text: "The source-reading check could not inspect all changed citation passages. Source coverage remains unconfirmed." });
+        }
+      }
+      onEvent(event);
+    },
   };
 
   try {
     await backend.runTurn(ctx);
   } catch (err: any) {
     if (controller.signal.aborted) {
-      onEvent({ type: "turn_end", isError: false, interrupted: true });
+      ctx.emit({ type: "turn_end", isError: false, interrupted: true });
     } else {
       onEvent({ type: "error", message: String(err?.message ?? err) });
-      onEvent({ type: "turn_end", isError: true });
+      ctx.emit({ type: "turn_end", isError: true });
     }
   } finally {
     // No pending question may outlive its turn — normally the abort signal or

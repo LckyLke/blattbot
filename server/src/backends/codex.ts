@@ -1,4 +1,9 @@
 /** Codex owns reasoning and conversation history; BlattBot owns project tools. */
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { DATA_DIR } from "../config.js";
+import { listChats, readTranscript } from "../chats.js";
 import { loadSettings, type Settings } from "../settings.js";
 import { CodexClient, codexWorkspace } from "./codex-client.js";
 import {
@@ -19,6 +24,43 @@ export function codexTools() {
   }));
 }
 
+const toolsetPath = (id: string) => join(DATA_DIR, "codex-toolsets", `${id}.txt`);
+const toolsetHash = () => createHash("sha256").update(JSON.stringify(codexTools())).digest("hex");
+function hasCurrentTools(id: string): boolean {
+  try { return readFileSync(toolsetPath(id), "utf8") === toolsetHash(); } catch { return false; }
+}
+export function recordCodexToolset(id: string): void {
+  if (!/^[a-zA-Z0-9-]+$/.test(id)) throw new Error("invalid Codex thread id");
+  mkdirSync(join(DATA_DIR, "codex-toolsets"), { recursive: true });
+  writeFileSync(toolsetPath(id), toolsetHash());
+}
+
+/** Dynamic tools are fixed at thread/start. Carry recent conversation text
+ * into a fresh native session when the tool catalog changes, keeping the
+ * user's existing BlattBot chat and transcript intact. */
+function upgradeContext(ctx: BackendTurnContext, turns: any[]): string {
+  let messages: { role: string; text: string }[] = turns.flatMap((turn) => (turn.items ?? []).flatMap((item: any) => {
+    if (item.type === "agentMessage") return [{ role: "assistant", text: item.text ?? "" }];
+    if (item.type === "userMessage") return [{ role: "user", text: (item.content ?? []).filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n") }];
+    return [];
+  }));
+  if (!messages.length) {
+    const chat = listChats(ctx.project.id).find((chat) => chat.sessionId === ctx.session.sessionId);
+    if (chat) messages = readTranscript(ctx.project.id, chat.id)
+      .filter((event) => event.type === "user_message" || event.type === "text_final")
+      .map((event) => ({ role: event.type === "user_message" ? "user" : "assistant", text: String(event.text ?? "") }));
+  }
+  const recent: typeof messages = [];
+  let size = 0;
+  for (const message of messages.reverse()) {
+    const text = message.text.slice(-20_000);
+    if (size + text.length > 60_000) break;
+    size += text.length;
+    recent.unshift({ ...message, text });
+  }
+  return recent.length ? `Recent conversation context carried over after a tool update (older messages and tool outputs may be omitted; re-open sources before relying on them):\n${JSON.stringify(recent)}\n\nCurrent request:\n` : "";
+}
+
 interface CodexRun {
   prompt: string;
   instructions: string;
@@ -26,9 +68,10 @@ interface CodexRun {
   signal: AbortSignal;
   model: string;
   ctx?: BackendTurnContext;
+  images?: string[];
 }
 
-async function run({ prompt, instructions, settings, signal, model, ctx }: CodexRun): Promise<string> {
+async function run({ prompt, instructions, settings, signal, model, ctx, images = [] }: CodexRun): Promise<string> {
   signal.throwIfAborted();
   const client = new CodexClient();
   const started = Date.now();
@@ -125,14 +168,22 @@ async function run({ prompt, instructions, settings, signal, model, ctx }: Codex
     };
     const previous = ctx?.session.sessionId;
     const resume = previous && isCodexSessionId(previous) ? previous.slice(6) : undefined;
-    const response = resume
+    let response = resume
       ? await client.request("thread/resume", { ...common, threadId: resume })
       : await client.request("thread/start", { ...common, dynamicTools: ctx ? codexTools() : [], ephemeral: !ctx });
+    const upgraded = Boolean(resume && ctx && !hasCurrentTools(resume));
+    if (upgraded && ctx) {
+      prompt = upgradeContext(ctx, response.thread.turns ?? []) + prompt;
+      response = await client.request("thread/start", { ...common, dynamicTools: codexTools() });
+      initialUsage = undefined;
+      emit({ type: "notice", tone: "info", text: "Updated this chat's Codex session to enable the current paper-reading tools. Recent conversation text is carried forward when available; the full transcript remains in this chat. Paper sources will be read again as needed." });
+    }
     threadId = response.thread.id;
     actualModel = response.model || model;
-    if (ctx && !resume) {
+    if (ctx && (!resume || upgraded)) {
+      recordCodexToolset(threadId);
       ctx.session.onSessionId?.(`codex-${threadId}`);
-      if (previous) emit({ type: "notice", tone: "info", text: "Started a Codex conversation. Earlier messages from the other backend remain in this chat, but are not part of Codex's memory." });
+      if (previous && !upgraded) emit({ type: "notice", tone: "info", text: "Started a Codex conversation. Earlier messages from the other backend remain in this chat, but are not part of Codex's memory." });
     }
     signal.throwIfAborted();
     turnStarted = true;
@@ -142,6 +193,7 @@ async function run({ prompt, instructions, settings, signal, model, ctx }: Codex
       input: [
         { type: "text", text: prompt, text_elements: [] },
         ...(ctx?.attachments ?? []).map((a) => ({ type: "localImage", path: a.path })),
+        ...images.map((path) => ({ type: "localImage", path })),
       ],
       ...(settings.codexEffort ? { effort: settings.codexEffort } : {}),
     });
@@ -178,7 +230,7 @@ export const codexBackend: AgentBackend = {
   },
 };
 
-export function runOneShotCodex(prompt: string, settings = loadSettings()): Promise<string> {
+export function runOneShotCodex(prompt: string, settings = loadSettings(), images: string[] = [], signal?: AbortSignal): Promise<string> {
   return run({ prompt, instructions: "Answer the user's request directly in text. No tools are available.",
-    settings, signal: AbortSignal.timeout(120_000), model: settings.codexModel.trim() });
+    settings, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000), model: settings.codexModel.trim(), images });
 }

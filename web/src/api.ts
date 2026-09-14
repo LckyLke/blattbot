@@ -269,7 +269,8 @@ export type CitationVerdict = "supported" | "partially_supported" | "not_support
 export interface CitationCheckResult {
   verdict: CitationVerdict;
   explanation: string;
-  basis: "full_text" | "abstract";
+  basis: "full_text" | "abstract" | "none";
+  truncated?: boolean;
 }
 
 /** One entry's result in a project-wide "verify all" sweep. */
@@ -401,6 +402,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  research: <T = unknown>(id: string, path = "", body?: unknown, method?: string) => request<T>(`/api/projects/${encodeURIComponent(id)}/research${path}`, body === undefined ? undefined : { method: method ?? "POST", body: JSON.stringify(body) }),
   health: () => request<{ ok: boolean; engine: string | null }>("/api/health"),
   version: () => request<{ current: string; latest: string | null }>("/api/version"),
   projects: () => request<Project[]>("/api/projects"),

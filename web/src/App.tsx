@@ -26,18 +26,20 @@ import Chat, { type ChatItem } from "./components/Chat";
 import ProofPanel from "./components/ProofPanel";
 import PdfPanel from "./components/PdfPanel";
 import RefsPanel from "./components/RefsPanel";
+import ResearchPanel from "./components/ResearchPanel";
 import SourcePanel from "./components/SourcePanel";
 import { countDrafts, subscribeDrafts } from "./drafts";
 
 type View = "dashboard" | "project";
 
-/** The five views the two project panes can show, and their tab labels. */
+/** The views the two project panes can show, and their tab labels. */
 const PANE_TABS = [
   ["chat", "Chat"],
   ["proof", "Proof"],
   ["source", "Source"],
   ["pdf", "PDF"],
   ["refs", "References"],
+  ["research", "Research"],
 ] as const;
 type PaneView = (typeof PANE_TABS)[number][0];
 type PaneSide = "left" | "right";
@@ -312,6 +314,7 @@ function AppShell() {
     source: "b",
     pdf: "b",
     refs: "b",
+    research: "b",
   });
   paneOwner.current[panes.left] = physOnLeft;
   paneOwner.current[panes.right] = physOnRight;
@@ -1445,6 +1448,11 @@ function AppShell() {
     const saved = Number(localStorage.getItem("blattbot.panelWidth"));
     return clampPanel(Number.isFinite(saved) && saved > 0 ? saved : Math.round(window.innerWidth * 0.44));
   });
+  useEffect(() => {
+    const resize = () => setPanelW((width) => clampPanel(width));
+    window.addEventListener("resize", resize);
+    return () => window.removeEventListener("resize", resize);
+  }, []);
   const dragging = useRef(false);
 
   const startDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -1582,6 +1590,8 @@ function AppShell() {
             onOpenRef={revealInRefs}
           />
         );
+      case "research":
+        return <ResearchPanel key={selectedId!} projectId={selectedId!} stamp={sourceStamp + chat.length} busy={busy} onJump={revealInSource} onWrite={fixWithAgent} />;
       case "refs":
         return (
           <RefsPanel

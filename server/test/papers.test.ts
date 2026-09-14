@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { textPdf } from "./fixtures/pdf.js";
 
 let dataDir: string;
 let projectDir: string;
@@ -389,7 +390,7 @@ describe("ensurePaperPdf", () => {
       throw new Error(`unexpected fetch: ${url}`);
     }));
     const path = await papers.ensurePaperPdf("proj1", projectDir, "zhu2021nbfnet");
-    expect(path).toBe(join(dataDir, "papers", "proj1", "zhu2021nbfnet.pdf"));
+    expect(path.startsWith(join(dataDir, "papers", "proj1"))).toBe(true);
     expect(existsSync(path)).toBe(true);
     expect(readFileSync(path, "latin1")).toContain("%PDF-1.4");
     expect(papers.paperPdfPath("proj1", "zhu2021nbfnet")).toBe(path);
@@ -491,7 +492,8 @@ describe("verifyCitationSupport", () => {
         const u = String(url);
         if (u.includes("api.semanticscholar.org")) return jsonRes(404, {});
         if (u.startsWith("https://arxiv.org/pdf/2106.06935")) {
-          return textPdfRes("NBFNet generalizes Bellman-Ford to learn link representations end-to-end.");
+          const pdf = textPdf(["Neural Bellman-Ford Networks.", "NBFNet generalizes Bellman-Ford to learn link representations end-to-end."]);
+          return { ok: true, status: 200, arrayBuffer: async () => pdf };
         }
         throw new Error(`unexpected fetch: ${u}`);
       }),

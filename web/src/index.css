@@ -648,11 +648,12 @@ button:hover > .tex-logo .down,
   background: color-mix(in srgb, var(--color-leaf) 45%, transparent);
   color: transparent;
 }
-/* Find-in-PDF (chat blockquote → PDF): the matched spans flash gold; the
-   glyphs stay transparent — the canvas below shows the real ink. */
-.textLayer span.pdf-find-flash {
+/* Exact find ranges sit above the canvas without changing selectable PDF text. */
+.pdf-find-flash {
+  position: absolute;
+  pointer-events: none;
   background: color-mix(in srgb, var(--color-gold) 50%, transparent);
-  color: transparent;
+  outline: 1px solid color-mix(in srgb, var(--color-gold) 70%, transparent);
 }
 
 /* Reveal flash: a leaf-tinted line highlight that fades away */
@@ -693,3 +694,13 @@ button:hover > .tex-logo .down,
     background-color: color-mix(in srgb, var(--color-gold) 16%, transparent);
   }
 }
+/* The source editor's find stays compact and matches PDF keyboard behavior. */
+.cm-editor .blattbot-source-search { padding: 8px 10px; }
+.source-find-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.source-find-row[hidden] { display: none; }
+.source-find-row + .source-find-row { margin-top: 8px; }
+.source-find-row > input { flex: 1 1 130px; min-width: 100px; background: var(--color-ink); color: var(--color-paper); border: 1px solid var(--color-rule); padding: 5px 8px; border-radius: 4px; }
+.source-find-row button { background: var(--color-ink-3); color: var(--color-paper-dim); border: 1px solid var(--color-rule); border-radius: 4px; padding: 4px 7px; font: 11px var(--font-sans); }
+.source-find-row button[aria-pressed="true"] { color: var(--color-leaf); border-color: var(--color-leaf-deep); }
+.source-find-row button:disabled { opacity: .4; }
+.source-find-row > [role="status"] { min-width: 50px; color: var(--color-paper-dim); font-size: 11px; }

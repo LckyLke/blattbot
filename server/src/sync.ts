@@ -1,3 +1,4 @@
+import { assertStrictReady } from "./research/strict.js";
 /**
  * Sync dispatch: every project is one of
  *  - kind "git":      a clone of a real git remote (Overleaf git bridge, GitHub, …)
@@ -156,6 +157,7 @@ export async function approve(
   opts: ApproveOptions = {},
 ): Promise<ApproveResult> {
   const dir = projectDir(project.id);
+  assertStrictReady(project.id, dir);
   if (project.kind === "local") {
     // No remote — approval is just the local commit.
     await git.commitAll(dir, message);

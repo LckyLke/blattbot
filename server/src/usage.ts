@@ -18,11 +18,27 @@ export type CiteUsage = Record<string, UsageSite[]>;
 
 // Longest names first so the regex alternation never stops at a prefix.
 const CITE_COMMANDS = [
+  "autocites",
+  "parencites",
+  "textcites",
+  "footcites",
+  "smartcites",
+  "supercites",
+  "cites",
   "autocite",
   "parencite",
   "textcite",
   "footcite",
+  "smartcite",
+  "supercite",
+  "footfullcite",
+  "fullcite",
+  "citeyearpar",
+  "citeauthor",
+  "citeyear",
+  "citetitle",
   "citealp",
+  "citealt",
   "citep",
   "citet",
   "nocite",
@@ -31,8 +47,8 @@ const CITE_COMMANDS = [
 
 // \cite[p.~5]{a,b} — starred forms and up to two optional args (natbib pre/post notes).
 const CITE_RE = new RegExp(
-  `\\\\(?:${CITE_COMMANDS.join("|")})\\*?(?:\\s*\\[[^\\]]*\\]){0,2}\\s*\\{([^{}]*)\\}`,
-  "g",
+  `\\\\(${CITE_COMMANDS.join("|")})\\*?(?:\\s*\\[[^\\]]*\\]){0,2}\\s*\\{([^{}]*)\\}`,
+  "gi",
 );
 
 /** Drop LaTeX comments: everything from an unescaped % to the end of the line. */
@@ -41,7 +57,11 @@ export function stripComments(tex: string): string {
     .split("\n")
     .map((line) => {
       for (let i = 0; i < line.length; i++) {
-        if (line[i] === "%" && (i === 0 || line[i - 1] !== "\\")) return line.slice(0, i);
+        if (line[i] === "%") {
+          let slashes = 0;
+          for (let j = i - 1; j >= 0 && line[j] === "\\"; j--) slashes++;
+          if (slashes % 2 === 0) return line.slice(0, i);
+        }
       }
       return line;
     })
@@ -54,22 +74,43 @@ export function stripComments(tex: string): string {
  * optional-arg forms included) and count citations per key per file.
  * Pure: takes file contents, returns key → [{file, count, lines}].
  */
-export function scanCiteUsage(files: { file: string; content: string }[]): CiteUsage {
+export function scanCiteUsage(
+  files: { file: string; content: string }[],
+): CiteUsage {
   const usage: CiteUsage = {};
   for (const { file, content } of files) {
-    const text = stripComments(content);
+    const blank = (value: string) => value.replace(/[^\n]/g, " ");
+    const text = stripComments(content)
+      .replace(
+        /\\begin\{(verbatim\*?|lstlisting|minted|comment)\}[\s\S]*?\\end\{\1\}/g,
+        blank,
+      )
+      .replace(/\\verb\*?([^\w\s])[^\n]*?\1/g, blank);
     // Matches arrive in document order, so line lookup can walk forward once.
     let scanPos = 0;
     let scanLine = 1;
     const lineAt = (idx: number) => {
-      for (; scanPos < idx; scanPos++) if (text.charCodeAt(scanPos) === 10) scanLine++;
+      for (; scanPos < idx; scanPos++)
+        if (text.charCodeAt(scanPos) === 10) scanLine++;
       return scanLine;
     };
     CITE_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = CITE_RE.exec(text)) !== null) {
       const line = lineAt(m.index); // the line the \cite command starts on
-      for (const rawKey of m[1].split(",")) {
+      const groups = [m[2]];
+      if (m[1].toLowerCase().endsWith("s")) {
+        let tail: RegExpExecArray | null;
+        while (
+          (tail = /^(?:\s*\[[^\]]*\]){0,2}\s*\{([^{}]*)\}/.exec(
+            text.slice(CITE_RE.lastIndex),
+          ))
+        ) {
+          groups.push(tail[1]);
+          CITE_RE.lastIndex += tail[0].length;
+        }
+      }
+      for (const rawKey of groups.flatMap((group) => group.split(","))) {
         const key = rawKey.trim();
         if (!key || key === "*") continue; // \nocite{*} is "cite everything", not a key
         const sites = (usage[key] ??= []);
@@ -112,7 +153,11 @@ const MAX_CLAIM_CHARS = 1500;
  * boundary; comments are stripped first so a commented-out \cite never
  * pollutes the extracted text. Pure.
  */
-export function claimContextAtLine(tex: string, line: number): string {
+export function claimContextAtLine(
+  tex: string,
+  line: number,
+  maxChars = MAX_CLAIM_CHARS,
+): string {
   const lines = stripComments(tex).split("\n");
   const idx = Math.max(0, Math.min(lines.length - 1, line - 1));
   let start = idx;
@@ -124,7 +169,7 @@ export function claimContextAtLine(tex: string, line: number): string {
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
-  return context.length > MAX_CLAIM_CHARS ? `${context.slice(0, MAX_CLAIM_CHARS)}…` : context;
+  return context.length > maxChars ? `${context.slice(0, maxChars)}…` : context;
 }
 
 /** Scan every .tex file in a project directory. */
@@ -133,7 +178,10 @@ export function collectCiteUsage(projectPath: string): CiteUsage {
   const inputs: { file: string; content: string }[] = [];
   for (const file of texFiles) {
     try {
-      inputs.push({ file, content: readFileSync(join(projectPath, file), "utf8") });
+      inputs.push({
+        file,
+        content: readFileSync(join(projectPath, file), "utf8"),
+      });
     } catch {
       /* unreadable file — skip */
     }

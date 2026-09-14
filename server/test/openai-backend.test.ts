@@ -9,6 +9,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { textPdf } from "./fixtures/pdf.js";
 
 // ---- Mock OpenAI-compatible server -----------------------------------------
 
@@ -218,6 +219,28 @@ function pngBytes(): Buffer {
 // ---- Integration: the full loop against the mock ----------------------------
 
 describe("openai backend turn loop", () => {
+  it.each([false, true])("discloses unread citation edits independently of model prose (source read: %s)", async (readSource) => {
+    const { agent, project, dir } = await setup();
+    writeFileSync(join(dir, "refs.bib"), "@article{smith2020, title={Graph Models}}");
+    writeFileSync(join(dir, "smith2020.pdf"), textPdf(["Graph Models. Graphs improve accuracy."]));
+    mock.queue = [
+      { kind: "tools", calls: [
+        ...(readSource ? [{ name: "read_paper", args: { key: "smith2020" } }] : []),
+        { name: "write_file", args: { path: "main.tex", content: "Graphs improve accuracy \\cite{smith2020}." } },
+      ] },
+      { kind: "text", text: "All claims are ready." },
+    ];
+    const { events, done } = runCollected(agent, project, "Write related work");
+    await done;
+    const warning = events.findIndex((event) => event.type === "notice" && String(event.text).includes("Source reading incomplete"));
+    if (readSource) expect(warning).toBe(-1);
+    else {
+      expect(warning).toBeGreaterThan(-1);
+      expect(String(events[warning].text)).toContain("smith2020");
+      expect(warning).toBeLessThan(events.findIndex((event) => event.type === "turn_end"));
+    }
+  });
+
   it("runs list_files → read_file → edit_file → final text with the full event contract", async () => {
     const { agent, project, dir } = await setup();
     mock.queue = [

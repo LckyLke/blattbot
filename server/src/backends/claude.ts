@@ -7,6 +7,7 @@
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool, HookCallback, OnUserDialog, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { readFileSync } from "node:fs";
 import { getProject, projectDir, updateProject } from "../config.js";
 import { attachmentBase64, chatUploadsDir, type TurnAttachment } from "../chatimages.js";
 import { compileProject } from "../compile.js";
@@ -14,10 +15,11 @@ import { addCitation, formatAddCitationResult, readAllBibEntries, searchPapers }
 import {
   auditEntries,
   formatAuditReport,
-  formatCitationCheckResult,
-  verifyCitationSupport,
   verifyEntry,
 } from "../papers.js";
+import { readPaperTool, verifyPaperTool } from "./paper-tools.js";
+import { RESEARCH_TOOLS, executeResearchTool } from "../research/tools.js";
+import { searchLiterature } from "../research/discovery.js";
 import { checkToolPaths, projectReadRoots, secretDenyRules } from "./paths.js";
 import { loadSettings, type Settings } from "../settings.js";
 import { executableOptions } from "../sdkinfo.js";
@@ -40,7 +42,8 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
 }
 
-function buildMcpServer(projectId: string) {
+export function buildMcpServer(ctx: BackendTurnContext) {
+  const projectId = ctx.project.id;
   const dir = projectDir(projectId);
 
   const compileTool = tool(
@@ -69,7 +72,9 @@ function buildMcpServer(projectId: string) {
     },
     async ({ query: q, limit }) => {
       try {
-        const hits = await searchPapers(q, limit ?? 5);
+        const run = await searchLiterature(projectId, q, limit ?? 5);
+        if (run.error) throw new Error(run.error);
+        const hits = run.results;
         if (hits.length === 0) return text("No results found — try different phrasing or author names.");
         const lines = hits.map(
           (h, i) =>
@@ -149,10 +154,30 @@ function buildMcpServer(projectId: string) {
     },
     async ({ key, claim }) => {
       try {
-        const result = await verifyCitationSupport(projectId, dir, key, claim);
-        return text(formatCitationCheckResult(key, claim, result));
+        return text(await verifyPaperTool(ctx, key, claim));
       } catch (err: any) {
         return text(`verify_citation_support failed: ${err?.message ?? err}`);
+      }
+    },
+  );
+
+  const readPaperSourceTool = tool(
+    "read_paper",
+    AGENT_TOOL_INFO.find((info) => info.name === "read_paper")!.description,
+    {
+      key: z.string().describe("Bibliography cite key of the paper to read"),
+      path: z.string().optional().describe("Optional project-relative or absolute attached-context PDF path"),
+      offset: z.number().int().min(0).optional().describe("Character offset returned by a previous read/search"),
+      limit: z.number().int().min(100).max(40000).optional().describe("Maximum text characters; default 20000"),
+      query: z.string().min(1).optional().describe("Exact phrase to search throughout the paper, case-insensitive"),
+      ocr: z.boolean().optional().describe("Run OCR on page 1 and the requested page; requires Poppler and Tesseract"),
+      page: z.number().int().min(1).max(1000).optional(),
+    },
+    async ({ key, ...opts }) => {
+      try {
+        return text(await readPaperTool(ctx, key, opts));
+      } catch (error: any) {
+        return { ...text(`read_paper failed: ${error?.message ?? error}`), isError: true };
       }
     },
   );
@@ -160,7 +185,12 @@ function buildMcpServer(projectId: string) {
   return createSdkMcpServer({
     name: "blattbot",
     version: "0.1.0",
-    tools: [compileTool, searchTool, addCitationTool, listCitationsTool, auditCitationsTool, verifyCitationTool],
+    tools: [compileTool, searchTool, addCitationTool, listCitationsTool, auditCitationsTool, verifyCitationTool, readPaperSourceTool,
+      ...RESEARCH_TOOLS.map((entry) => tool(entry.name, entry.description, entry.shape, async (args) => {
+        try { return text(await executeResearchTool(ctx, entry.name, args)); }
+        catch (error: any) { return { ...text(`${entry.name} failed: ${error.message}`), isError: true }; }
+      })),
+    ],
   });
 }
 
@@ -660,7 +690,7 @@ export const claudeBackend: AgentBackend = {
         includePartialMessages: true,
         abortController: controller,
         systemPrompt: { type: "preset", preset: "claude_code", append: ctx.systemAppend },
-        mcpServers: { blattbot: buildMcpServer(project.id) },
+        mcpServers: { blattbot: buildMcpServer(ctx) },
         disallowedTools: disallowed,
         settingSources: [],
       },
@@ -777,11 +807,19 @@ export const claudeBackend: AgentBackend = {
  * (The Claude SDK path — agent.ts's runOneShot dispatches here unless the
  * openai backend is active AND fully configured.)
  */
-export async function runOneShot(prompt: string): Promise<string> {
+export async function runOneShot(prompt: string, images: string[] = [], signal?: AbortSignal): Promise<string> {
   const settings = loadSettings();
+  signal?.throwIfAborted();
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
   const q = query({
-    prompt,
+    prompt: images.length ? (async function* () {
+      yield { type: "user", session_id: "", parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text: prompt }, ...images.map((path) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: readFileSync(path).toString("base64") } }))] } } as SDKUserMessage;
+    })() : prompt,
     options: {
+      abortController: controller,
       maxTurns: 1,
       allowedTools: [],
       permissionMode: "bypassPermissions",
@@ -802,4 +840,5 @@ export async function runOneShot(prompt: string): Promise<string> {
     }
   }
   throw new Error("one-shot agent call returned no result");
+  } finally { signal?.removeEventListener("abort", abort); }
 }

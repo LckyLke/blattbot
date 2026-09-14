@@ -320,6 +320,7 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__blattbot__search_papers: "Searching literature",
   mcp__blattbot__add_citation: "Adding citation",
   mcp__blattbot__list_citations: "Reading bibliography",
+  mcp__blattbot__read_paper: "Reading paper",
 };
 
 function toolLabel(name: string): string {
