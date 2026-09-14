@@ -704,3 +704,27 @@ button:hover > .tex-logo .down,
 .source-find-row button[aria-pressed="true"] { color: var(--color-leaf); border-color: var(--color-leaf-deep); }
 .source-find-row button:disabled { opacity: .4; }
 .source-find-row > [role="status"] { min-width: 50px; color: var(--color-paper-dim); font-size: 11px; }
+
+/* One full-width pane on phones; all views remain available in its tab bar. */
+.mobile-files-toggle { display: none; }
+@media (max-width: 900px) {
+  .blattbot-header { gap: 10px; padding-inline: 10px; }
+  .blattbot-header > button { flex-shrink: 0; white-space: nowrap; }
+  .blattbot-header > .ml-auto { display: none; }
+  .mobile-files-toggle {
+    display: inline-grid; place-items: center; min-width: 38px; min-height: 38px;
+    border: 1px solid var(--color-rule); border-radius: 6px; color: var(--color-paper);
+    background: var(--color-ink-2); font-size: 18px;
+  }
+  .blattbot-workspace { min-width: 0; }
+  .blattbot-workspace > nav,
+  .blattbot-workspace > [data-pane="right"],
+  .blattbot-workspace > [role="separator"] { display: none; }
+  .blattbot-workspace > [data-pane="left"] {
+    flex: 1; width: 100% !important; min-width: 0; border-right: 0;
+  }
+  .blattbot-workspace.mobile-files-open > nav {
+    display: flex; width: 100%; min-width: 0; border-right: 0;
+  }
+  .blattbot-workspace.mobile-files-open > [data-pane] { display: none; }
+}

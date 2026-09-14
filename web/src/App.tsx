@@ -259,6 +259,7 @@ export default function App() {
 }
 
 function AppShell() {
+  const [mobileFiles, setMobileFiles] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [view, setView] = useState<View>("dashboard");
@@ -1685,7 +1686,8 @@ function AppShell() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-4 border-b border-rule bg-ink-2 px-4">
+      <header className="blattbot-header flex h-12 shrink-0 items-center gap-4 border-b border-rule bg-ink-2 px-4">
+        {inProject && <button className="mobile-files-toggle" aria-label="Toggle project files" aria-expanded={mobileFiles} onClick={() => setMobileFiles(v => !v)}>{mobileFiles ? "✕" : "☰"}</button>}
         <button
           onClick={goDashboard}
           aria-label="Back to the project dashboard"
@@ -1724,7 +1726,7 @@ function AppShell() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
+      <div className={`blattbot-workspace flex min-h-0 flex-1 ${mobileFiles && inProject ? "mobile-files-open" : ""}`}>
         {!inProject ? (
           <Dashboard
             projects={projects}
@@ -1741,8 +1743,8 @@ function AppShell() {
               files={detail?.files ?? []}
               scope={scope}
               onScopeChange={changeScope}
-              onSelect={openProject}
-              onDashboard={goDashboard}
+              onSelect={(id) => { setMobileFiles(false); openProject(id); }}
+              onDashboard={() => { setMobileFiles(false); goDashboard(); }}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenProjectSettings={() => setProjSettingsOpen(true)}
               onSync={selected!.kind === "local" ? undefined : syncNow}
