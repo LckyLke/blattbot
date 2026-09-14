@@ -117,7 +117,7 @@ describe("direct paper reading", () => {
     expect((await executeTool(ctx, "read_paper", { key: "smith2020" })).content).not.toContain("A tempting generated summary");
     writeFileSync(join(uploads, "smith2020.pdf"), textPdf(["Graph Models. Contents."]));
     const result = await executeTool(ctx, "read_paper", { key: "smith2020", query: "nonexistent" });
-    expect(result.content).toContain("No exact text matches");
+    expect(result.content).toContain("No whitespace-normalized phrase matches");
     expect(ctx.paperReads?.size).toBe(0);
   });
 
@@ -189,7 +189,7 @@ describe("long source text", () => {
     const late = readTextPages(pages, { offset: 72000 });
     expect(late.text).toContain("91 percent");
     expect(late.complete).toBe(false);
-    const repeated = readTextPages(["needle ".repeat(100)], { query: "needle" });
+    const repeated = readTextPages(["needle ".repeat(1000)], { query: "needle" });
     expect(repeated.nextOffset).toBeGreaterThan(0);
   });
 });

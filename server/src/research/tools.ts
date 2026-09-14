@@ -3,7 +3,7 @@ import {
   libraryStatus,
   searchLibrary,
 } from "./library.js";
-import { strictReport } from "./strict.js";
+import { evidencePage, evidencePageSchema, strictReportPage, strictPageSchema } from "./report-pages.js";
 import { createJobSchema, researchJobs, listResearchJobs } from "./jobs.js";
 import {
   buildGraph,
@@ -14,7 +14,7 @@ import {
 import { z } from "zod";
 import { checkBibliography } from "./bibliography.js";
 import type { BackendTurnContext } from "../backends/types.js";
-import { evidenceView, verifyClaim } from "./evidence.js";
+import { verifyClaim } from "./evidence.js";
 import {
   analyzePaper,
   buildOutline,
@@ -45,9 +45,9 @@ export const RESEARCH_TOOLS = [
   ),
   define(
     "strict_evidence_report",
-    "Read unresolved cited and uncited passages and the strict writing policy. Only the user may change policy or accept an evidence exception. Use verify_evidence and a strict-audit research task to check gaps.",
-    {},
-    (ctx) => strictReport(ctx.project.id, ctx.dir),
+    "Read a bounded page of cited and uncited evidence issues, with the strict writing policy and global readiness always included. Filter by status (open/accepted), key or file; use offset/limit and returned nextOffset to continue. Only the user may change policy or accept an evidence exception. Use verify_evidence and a strict-audit research task to check gaps.",
+    strictPageSchema.shape,
+    (ctx, args) => strictReportPage(ctx.project.id, ctx.dir, args),
   ),
   define(
     "research_tasks",
@@ -112,9 +112,9 @@ export const RESEARCH_TOOLS = [
   ),
   define(
     "list_evidence",
-    "List every cited manuscript claim with its current evidence status. Stale means the claim or source changed; unchecked means no stored assessment. Use verify_evidence to inspect exact quotations, page numbers and source versions.",
-    {},
-    (ctx) => evidenceView(ctx.project.id, ctx.dir),
+    "List a bounded page of cited manuscript claims with global status counts. Filter by status, key or file; use offset/limit and returned nextOffset to continue. Set include_details for bounded evidence details. Stale means the claim or source changed; unchecked means no stored assessment. Use verify_evidence to inspect exact quotations, page numbers and source versions.",
+    evidencePageSchema.shape,
+    (ctx, args) => evidencePage(ctx.project.id, ctx.dir, args),
   ),
   define(
     "verify_evidence",

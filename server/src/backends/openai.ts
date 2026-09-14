@@ -25,7 +25,7 @@ import { randomBytes } from "node:crypto";
 import { DATA_DIR, getProject } from "../config.js";
 import { assertNoSymlinkPath, resolveReadPath } from "./paths.js";
 import { readPaperTool, verifyPaperTool } from "./paper-tools.js";
-import { readPdfFile } from "../pdftext.js";
+import { readPdfFile, readTextDocument, formatTextExcerpt } from "../pdftext.js";
 import { RESEARCH_TOOLS, executeResearchTool } from "../research/tools.js";
 import { searchLiterature } from "../research/discovery.js";
 import { z } from "zod";
@@ -224,7 +224,7 @@ export const OPENAI_FILE_TOOL_INFO = [
   {
     name: "read_file",
     description:
-      "Read a text file or extract PDF text with page labels — a path relative to the project root, or an absolute attached-context path. PDFs support offset/limit for later text and query for exact-phrase search. For a cited paper use read_paper with its key and optional path so source access is recorded.",
+      "Read a text file or extract PDF text with page labels — a path relative to the project root, or an absolute attached-context path. Text files and PDFs support character offset/limit (default 0/20000, max 40000), with total length and next offset. Text-file offsets refer to the original file. query searches a case-insensitive, whitespace-normalized phrase. For a cited paper use read_paper with its key and optional path so source access is recorded.",
   },
   {
     name: "write_file",
@@ -298,7 +298,7 @@ export function toolDefinitions(readOnly: boolean) {
   const reading = {
     offset: { type: "integer", minimum: 0, description: "Character offset returned by a previous read/search; default 0" },
     limit: { type: "integer", minimum: 100, maximum: 40000, description: "Maximum text characters, default 20000" },
-    query: { type: "string", description: "Optional exact phrase to search throughout the PDF, case-insensitive" },
+    query: { type: "string", description: "Optional literal phrase to search throughout the text file or PDF, ignoring case and whitespace differences" },
   };
   return [
     ...RESEARCH_TOOLS.map((tool) => { const schema = z.toJSONSchema(tool.schema) as any; return fnDef(tool.name, tool.description, schema.properties, schema.required); }),
@@ -521,7 +521,7 @@ export async function executeTool(ctx: BackendTurnContext, name: string, args: a
         if (st.size > MAX_READ_BYTES) throw new Error(`file too large to read (${st.size} bytes)`);
         const buf = readFileSync(abs);
         if (buf.includes(0)) throw new Error("binary file — cannot read as text");
-        return ok(truncateResult(buf.toString("utf8")));
+        return ok(formatTextExcerpt(readTextDocument(buf.toString("utf8"), args)).replace("entire paper", "entire file").replace("All extracted text", "All text"));
       }
       case "write_file": {
         if (ctx.readOnly) throw new Error("file edits are disabled in this read-only mode");

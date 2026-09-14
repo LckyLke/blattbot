@@ -98,11 +98,6 @@ export interface TextExcerpt {
 
 /** Stable character offsets allow reads and searches beyond the first context window. */
 export function readTextPages(pages: string[], opts: TextReadOptions = {}): TextExcerpt {
-  const offset = opts.offset ?? 0;
-  const limit = opts.limit ?? 20_000;
-  if (!Number.isInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
-  if (!Number.isInteger(limit) || limit < 100 || limit > 40_000) throw new Error("limit must be an integer between 100 and 40000");
-  if (opts.query !== undefined && (typeof opts.query !== "string" || !opts.query.trim() || opts.query.length > 1000)) throw new Error("query must be non-empty text of at most 1000 characters");
   const starts: number[] = [];
   let document = "";
   pages.forEach((page, i) => {
@@ -110,29 +105,49 @@ export function readTextPages(pages: string[], opts: TextReadOptions = {}): Text
     document += `[Page ${i + 1}]\n${page || "[No extractable text on this page]"}\n\n`;
   });
   const pageAt = (pos: number) => starts.filter((start) => start <= pos).length;
+  return readTextDocument(document, opts, pageAt);
+}
+
+/** Offsets for text files refer to the original text, with no inserted page labels. */
+export function readTextDocument(document: string, opts: TextReadOptions = {}, pageAt?: (pos: number) => number): TextExcerpt {
+  const offset = opts.offset ?? 0;
+  const limit = opts.limit ?? 20_000;
+  if (!Number.isInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
+  if (!Number.isInteger(limit) || limit < 100 || limit > 40_000) throw new Error("limit must be an integer between 100 and 40000");
+  if (opts.query !== undefined && (typeof opts.query !== "string" || !opts.query.trim() || opts.query.length > 1000)) throw new Error("query must be non-empty text of at most 1000 characters");
   if (offset > document.length) throw new Error(`offset exceeds document length (${document.length})`);
   if (opts.query) {
-    const query = opts.query.trim().toLowerCase();
-    const lower = document.toLowerCase();
+    const query = opts.query.trim();
+    const pattern = query.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+    const search = new RegExp(pattern, "giu");
+    const find = (from: number) => { search.lastIndex = from; return search.exec(document); };
     const hits: string[] = [];
     let cursor = offset;
     let used = 0;
     while (hits.length < 5) {
-      const hit = lower.indexOf(query, cursor);
-      if (hit === -1) break;
+      const match = find(cursor);
+      if (!match) break;
+      const hit = match.index;
       const available = limit - used - (hits.length ? 7 : 0);
       if (available < 100) break;
-      const start = Math.max(0, hit - Math.min(250, Math.floor((available - 60) / 4)));
-      const label = `Page ${pageAt(hit)}, offset ${start}:\n`;
+      const start = Math.max(cursor, hit - Math.min(250, Math.floor((available - 60) / 4)));
+      const label = `${pageAt ? `Page ${pageAt(hit)}, ` : ""}offset ${start}:\n`;
       const end = Math.min(document.length, start + Math.min(1250, available - label.length));
+      if (end < hit + match[0].length) {
+        if (hits.length) break;
+        throw new Error("limit is too small to include this search match; increase limit or use a shorter query");
+      }
       const excerpt = label + document.slice(start, end);
       hits.push(excerpt);
-      used += excerpt.length;
-      cursor = hit + query.length;
+      used += excerpt.length + (hits.length > 1 ? 7 : 0);
+      // Skip fully covered nearby matches, but revisit one crossing the excerpt boundary.
+      let following = find(hit + match[0].length);
+      while (following && following.index + following[0].length <= end) following = find(following.index + following[0].length);
+      cursor = following && following.index < end ? following.index : end;
     }
-    const more = lower.indexOf(query, cursor) !== -1;
+    const more = find(cursor) !== null;
     return {
-      text: hits.length ? hits.join("\n\n---\n\n") : "No exact text matches. Try another phrase or read the text; this does not establish that a claim is unsupported.",
+      text: hits.length ? hits.join("\n\n---\n\n") : "No whitespace-normalized phrase matches. Try another phrase or read the text; this does not establish that a claim is unsupported.",
       hasText: hits.length > 0,
       totalChars: document.length,
       nextOffset: more ? cursor : undefined,
@@ -141,7 +156,7 @@ export function readTextPages(pages: string[], opts: TextReadOptions = {}): Text
   }
   const end = Math.min(document.length, offset + limit);
   return {
-    text: `Excerpt starts on page ${pageAt(offset)}, offset ${offset}.\n${document.slice(offset, end)}`,
+    text: `Excerpt starts ${pageAt ? `on page ${pageAt(offset)}, ` : ""}offset ${offset}.\n${document.slice(offset, end)}`,
     hasText: offset < end,
     totalChars: document.length,
     nextOffset: end < document.length ? end : undefined,
