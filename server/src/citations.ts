@@ -1,3 +1,4 @@
+import { semanticScholarGet, openAlexHeaders } from "./research-providers.js";
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -59,7 +60,7 @@ export async function searchOpenAlex(queryText: string, limit: number): Promise<
   const url =
     `https://api.openalex.org/works?search=${encodeURIComponent(queryText)}` +
     `&per-page=${limit}&mailto=${CROSSREF_MAILTO}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  const res = await fetch(url, { headers: openAlexHeaders(), signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error(`OpenAlex: HTTP ${res.status}`);
   const data: any = await res.json();
   return (data?.results ?? [])
@@ -102,13 +103,7 @@ async function searchSemanticScholar(queryText: string, limit: number): Promise<
   const url =
     `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(queryText)}` +
     `&limit=${limit}&fields=title,authors,year,venue,externalIds,citationCount`;
-  const key = loadSettings().s2ApiKey;
-  const res = await fetch(url, {
-    headers: key ? { "x-api-key": key } : {},
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) throw new Error(`Semantic Scholar: HTTP ${res.status}`);
-  const data: any = await res.json();
+  const data = await semanticScholarGet(url.replace("https://api.semanticscholar.org/graph/v1", ""));
   return (data?.data ?? [])
     .filter((p: any) => p.title)
     .map((p: any) => {
@@ -305,6 +300,7 @@ export async function fetchBibtexByRef(ref: string): Promise<string> {
   const openalex = /^openalex:(W\w+)$/i.exec(ref.trim());
   if (openalex) {
     const res = await fetch(`https://api.openalex.org/works/${openalex[1]}?mailto=${CROSSREF_MAILTO}`, {
+      headers: openAlexHeaders(),
       signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) throw new Error(`OpenAlex record ${openalex[1]} failed: HTTP ${res.status}`);

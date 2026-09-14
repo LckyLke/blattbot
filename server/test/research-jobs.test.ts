@@ -77,6 +77,15 @@ describe("durable Research tasks", () => {
     expect(run).toHaveBeenCalledTimes(3);
     expect(listResearchJobs(id)[0].state).toBe("completed");
   });
+  it("continues library indexing after one paper is rate limited", async () => {
+    const run = vi.fn(async (_id, _dir, _kind, key) => { if (key === "alpha") throw new Error("Semantic Scholar HTTP 429 rate limited"); });
+    const worker = await make(run);
+    worker.create(id, { kind: "library-index", keys: ["alpha", "beta"] });
+    await worker.idle();
+    const { listResearchJobs } = await import("../src/research/jobs.js");
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(listResearchJobs(id)[0]).toMatchObject({ state: "failed", items: [{ key: "alpha", state: "error" }, { key: "beta", state: "done" }] });
+  });
   it("interrupts a pending paper download and does not replace cancellation with a missing-source result", async () => {
     const { getPaperContent, readPaperStore } = await import("../src/papers.js");
     const { withResearchOperation } = await import("../src/research/store.js");

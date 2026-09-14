@@ -38,6 +38,23 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [s2Key, setS2Key] = useState("");
+  const [openAlexKey, setOpenAlexKey] = useState("");
+  const [unpaywallEmail, setUnpaywallEmail] = useState("");
+  const [providerBusy, setProviderBusy] = useState("");
+  const [providerResult, setProviderResult] = useState<Record<string, string>>({});
+  async function checkProvider(provider: "semantic-scholar" | "openalex") {
+    setProviderBusy(provider);
+    try {
+      const key = (provider === "semantic-scholar" ? s2Key : openAlexKey).trim();
+      if (key) {
+        setSettings(await api.saveSettings(provider === "semantic-scholar" ? { s2ApiKey: key } : { openAlexApiKey: key }));
+        if (provider === "semantic-scholar") setS2Key(""); else setOpenAlexKey("");
+      }
+      const result = await api.checkResearchProvider(provider);
+      setProviderResult(previous => ({ ...previous, [provider]: result.message }));
+    } catch (error: any) { setProviderResult(previous => ({ ...previous, [provider]: error.message })); }
+    finally { setProviderBusy(""); }
+  }
   const [baseUrl, setBaseUrl] = useState("");
   const [oaiBaseUrl, setOaiBaseUrl] = useState("");
   const [oaiModel, setOaiModel] = useState("");
@@ -74,6 +91,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
       setEngine(s.engine);
       setEffort(s.effort ?? "");
       setFallbackModel(s.fallbackModel ?? "");
+      setUnpaywallEmail(s.unpaywallEmail ?? "");
     }).catch((err) => setError(`Could not load settings: ${err.message}`));
     api.agentInfo().then(setInfo).catch(() => setInfo(null));
   }, []);
@@ -175,10 +193,13 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
       if (oaiKey.trim()) patch.openaiApiKey = oaiKey.trim();
       else if (clearOaiKey) patch.openaiApiKey = "";
       if (s2Key.trim()) patch.s2ApiKey = s2Key.trim();
+      if (openAlexKey.trim()) patch.openAlexApiKey = openAlexKey.trim();
+      patch.unpaywallEmail = unpaywallEmail.trim();
       const next = await api.saveSettings(patch);
       setSettings(next);
       setApiKey("");
       setS2Key("");
+      setOpenAlexKey("");
       setClearKey(false);
       setOaiKey("");
       setClearOaiKey(false);
@@ -662,7 +683,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                 Semantic Scholar API key{" "}
                 <span className="text-graphite/60">
                   {settings.hasS2ApiKey
-                    ? "(set — lifts the paper-search rate limit)"
+                    ? "(saved on this server — request limits still apply)"
                     : "(optional — the free shared pool is heavily rate-limited)"}
                 </span>
                 <input
@@ -673,6 +694,21 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                 />
               </label>
+
+              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("semantic-scholar")} className="mt-2 rounded border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "semantic-scholar" ? "Checking…" : s2Key.trim() ? "Save & test Semantic Scholar key" : "Test Semantic Scholar connection"}</button>
+              {providerResult["semantic-scholar"] && <p role="status" className="mt-2 text-xs text-paper-dim">{providerResult["semantic-scholar"]}</p>}
+              <label className="mt-4 block text-[11px] text-graphite">
+                OpenAlex API key <span className="text-graphite/60">{settings.hasOpenAlexApiKey ? "(configured on this server)" : "(optional — larger daily research budget)"}</span>
+                <input type="password" value={openAlexKey} onChange={event => setOpenAlexKey(event.target.value)} placeholder={settings.hasOpenAlexApiKey ? "•••••••• (set)" : "Get a free key at openalex.org/settings/api"} className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper" />
+              </label>
+              <p className="mt-1 text-[11px] text-graphite">Used for citation graphs, discovery and paper metadata. <a href="https://openalex.org/settings/api" target="_blank" rel="noreferrer" className="text-leaf">Get a key ↗</a></p>
+              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("openalex")} className="mt-2 rounded border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "openalex" ? "Checking…" : openAlexKey.trim() ? "Save & test OpenAlex key" : "Test OpenAlex connection"}</button>
+              {providerResult.openalex && <p role="status" className="mt-2 text-xs text-paper-dim">{providerResult.openalex}</p>}
+              <label className="mt-4 block text-[11px] text-graphite">
+                Unpaywall contact email (optional)
+                <input type="email" value={unpaywallEmail} onChange={event => setUnpaywallEmail(event.target.value)} placeholder="Your contact email" className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 text-xs text-paper" />
+              </label>
+              <p className="mt-1 text-[11px] text-graphite">Adds another source of open-access PDF links. Unpaywall receives this email with DOI lookups; no API key is needed.</p>
 
               <label className="mt-3 block text-[11px] text-graphite">
                 TeX engine

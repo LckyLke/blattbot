@@ -14,6 +14,8 @@ import { contextDirectories, contextUploadsDir } from "./context.js";
 import { resolveReadPath } from "./backends/paths.js";
 import { extractPdfPages, formatTextExcerpt, readTextPages, MAX_PDF_BYTES, type TextReadOptions, type TextExcerpt } from "./pdftext.js";
 import { loadSettings } from "./settings.js";
+import { RateLimitError, semanticScholarGet, openAlexHeaders, unpaywallPdfUrls } from "./research-providers.js";
+export { RateLimitError } from "./research-providers.js";
 import {
   CROSSREF_MAILTO,
   readAllBibEntries,
@@ -98,42 +100,7 @@ export interface S2Paper {
   year?: number | null;
 }
 
-export class RateLimitError extends Error {
-  constructor() {
-    super("Semantic Scholar rate limited — add a Semantic Scholar API key in Settings or retry later");
-    this.name = "RateLimitError";
-  }
-}
-
-/**
- * A personal S2 key's introductory limit is 1 request/second — easy to blow
- * through by accident, since resolveS2Paper below can fire up to three
- * lookups (DOI, arXiv, title) back-to-back for one entry when the earlier
- * ones 404. Only paced when a key is configured: the unauthenticated tier's
- * constraint is a large pool shared across the whole internet, not a
- * per-caller quota, so self-throttling to 1/sec there would only slow things
- * down without reflecting the real limit.
- */
-const S2_MIN_INTERVAL_MS = 1100;
-let lastS2CallAt = 0;
-
-/** GET an S2 endpoint. Returns null on 404, throws RateLimitError on 429. */
-async function s2Get(path: string): Promise<any | null> {
-  const key = loadSettings().s2ApiKey;
-  if (key) {
-    const wait = S2_MIN_INTERVAL_MS - (Date.now() - lastS2CallAt);
-    if (wait > 0) await sleep(wait);
-    lastS2CallAt = Date.now();
-  }
-  const res = await fetch(`${S2_BASE}${path}`, {
-    headers: key ? { "x-api-key": key } : {},
-    signal: researchTimeout(20000),
-  });
-  if (res.status === 404) return null;
-  if (res.status === 429) throw new RateLimitError();
-  if (!res.ok) throw new Error(`Semantic Scholar: HTTP ${res.status}`);
-  return res.json();
-}
+const s2Get = semanticScholarGet;
 
 /** Extract an arXiv id from a bib entry (eprint field or a 10.48550 DOI). */
 export function arxivIdFromEntry(entry: Pick<BibEntry, "fields">): string | undefined {
@@ -217,7 +184,7 @@ function openAlexPaperFromWork(work: any): OpenAlexPaper {
   return {
     title: work?.display_name ?? undefined,
     abstract: reconstructAbstract(work?.abstract_inverted_index),
-    oaUrl: work?.open_access?.oa_url ?? work?.best_oa_location?.pdf_url ?? undefined,
+    oaUrl: work?.best_oa_location?.pdf_url ?? work?.locations?.find((location: any) => location.is_oa && location.pdf_url)?.pdf_url ?? work?.open_access?.oa_url ?? undefined,
   };
 }
 
@@ -225,6 +192,7 @@ function openAlexPaperFromWork(work: any): OpenAlexPaper {
 async function openAlexGet(path: string): Promise<any | null> {
   const sep = path.includes("?") ? "&" : "?";
   const res = await fetch(`${OPENALEX_BASE}${path}${sep}mailto=${CROSSREF_MAILTO}`, {
+    headers: openAlexHeaders(),
     signal: researchTimeout(20000),
   });
   if (!res.ok) return null;
@@ -440,6 +408,14 @@ export async function ensurePaperPdf(projectId: string, projectPath: string, cit
       if (fallback) return fallback;
     }
   }
+  const extra = await unpaywallPdfUrls(entryDoi(entry.fields)).catch(() => []);
+  if (extra.length) {
+    const unseen = extra.filter(url => !candidates.has(url));
+    candidates.clear();
+    for (const url of unseen) candidates.add(url);
+    const fallback = await tryCandidates();
+    if (fallback) return fallback;
+  }
   if (candidates.size === 0) throw rateLimited ?? new NoPdfError();
   throw new NoPdfError();
 }
@@ -553,6 +529,8 @@ export async function getPaperContent(
     result.pages = [abstract];
     result.source = origin;
     result.limitations.push("Only the abstract is available. Use only claims explicitly stated there; ask for the PDF or relevant passages for methods, results, or limitations beyond it.");
+  } else if (result.limitations.some(message => /rate.?limit|HTTP (429|503)|fetch failed|network|timed? ?out/i.test(message))) {
+    result.limitations.push("Some source services were unavailable, so paper coverage is not yet determined. Retry later or attach the paper under External context; leave unsupported claims open.");
   } else result.limitations.push("No open-access PDF or abstract could be found. Ask the user to attach this paper under External context or provide the relevant passages; leave unsupported claims open.");
   return result;
 }

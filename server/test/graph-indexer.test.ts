@@ -244,6 +244,46 @@ describe("automatic citation graph indexing", () => {
     await f.worker.idle();
     expect(f.build).toHaveBeenCalledTimes(6);
   });
+  it("caps transient network backoff and migrates the old six-hour wait", async () => {
+    const f = fixture(1);
+    f.errors["old-project"] = { key0: "fetch failed" };
+    const { saveStore, readStore } = await import("../src/research/store.js");
+    saveStore("old-project", "graph-attempts", { key0: { hash: "v1", failures: 7, retryAt: Date.now() + 6 * 3600_000 } });
+    f.worker.scan();
+    await f.worker.idle();
+    expect(f.build).not.toHaveBeenCalled();
+    f.advance(30_001);
+    f.worker.scan(); await f.worker.idle();
+    expect(f.build).toHaveBeenCalledTimes(1);
+    const attempt = readStore<any>("old-project", "graph-attempts", {}).key0;
+    expect(attempt).toMatchObject({ policy: 2, kind: "network", failures: 8 });
+    expect(f.worker.status("old-project", "/old-project").reason).toBe("network");
+    f.advance(120_001);
+    f.errors["old-project"] = {};
+    f.worker.scan(); await f.worker.idle();
+    expect(f.worker.status("old-project", "/old-project").state).toBe("ready");
+  });
+  it("preserves provider Retry-After across restart and an explicit retry", async () => {
+    const f = fixture(1);
+    f.errors["old-project"] = { key0: "Source service returned HTTP 429" };
+    const { saveStore } = await import("../src/research/store.js");
+    saveStore("old-project", "graph-attempts", { key0: { hash: "v1", failures: 1, retryAt: Date.now() + 300_000, serverRetryAt: Date.now() + 300_000, kind: "rate_limit", policy: 2 } });
+    const restarted = f.create();
+    restarted.request("old-project", "/old-project", true);
+    await restarted.idle();
+    expect(f.build).not.toHaveBeenCalled();
+    expect(restarted.status("old-project", "/old-project")).toMatchObject({ state: "waiting", reason: "rate_limit" });
+    f.advance(300_001);
+    f.errors["old-project"] = {};
+    restarted.scan(); await restarted.idle();
+    expect(f.build).toHaveBeenCalledTimes(1);
+  });
+  it("counts saved connections separately from incomplete titles", async () => {
+    const f = fixture(2);
+    f.loaded["old-project"] = { key0: "v1", key1: "v1" };
+    f.errors["old-project"] = { key0: "Citation edges loaded; some titles unavailable: fetch failed" };
+    expect(f.worker.status("old-project", "/old-project")).toMatchObject({ completed: 2, total: 2, pending: 0, metadataPending: 1, reason: "network" });
+  });
   it("allows explicit retry without waiting for a failed paper's backoff", async () => {
     const f = fixture(1);
     f.errors["old-project"] = { key0: "Temporary failure" };

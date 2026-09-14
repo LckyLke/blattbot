@@ -182,6 +182,12 @@ export interface SourcePage {
   limitations: string[];
 }
 export interface GraphNode {
+  citationPercentile?: number;
+  fwci?: number;
+  retracted?: boolean;
+  metricsVersion?: number;
+  relevance?: { score: number | null; matchedTerms: string[]; basis: "title" | "title_abstract" };
+  sourceAvailability?: string;
   id: string;
   keys: string[];
   title: string;
@@ -191,6 +197,13 @@ export interface GraphNode {
   inProject: boolean;
   resolved: boolean;
   referencesLoaded: boolean;
+  authors?: string[];
+  venue?: string;
+  type?: string;
+  citationCount?: number;
+  abstract?: string;
+  detailsLoaded?: boolean;
+  retrievedAt?: string;
 }
 export interface GraphEdge {
   from: string;
@@ -205,8 +218,12 @@ export interface GraphIndexStatus {
   pending: number;
   currentKey?: string;
   retryAt?: string;
+  reason?: "network" | "rate_limit" | "unresolved" | "service";
+  message?: string;
+  metadataPending?: number;
 }
 export interface CitationGraph {
+  researchQuestion?: string;
   indexing?: GraphIndexStatus;
   at: string;
   nodes: GraphNode[];

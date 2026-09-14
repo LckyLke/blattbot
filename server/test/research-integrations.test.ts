@@ -81,6 +81,62 @@ afterEach(() => {
 });
 
 describe("structured directed citation graph", () => {
+  it("loads and caches paper details without claiming new citation edges", async () => {
+    const g = await import("../src/research/graph.js");
+    await g.buildGraph("p1", dir);
+    const before = g.readGraph("p1", dir).edges;
+    vi.mocked(fetch).mockImplementation(async () => json({ ...works.W3,
+      authorships: [{ author: { display_name: "Ada Lovelace" } }],
+      primary_location: { source: { display_name: "Example Journal" } },
+      cited_by_count: 42, abstract_inverted_index: { "Graph": [0], "evidence": [1], ignored: [99999999] },
+    }));
+    const details = await g.graphDetails("p1", dir, "W3");
+    expect(details).toMatchObject({ authors: ["Ada Lovelace"], venue: "Example Journal", citationCount: 42, abstract: "Graph evidence", detailsLoaded: true, referencesLoaded: false });
+    const count = vi.mocked(fetch).mock.calls.length;
+    await g.graphDetails("p1", dir, "W3");
+    expect(fetch).toHaveBeenCalledTimes(count);
+    expect(g.readGraph("p1", dir).edges).toEqual(before);
+    await expect(g.graphDetails("p1", dir, "W99999")).rejects.toThrow("not in the project graph");
+  });
+  it("retries failed metadata in batches without refetching resolved sources", async () => {
+    const g = await import("../src/research/graph.js");
+    vi.mocked(fetch).mockImplementation(async url => {
+      if (String(url).includes("openalex_id:")) throw new TypeError("fetch failed");
+      return graphFetch(url);
+    });
+    const partial = await g.buildGraph("p1", dir, ["alpha"]);
+    expect(partial.errors.alpha).toContain("Citation edges loaded");
+    expect(partial.failures?.alpha.kind).toBe("network");
+    vi.mocked(fetch).mockClear();
+    vi.mocked(fetch).mockImplementation(async url => graphFetch(url));
+    const repaired = await g.buildGraph("p1", dir, ["alpha"]);
+    expect(repaired.errors.alpha).toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain("per-page=100");
+  });
+  it("records provider retry headers and only falls back from DOI on a missing record", async () => {
+    const { fetchJson, openAlexWork } = await import("../src/research/discovery.js");
+    vi.mocked(fetch).mockResolvedValue(new Response("", { status: 429, headers: { "Retry-After": "180" } }));
+    const before = Date.now();
+    await expect(fetchJson("https://api.openalex.org/works/W1")).rejects.toMatchObject({ status: 429, retryAt: expect.any(String) });
+    try { await openAlexWork(dir, "alpha"); } catch (error: any) { expect(Date.parse(error.retryAt)).toBeGreaterThanOrEqual(before + 180_000); }
+    expect(fetch).toHaveBeenCalledTimes(2);
+    vi.mocked(fetch).mockClear();
+    vi.mocked(fetch).mockImplementation(async url => String(url).includes("?search=") ? json({ results: [works.W1] }) : new Response("", { status: 404 }));
+    expect((await openAlexWork(dir, "alpha")).id).toBe(works.W1.id);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it("accepts indexed main titles only with matching DOI, author and year", async () => {
+    const { openAlexWork } = await import("../src/research/discovery.js");
+    writeFileSync(join(dir, "refs.bib"), "@article{alpha,title={Graph Models: learning structure},author={Smith, Ada},year={2020},doi={10.1234/alpha}}");
+    const shortened = { ...works.W1, authorships: [{ author: { display_name: "Ada Smith" } }] };
+    vi.mocked(fetch).mockResolvedValue(json(shortened));
+    expect((await openAlexWork(dir, "alpha")).id).toBe(works.W1.id);
+    vi.mocked(fetch).mockResolvedValue(json({ ...shortened, doi: "https://doi.org/10.1234/wrong" }));
+    await expect(openAlexWork(dir, "alpha")).rejects.toThrow("reliably");
+    vi.mocked(fetch).mockResolvedValue(json({ ...shortened, authorships: [{ author: { display_name: "Someone Else" } }] }));
+    await expect(openAlexWork(dir, "alpha")).rejects.toThrow("reliably");
+  });
   it("builds project and external nodes with correctly directed, dated edges", async () => {
     const g = await import("../src/research/graph.js");
     const graph = await g.buildGraph("p1", dir);

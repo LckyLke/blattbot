@@ -269,7 +269,8 @@ export class ResearchJobs {
         }));
       } catch (err: any) {
         const message = err.message ?? String(err);
-        if (!controller.signal.aborted && /\b(?:429|503|529)\b|rate.?limit|quota|overloaded|insufficient.?(?:credit|balance)/i.test(message)) {
+        // Keep indexing other papers when one provider cannot serve this item.
+        if (job.kind !== "library-index" && !controller.signal.aborted && /\b(?:429|503|529)\b|rate.?limit|quota|overloaded|insufficient.?(?:credit|balance)/i.test(message)) {
           this.patch(next.projectId, job.id, (j) => ({
             ...j,
             state: "paused",

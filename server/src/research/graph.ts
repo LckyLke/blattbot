@@ -5,8 +5,29 @@ import { entryDoi } from "../bib.js";
 import { bibHash } from "./evidence.js";
 import { fetchJson, openAlexWork } from "./discovery.js";
 import { digest, now, readStore, updateStore } from "./store.js";
+import { sourceFailure, type SourceFailure } from "./source-failure.js";
 
-export interface GraphNode {
+import { readMemory } from "./memory.js";
+import { topicRelevance, type TopicRelevance } from "./relevance.js";
+import { libraryStatus } from "./library.js";
+
+interface WorkDetails {
+  citationPercentile?: number;
+  fwci?: number;
+  retracted?: boolean;
+  metricsVersion?: number;
+  authors?: string[];
+  venue?: string;
+  type?: string;
+  citationCount?: number;
+  abstract?: string;
+  detailsLoaded?: boolean;
+  retrievedAt?: string;
+}
+
+export interface GraphNode extends WorkDetails {
+  relevance?: TopicRelevance;
+  sourceAvailability?: string;
   id: string;
   keys: string[];
   title: string;
@@ -23,7 +44,7 @@ export interface GraphEdge {
   source: "OpenAlex";
   at: string;
 }
-interface Work {
+interface Work extends WorkDetails {
   id: string;
   title: string;
   year?: number;
@@ -37,12 +58,15 @@ interface GraphStore {
   bindings: Record<string, { id: string; entryHash: string }>;
   works: Record<string, Work>;
   errors: Record<string, string>;
+  failures?: Record<string, SourceFailure>;
 }
 export interface CitationGraph {
+  researchQuestion?: string;
   at: string;
   nodes: GraphNode[];
   edges: GraphEdge[];
   errors: Record<string, string>;
+  failures?: Record<string, SourceFailure>;
   pendingKeys: string[];
   truncated: boolean;
   note: string;
@@ -62,7 +86,7 @@ const workId = (value: unknown) => {
 };
 const note =
   "Directed edges mean A cites B, as indexed by OpenAlex at the recorded retrieval time. Missing edges or unresolved papers are unknown, not proof of no citation. Graph connections do not establish support for a manuscript claim; read the paper before citing it.";
-function workRecord(raw: any, references: boolean): Work {
+function workRecord(raw: any, references: boolean, details = false): Work {
   const id = workId(raw.id);
   if (!id) throw new Error("OpenAlex returned an invalid work identifier");
   if (references && !Array.isArray(raw.referenced_works))
@@ -83,10 +107,50 @@ function workRecord(raw: any, references: boolean): Work {
         ? raw.doi.replace(/^https?:\/\/doi.org\//, "")
         : undefined,
     at: now(),
+    citationPercentile:
+      typeof raw.citation_normalized_percentile?.value === "number" &&
+      raw.citation_normalized_percentile.value >= 0 &&
+      raw.citation_normalized_percentile.value <= 1
+        ? raw.citation_normalized_percentile.value * 100
+        : undefined,
+    fwci:
+      typeof raw.fwci === "number" && Number.isFinite(raw.fwci) && raw.fwci >= 0
+        ? raw.fwci
+        : undefined,
+    retracted:
+      typeof raw.is_retracted === "boolean" ? raw.is_retracted : undefined,
+    metricsVersion: 1,
+    authors: raw.authorships
+      ?.slice(0, 30)
+      .map((a: any) => a.author?.display_name)
+      .filter((a: unknown) => typeof a === "string"),
+    venue: raw.primary_location?.source?.display_name,
+    type: raw.type,
+    citationCount:
+      typeof raw.cited_by_count === "number" ? raw.cited_by_count : undefined,
+    ...(details
+      ? {
+          detailsLoaded: true,
+          retrievedAt: now(),
+          abstract: decodeAbstract(raw.abstract_inverted_index),
+        }
+      : {}),
     ...(references
       ? { references: refs.slice(0, 1000), truncated: refs.length > 1000 }
       : {}),
   };
+}
+function decodeAbstract(index: unknown): string | undefined {
+  if (!index || typeof index !== "object" || Array.isArray(index))
+    return undefined;
+  const words: string[] = [];
+  for (const [word, positions] of Object.entries(index)) {
+    if (!Array.isArray(positions)) continue;
+    for (const position of positions)
+      if (Number.isInteger(position) && position >= 0 && position < 2000)
+        words[position] = word;
+  }
+  return words.join(" ").trim().slice(0, 12000) || undefined;
 }
 export function readGraph(id: string, dir: string): CitationGraph {
   const store = readStore<GraphStore>(id, "graph", empty());
@@ -151,8 +215,27 @@ export function readGraph(id: string, dir: string): CitationGraph {
       id: nodeId,
       keys,
       title:
-        work?.title ?? entry?.fields.title ?? `Metadata pending · ${nodeId}`,
-      year: work?.year,
+        entry?.fields.title ?? work?.title ?? `Metadata pending · ${nodeId}`,
+      year:
+        work?.year ??
+        (entry?.fields.year && /^\d{4}$/.test(entry.fields.year)
+          ? Number(entry.fields.year)
+          : undefined),
+      authors:
+        work?.authors ??
+        (entry?.fields.author
+          ? entry.fields.author.split(/\s+and\s+/)
+          : undefined),
+      venue: work?.venue ?? entry?.fields.journal ?? entry?.fields.booktitle,
+      type: work?.type,
+      citationCount: work?.citationCount,
+      citationPercentile: work?.citationPercentile,
+      fwci: work?.fwci,
+      retracted: work?.retracted,
+      metricsVersion: work?.metricsVersion,
+      abstract: work?.abstract,
+      detailsLoaded: work?.detailsLoaded,
+      retrievedAt: work?.retrievedAt,
       doi,
       ref: doi || undefined,
       inProject: keys.length > 0,
@@ -165,7 +248,26 @@ export function readGraph(id: string, dir: string): CitationGraph {
       ([key]) => byKey.has(key) || ids.has(key),
     ),
   );
-  return { at: store.at, nodes, edges, pendingKeys, errors, truncated, note };
+  const failures = Object.fromEntries(
+    Object.entries(errors).map(([key, message]) => [
+      key,
+      store.failures?.[key] ?? sourceFailure(message),
+    ]),
+  );
+  const researchQuestion = readMemory(id).fields.question;
+  const relevance = topicRelevance(nodes, researchQuestion);
+  for (const node of nodes) node.relevance = relevance.get(node.id);
+  return {
+    researchQuestion,
+    at: store.at,
+    nodes,
+    edges,
+    pendingKeys,
+    errors,
+    failures,
+    truncated,
+    note,
+  };
 }
 function persistWork(id: string, work: Work, key?: string, entryHash?: string) {
   updateStore<GraphStore>(id, "graph", empty(), (store) => {
@@ -173,6 +275,7 @@ function persistWork(id: string, work: Work, key?: string, entryHash?: string) {
     store.works[work.id] = { ...store.works[work.id], ...work };
     if (key && entryHash) store.bindings[key] = { id: work.id, entryHash };
     delete store.errors[key ?? work.id];
+    if (store.failures) delete store.failures[key ?? work.id];
     return store;
   });
 }
@@ -181,14 +284,22 @@ async function hydrate(id: string, ids: string[], signal?: AbortSignal) {
   const missing = [...new Set(ids)]
     .filter((work) => !store.works[work])
     .slice(0, 500);
-  for (let i = 0; i < missing.length; i += 50) {
+  for (let i = 0; i < missing.length; i += 100) {
     const raw = await fetchJson(
-      `https://api.openalex.org/works?filter=openalex_id:${missing.slice(i, i + 50).join("|")}&per-page=50`,
+      `https://api.openalex.org/works?filter=openalex_id:${missing.slice(i, i + 100).join("|")}&per-page=100&select=id,display_name,publication_year,doi,authorships,primary_location,type,cited_by_count,citation_normalized_percentile,fwci,is_retracted`,
       {},
       signal,
     );
-    for (const item of raw.results ?? [])
-      persistWork(id, workRecord(item, false));
+    const works = (raw.results ?? []).map((item: any) =>
+      workRecord(item, false),
+    );
+    signal?.throwIfAborted();
+    updateStore<GraphStore>(id, "graph", empty(), (latest) => {
+      for (const work of works)
+        latest.works[work.id] = { ...latest.works[work.id], ...work };
+      latest.at = now();
+      return latest;
+    });
   }
 }
 const builds = new Set<string>();
@@ -197,7 +308,7 @@ export async function buildGraph(
   id: string,
   dir: string,
   keys?: string[],
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; refresh?: boolean } = {},
 ): Promise<CitationGraph> {
   if (builds.has(id)) throw new Error("The graph is already being updated.");
   const current = readGraph(id, dir);
@@ -210,10 +321,18 @@ export async function buildGraph(
       options.signal?.throwIfAborted();
       const hash = bibHash(dir, key);
       try {
-        const work = workRecord(
-          await openAlexWork(dir, key, options.signal),
-          true,
-        );
+        const saved = readStore<GraphStore>(id, "graph", empty());
+        const binding = saved.bindings[key];
+        const cached =
+          binding?.entryHash === hash ? saved.works[binding.id] : undefined;
+        const work =
+          !options.refresh && cached?.references
+            ? cached
+            : workRecord(
+                await openAlexWork(dir, key, options.signal),
+                true,
+                true,
+              );
         if (hash !== bibHash(dir, key))
           throw new Error(
             "Bibliography entry changed during graph retrieval; retry.",
@@ -227,6 +346,7 @@ export async function buildGraph(
           updateStore<GraphStore>(id, "graph", empty(), (s) => {
             s.errors[key] =
               `Citation edges loaded; some titles unavailable: ${err.message}`;
+            (s.failures ??= {})[key] = sourceFailure(err);
             return s;
           });
         }
@@ -234,6 +354,7 @@ export async function buildGraph(
         options.signal?.throwIfAborted();
         updateStore<GraphStore>(id, "graph", empty(), (s) => {
           s.errors[key] = err.message;
+          (s.failures ??= {})[key] = sourceFailure(err);
           return s;
         });
       }
@@ -256,13 +377,14 @@ export async function expandGraph(
     throw new Error(
       "Node is not in the project graph. Build or query the graph first.",
     );
-  if (target.keys.length) return buildGraph(id, dir, [target.keys[0]]);
+  if (target.keys.length)
+    return buildGraph(id, dir, [target.keys[0]], { refresh: true });
   if (!workId(target.id)) throw new Error("This node cannot be resolved yet.");
   if (builds.has(id)) throw new Error("The graph is already being updated.");
   builds.add(id);
   try {
     const raw = await fetchJson(`https://api.openalex.org/works/${target.id}`);
-    const work = workRecord(raw, true);
+    const work = workRecord(raw, true, true);
     if (work.id !== target.id)
       throw new Error("OpenAlex returned a different work");
     persistWork(id, work);
@@ -272,6 +394,7 @@ export async function expandGraph(
       updateStore<GraphStore>(id, "graph", empty(), (s) => {
         s.errors[node] =
           `References loaded; some titles unavailable: ${err.message}`;
+        (s.failures ??= {})[node] = sourceFailure(err);
         return s;
       });
     }
@@ -279,6 +402,44 @@ export async function expandGraph(
   } finally {
     builds.delete(id);
   }
+}
+/** Fetch metadata only for an existing graph node. This does not expand edges. */
+export async function graphDetails(
+  id: string,
+  dir: string,
+  node: string,
+): Promise<GraphNode> {
+  const target = readGraph(id, dir).nodes.find(
+    (n) => n.id === node || n.keys.includes(node),
+  );
+  if (!target) throw new Error("Node is not in the project graph.");
+  const withAvailability = (node: GraphNode): GraphNode => ({
+    ...node,
+    sourceAvailability: node.keys.length
+      ? libraryStatus(id, dir).sources.find((source) =>
+          node.keys.includes(source.key),
+        )?.status
+      : undefined,
+  });
+  if (
+    !workId(target.id) ||
+    (target.detailsLoaded && target.metricsVersion === 1)
+  )
+    return withAvailability(target);
+  const raw = await fetchJson(`https://api.openalex.org/works/${target.id}`);
+  const work = workRecord(raw, false, true);
+  if (work.id !== target.id)
+    throw new Error("OpenAlex returned a different work");
+  // A metadata lookup must not clear a failed reference-list expansion.
+  updateStore<GraphStore>(id, "graph", empty(), (store) => {
+    store.works[work.id] = { ...store.works[work.id], ...work };
+    store.at = now();
+    return store;
+  });
+  const updated = readGraph(id, dir).nodes.find((n) => n.id === target.id);
+  if (!updated)
+    throw new Error("This paper was removed from the graph during lookup.");
+  return withAvailability(updated);
 }
 export const graphQuerySchema = z.object({
   query: z.enum([
@@ -318,6 +479,9 @@ export function queryGraph(id: string, dir: string, input: GraphQuery) {
   }
   const meta = {
     at: graph.at,
+    researchQuestion: graph.researchQuestion,
+    relevanceMethod:
+      "Topic-match score (0–100): research-question word overlap with title/abstract, weighted by inverse frequency in this graph. A screening heuristic, not a probability or quality score. Citation impact and reliability are separate signals.",
     note: graph.note,
     errors: graph.errors,
     pendingKeys: graph.pendingKeys,

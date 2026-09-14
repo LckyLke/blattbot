@@ -13,6 +13,7 @@ import {
 } from "./evaluation.js";
 import {
   buildGraph,
+  graphDetails,
   expandGraph,
   graphQuerySchema,
   queryGraph,
@@ -90,7 +91,7 @@ export function registerResearchRoutes(
         const id = req.params.id;
         if (!getProject(id))
           return reply.code(404).send({ error: "unknown project" });
-        const lock = `${id}:${suffix}:${req.body?.key ?? req.body?.claimId ?? ""}`;
+        const lock = `${id}:${suffix}:${req.body?.key ?? req.body?.claimId ?? req.body?.node ?? ""}`;
         if (method !== "GET" && running.has(lock))
           return reply
             .code(409)
@@ -207,6 +208,9 @@ export function registerResearchRoutes(
   );
   route("POST", "/graph/query", graphQuerySchema, (id, dir, body) =>
     queryGraph(id, dir, body),
+  );
+  route("POST", "/graph/details", z.object({ node: text }), (id, dir, body) =>
+    graphDetails(id, dir, body.node),
   );
   route("GET", "/capabilities", null, () => readingCapabilities());
   route(

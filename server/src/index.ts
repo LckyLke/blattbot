@@ -133,6 +133,7 @@ import {
 import { DATA_DIR, PROJECTS_DIR } from "./config.js";
 import { AUTH_COOKIE, getAuthToken, hostAllowed, requestAuthorized } from "./auth.js";
 import { loadSettings, publicSettings, saveSettings, type Settings } from "./settings.js";
+import { checkResearchProvider } from "./research-providers.js";
 import {
   browseDirectories,
   contextUploadsDir,
@@ -289,6 +290,7 @@ app.get("/api/settings", async () => {
 
 app.put<{ Body: Partial<Settings> }>("/api/settings", async (req, reply) => {
   const body = req.body ?? {};
+  if (body.unpaywallEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.unpaywallEmail)) return reply.code(400).send({ error: "Enter a valid contact email for Unpaywall." });
   if (body.backend !== undefined && !["", "codex", "claude", "openai"].includes(body.backend)) {
     return reply.code(400).send({ error: "backend must be codex, claude, openai, or empty" });
   }
@@ -300,6 +302,12 @@ app.put<{ Body: Partial<Settings> }>("/api/settings", async (req, reply) => {
   }
   const s = saveSettings(body);
   return { ...publicSettings(s), resolvedModel: resolveBackendModel(undefined, s) };
+});
+
+app.post<{ Body: { provider?: string } }>("/api/settings/research/check", async (req, reply) => {
+  const provider = req.body?.provider;
+  if (provider !== "semantic-scholar" && provider !== "openalex") return reply.code(400).send({ error: "Unknown research provider" });
+  return checkResearchProvider(provider);
 });
 
 // Model suggestions for the selected harness. Settings can preview another

@@ -51,6 +51,8 @@ export interface Settings {
   resolvedModel: string;
   hasApiKey: boolean;
   hasS2ApiKey: boolean;
+  hasOpenAlexApiKey: boolean;
+  unpaywallEmail: string;
   anthropicBaseUrl: string;
   systemPromptAppend: string;
   engine: "" | "tectonic" | "latexmk" | "pdflatex";
@@ -431,12 +433,14 @@ export const api = {
   accountProjects: (id: string) =>
     request<{ baseUrl: string; projects: OlProject[] }>(`/api/accounts/${id}/projects`),
   settings: () => request<Settings>("/api/settings"),
+  checkResearchProvider: (provider: "semantic-scholar" | "openalex") => request<{ status: string; configured: boolean; message: string; retryAt?: string }>("/api/settings/research/check", { method: "POST", body: JSON.stringify({ provider }) }),
   saveSettings: (
     patch: Partial<
-      Omit<Settings, "hasApiKey" | "hasS2ApiKey" | "hasOpenaiApiKey" | "settingsPath">
+      Omit<Settings, "hasApiKey" | "hasS2ApiKey" | "hasOpenaiApiKey" | "hasOpenAlexApiKey" | "settingsPath">
     > & {
       apiKey?: string;
       s2ApiKey?: string;
+      openAlexApiKey?: string;
       openaiApiKey?: string;
     },
   ) =>

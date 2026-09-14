@@ -8,11 +8,15 @@ import {
   type CitationGraph,
 } from "./graph.js";
 import { digest, readStore, saveStore } from "./store.js";
+import { sourceFailure, type SourceFailure } from "./source-failure.js";
 
 interface Attempt {
   hash: string;
   failures: number;
   retryAt: number;
+  policy?: number;
+  kind?: SourceFailure["kind"];
+  serverRetryAt?: number;
 }
 export interface GraphIndexStatus {
   state: "empty" | "queued" | "building" | "ready" | "waiting";
@@ -21,6 +25,9 @@ export interface GraphIndexStatus {
   pending: number;
   currentKey?: string;
   retryAt?: string;
+  reason?: SourceFailure["kind"];
+  message?: string;
+  metadataPending?: number;
 }
 interface Job {
   dir: string;
@@ -96,10 +103,28 @@ export class GraphIndexer {
     );
     let changed = false;
     for (const key of Object.keys(attempts)) {
+      const attempt = attempts[key];
+      // Recover old six-hour waits caused by transient fetch failures once.
+      if (
+        !attempt.policy &&
+        sourceFailure(graph.errors[key] ?? "").kind === "network"
+      ) {
+        attempt.retryAt = Math.min(attempt.retryAt, this.deps.clock() + 30_000);
+        attempt.kind = "network";
+        attempt.policy = 2;
+        changed = true;
+      }
+      if (attempt.serverRetryAt && attempt.serverRetryAt > this.deps.clock())
+        this.cooldownUntil = Math.max(
+          this.cooldownUntil,
+          attempt.serverRetryAt,
+        );
       if (
         !hashes[key] ||
         attempts[key].hash !== hashes[key] ||
-        (retry && !(this.current?.id === id && this.current.key === key))
+        (retry &&
+          (attempt.serverRetryAt ?? 0) <= this.deps.clock() &&
+          !(this.current?.id === id && this.current.key === key))
       ) {
         delete attempts[key];
         changed = true;
@@ -129,6 +154,15 @@ export class GraphIndexer {
       ...Object.keys(graph.errors).filter((key) => keys.includes(key)),
     ]);
     const running = this.current?.id === id;
+    const failures = [...missing].map(
+      (key) => graph.failures?.[key] ?? sourceFailure(graph.errors[key] ?? ""),
+    );
+    const reason = (
+      ["rate_limit", "network", "unresolved", "service"] as const
+    ).find((kind) => failures.some((f) => f.kind === kind));
+    const metadataPending = [...missing].filter(
+      (key) => !graph.pendingKeys.includes(key),
+    ).length;
     const times = Object.entries(
       readStore<Record<string, Attempt>>(id, "graph-attempts", {}),
     )
@@ -148,8 +182,21 @@ export class GraphIndexer {
                 ? "waiting"
                 : "ready",
       total: keys.length,
-      completed: keys.length - missing.size,
-      pending: missing.size,
+      completed: keys.length - graph.pendingKeys.length,
+      pending: graph.pendingKeys.length,
+      metadataPending,
+      reason: missing.size ? reason : undefined,
+      message: !missing.size
+        ? undefined
+        : reason === "network"
+          ? "OpenAlex could not be reached. Saved connections remain available; network retries use a delay of at most two minutes."
+          : reason === "rate_limit"
+            ? "OpenAlex is limiting requests. The provider’s retry time is respected."
+            : reason === "unresolved"
+              ? "Some bibliography entries could not be matched reliably. Check their titles and DOIs; they may be absent from OpenAlex."
+              : metadataPending
+                ? "Connections are saved. Some paper titles still need to be retrieved."
+                : "Some source lookups failed. See the details below.",
       currentKey: running ? this.current?.key : undefined,
       retryAt:
         this.cooldownUntil > this.deps.clock()
@@ -210,16 +257,29 @@ export class GraphIndexer {
         {},
       );
       if (failure || result?.errors[key] || result?.pendingKeys.includes(key)) {
+        const detail =
+          result?.failures?.[key] ??
+          sourceFailure(failure || result?.errors[key] || "Lookup incomplete");
+        const serverRetryAt = detail.retryAt ? Date.parse(detail.retryAt) : 0;
         const failures =
           attempts[key]?.hash === hashes[key] ? attempts[key].failures + 1 : 1;
-        // Retry transient outages but retain unknown papers as visible gaps.
+        const delay =
+          detail.kind === "network"
+            ? Math.min(120_000, 15_000 * 2 ** Math.min(failures - 1, 3))
+            : Math.min(
+                6 * 60 * 60_000,
+                60_000 * 5 ** Math.min(failures - 1, 4),
+              );
         attempts[key] = {
           hash: hashes[key],
           failures,
-          retryAt:
-            this.deps.clock() +
-            Math.min(6 * 60 * 60_000, 60_000 * 5 ** Math.min(failures - 1, 4)),
+          retryAt: Math.max(this.deps.clock() + delay, serverRetryAt || 0),
+          policy: 2,
+          kind: detail.kind,
+          serverRetryAt: serverRetryAt || undefined,
         };
+        if (serverRetryAt > this.deps.clock())
+          this.cooldownUntil = Math.max(this.cooldownUntil, serverRetryAt);
       } else delete attempts[key];
       saveStore(id, "graph-attempts", attempts);
       this.current = undefined;
@@ -227,9 +287,13 @@ export class GraphIndexer {
       // citations added while the last request was in flight. No 20-paper stop.
       this.request(id, job.dir);
       if (/HTTP (429|503)/.test(failure || result?.errors[key] || "")) {
-        this.cooldownUntil = this.deps.clock() + 60_000;
+        this.cooldownUntil = Math.max(
+          this.cooldownUntil,
+          this.deps.clock() + 60_000,
+        );
         break;
       }
+      if (this.cooldownUntil > this.deps.clock()) break;
     }
     this.current = undefined;
   }

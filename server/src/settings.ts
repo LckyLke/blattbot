@@ -22,6 +22,10 @@ export interface Settings {
   engine: "" | "tectonic" | "latexmk" | "pdflatex";
   /** Optional Semantic Scholar API key — lifts the shared-pool rate limit on paper search. */
   s2ApiKey: string;
+  /** OpenAlex key for graphs, discovery and paper metadata. */
+  openAlexApiKey: string;
+  /** Contact email required by the optional Unpaywall open-access lookup. */
+  unpaywallEmail: string;
   /** Agent backend running the turns. "" = Codex (the default). */
   backend: "" | "codex" | "claude" | "openai";
   /** Empty uses the model configured in the local Codex CLI. */
@@ -51,6 +55,8 @@ export const DEFAULT_SETTINGS: Settings = {
   systemPromptAppend: "",
   engine: "",
   s2ApiKey: "",
+  openAlexApiKey: "",
+  unpaywallEmail: "",
   backend: "",
   codexModel: "",
   codexEffort: "",
@@ -90,11 +96,12 @@ export function saveSettings(patch: Partial<Settings>): Settings {
 
 /** Settings as sent to the UI — key material never leaves the server. */
 export function publicSettings(s = loadSettings()) {
-  const { apiKey, s2ApiKey, openaiApiKey, ...rest } = s;
+  const { apiKey, s2ApiKey, openaiApiKey, openAlexApiKey, ...rest } = s;
   return {
     ...rest,
     hasApiKey: Boolean(apiKey),
-    hasS2ApiKey: Boolean(s2ApiKey),
+    hasS2ApiKey: Boolean(s2ApiKey.trim()),
+    hasOpenAlexApiKey: Boolean(openAlexApiKey.trim() || process.env.OPENALEX_API_KEY?.trim()),
     hasOpenaiApiKey: Boolean(openaiApiKey),
     settingsPath: SETTINGS_PATH,
   };

@@ -1,0 +1,211 @@
+/** Shared provider transport: search and paper reading consume the same quota. */
+function delay(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error("Aborted"));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+import { loadSettings } from "./settings.js";
+import { researchSignal } from "./research/store.js";
+
+export class RateLimitError extends Error {
+  constructor(
+    public retryAt = Date.now() + 60_000,
+    public keyConfigured = !!loadSettings().s2ApiKey.trim(),
+  ) {
+    super(
+      keyConfigured
+        ? `Semantic Scholar rate limited (HTTP 429). The saved API key was sent; personal keys still have a request limit. Retry after ${new Date(retryAt).toLocaleTimeString()}.`
+        : `Semantic Scholar rate limited — add a Semantic Scholar API key in Settings or retry after ${new Date(retryAt).toLocaleTimeString()}.`,
+    );
+    this.name = "RateLimitError";
+  }
+}
+interface Bucket {
+  nextAt: number;
+  cooldownUntil: number;
+}
+const buckets = new Map<string, Bucket>();
+const cache = new Map<string, { expires: number; value: any }>();
+let queue: Promise<unknown> = Promise.resolve();
+export async function semanticScholarGet(
+  path: string,
+  options: { signal?: AbortSignal; fresh?: boolean } = {},
+): Promise<any | null> {
+  if (!path.startsWith("/")) throw new Error("Invalid Semantic Scholar path");
+  const key = loadSettings().s2ApiKey.trim();
+  const signal = options.signal ?? researchSignal();
+  const cacheKey = `${key}:${path}`;
+  const run = async () => {
+    signal?.throwIfAborted();
+    const saved = cache.get(cacheKey);
+    if (!options.fresh && saved && saved.expires > Date.now())
+      return saved.value;
+    const bucket = buckets.get(key) ?? { nextAt: 0, cooldownUntil: 0 };
+    buckets.set(key, bucket);
+    if (bucket.cooldownUntil > Date.now())
+      throw new RateLimitError(bucket.cooldownUntil, !!key);
+    const wait = key ? bucket.nextAt - Date.now() : 0;
+    if (wait > 0) await delay(wait, signal);
+    signal?.throwIfAborted();
+    bucket.nextAt = Date.now() + 1100;
+    const response = await fetch(
+      `https://api.semanticscholar.org/graph/v1${path}`,
+      {
+        headers: key ? { "x-api-key": key } : {},
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(20_000)])
+          : AbortSignal.timeout(20_000),
+        redirect: "error",
+      },
+    );
+    if (response.status === 429) {
+      const after = response.headers?.get?.("retry-after");
+      const time = after
+        ? /^\d+(\.\d+)?$/.test(after)
+          ? Date.now() + Number(after) * 1000
+          : Date.parse(after)
+        : NaN;
+      bucket.cooldownUntil = Number.isFinite(time)
+        ? Math.max(Date.now() + 1100, time)
+        : Date.now() + 60_000;
+      throw new RateLimitError(bucket.cooldownUntil, !!key);
+    }
+    if ([401, 403].includes(response.status))
+      throw new Error(
+        `Semantic Scholar rejected the request (HTTP ${response.status}). ${key ? "A saved API key was sent; check its validity and access permissions in Settings." : "No API key is configured in this installation."}`,
+      );
+    if (!response.ok && response.status !== 404)
+      throw new Error(`Semantic Scholar: HTTP ${response.status}`);
+    const value = response.status === 404 ? null : await response.json();
+    if (cache.size >= 500) cache.delete(cache.keys().next().value!);
+    cache.set(cacheKey, {
+      expires: Date.now() + (value ? 5 * 60_000 : 60_000),
+      value,
+    });
+    return value;
+  };
+  const result = queue.then(run, run);
+  queue = result.catch(() => {});
+  return result;
+}
+export function openAlexHeaders(): Record<string, string> {
+  const key =
+    loadSettings().openAlexApiKey.trim() ||
+    process.env.OPENALEX_API_KEY?.trim();
+  return key ? { Authorization: `Bearer ${key}` } : {};
+}
+export async function checkResearchProvider(
+  provider: "semantic-scholar" | "openalex",
+) {
+  const settings = loadSettings();
+  const configured =
+    provider === "semantic-scholar"
+      ? !!settings.s2ApiKey.trim()
+      : !!(
+          settings.openAlexApiKey.trim() || process.env.OPENALEX_API_KEY?.trim()
+        );
+  try {
+    if (provider === "semantic-scholar") {
+      const data = await semanticScholarGet(
+        "/paper/ARXIV:1706.03762?fields=title",
+        { fresh: true },
+      );
+      if (!data)
+        return {
+          provider,
+          configured,
+          status: "unavailable",
+          message:
+            "The service responded but did not return the test paper. Key validity is not confirmed.",
+        };
+    } else {
+      const r = await fetch(
+        "https://api.openalex.org/works/W2741809807?select=id",
+        {
+          headers: openAlexHeaders(),
+          redirect: "error",
+          signal: AbortSignal.timeout(20_000),
+        },
+      );
+      if (!r.ok)
+        return {
+          provider,
+          configured,
+          status:
+            r.status === 429
+              ? "rate_limited"
+              : [401, 403].includes(r.status)
+                ? "rejected"
+                : "unavailable",
+          message: `OpenAlex returned HTTP ${r.status}. ${configured ? "The configured key was sent." : "This installation is using anonymous access."}`,
+        };
+    }
+    return {
+      provider,
+      configured,
+      status: "ok",
+      message: configured
+        ? "The configured key was sent and the lookup succeeded."
+        : "Anonymous lookup succeeded. No key is configured in this installation.",
+    };
+  } catch (error: any) {
+    return {
+      provider,
+      configured,
+      status:
+        error instanceof RateLimitError
+          ? "rate_limited"
+          : /HTTP (401|403)/.test(error.message)
+            ? "rejected"
+            : "unavailable",
+      message: error.message,
+      ...(error instanceof RateLimitError
+        ? { retryAt: new Date(error.retryAt).toISOString() }
+        : {}),
+    };
+  }
+}
+
+export async function unpaywallPdfUrls(
+  doi: string | undefined,
+): Promise<string[]> {
+  const email = loadSettings().unpaywallEmail.trim();
+  if (!doi || !email) return [];
+  const signal = researchSignal();
+  const response = await fetch(
+    `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent(email)}`,
+    {
+      redirect: "error",
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(20_000)])
+        : AbortSignal.timeout(20_000),
+    },
+  );
+  if (!response.ok) return [];
+  const record: any = await response.json();
+  if (
+    typeof record.doi !== "string" ||
+    record.doi.toLowerCase() !== doi.toLowerCase()
+  )
+    return [];
+  return [
+    ...new Set<string>(
+      [record.best_oa_location, ...(record.oa_locations ?? [])].flatMap(
+        (location) =>
+          typeof location?.url_for_pdf === "string" &&
+          /^https?:\/\//i.test(location.url_for_pdf)
+            ? [location.url_for_pdf]
+            : [],
+      ),
+    ),
+  ].slice(0, 5);
+}

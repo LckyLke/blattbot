@@ -1,4 +1,5 @@
 /** Isolated browser checks for Research. Uses a local fixture model; no paid calls. */
+import { verifyGraphExplorer } from "./graph-explorer-verify.js";
 import { chromium } from "playwright-core";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
@@ -228,9 +229,10 @@ try {
       ["/usr/bin/chromium", "/usr/bin/google-chrome"].find(existsSync),
     headless: true,
   });
-  const page = await browser.newPage({
+  const context = await browser.newContext({
     viewport: { width: 1500, height: 980 },
   });
+  const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(err.message));
   await page.addInitScript(() => {
@@ -239,7 +241,7 @@ try {
   });
   await page.goto(base, { waitUntil: "networkidle" });
   await page.getByRole("button", { name: "Open Research Fixture" }).click();
-  const research = page.locator(".research-panel").filter({ visible: true });
+  const research = page.locator(".research-panel:not(.cg-portal-root)").filter({ visible: true });
   await research
     .getByRole("heading", { name: "Research", exact: true })
     .waitFor();
@@ -248,13 +250,14 @@ try {
     .getByRole("button", { name: "External source: Shared Foundations" })
     .waitFor();
   await page.waitForFunction(
-    () => !document.querySelector(".research-index-status"),
+    () => !document.querySelector(".cg-index-status"),
   );
   if (graphLookups !== 3)
     throw new Error(
       `Expected two automatic lookups and one metadata batch, got ${graphLookups}`,
     );
   await page.screenshot({ path: join(shots, "00-graph-default.png") });
+  await verifyGraphExplorer(page, base, project.id, shots);
   await research.getByRole("button", { name: "Library", exact: true }).click();
   await research.getByRole("button", { name: /Index missing & changed sources/ }).click();
   await research.getByText("2 full texts · 0 abstracts", { exact: true }).waitFor();
@@ -373,6 +376,7 @@ try {
   await research
     .getByRole("button", { name: "External source: Shared Foundations" })
     .click();
+  await research.getByRole("button", { name: "Close paper details" }).click();
   await research
     .getByRole("button", {
       name: "Find missing sources",
@@ -393,6 +397,7 @@ try {
   });
   await page.screenshot({ path: join(shots, "04-graph.png") });
   await page.setViewportSize({ width: 740, height: 1000 });
+  await page.getByRole("tab", { name: "Research", exact: true }).first().click();
   await page.waitForTimeout(250);
   await page.screenshot({ path: join(shots, "05-narrow.png") });
   const bounds = await research.boundingBox();

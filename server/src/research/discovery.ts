@@ -9,6 +9,8 @@ import { entryDoi } from "../bib.js";
 import { titlesSimilar } from "../papers.js";
 import { bibHash } from "./evidence.js";
 import { now, readStore, updateStore } from "./store.js";
+import { openAlexHeaders } from "../research-providers.js";
+import { SourceServiceError } from "./source-failure.js";
 
 export interface SearchRun {
   id: string;
@@ -63,21 +65,43 @@ export async function fetchJson(
   headers: Record<string, string> = {},
   signal?: AbortSignal,
 ): Promise<any> {
-  const auth =
-    new URL(url).hostname === "api.openalex.org" && process.env.OPENALEX_API_KEY
-      ? { Authorization: `Bearer ${process.env.OPENALEX_API_KEY}` }
-      : {};
-  const result = await fetch(url, {
-    headers: { ...auth, ...headers } as Record<string, string>,
-    signal: signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(25000)])
-      : AbortSignal.timeout(25000),
-    redirect: "error",
-  });
-  if (!result.ok)
+  const auth = new URL(url).hostname === "api.openalex.org" ? openAlexHeaders() : {};
+  let result: Response;
+  try {
+    result = await fetch(url, {
+      headers: { ...auth, ...headers } as Record<string, string>,
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(25000)])
+        : AbortSignal.timeout(25000),
+      redirect: "error",
+    });
+  } catch (error: any) {
+    signal?.throwIfAborted();
+    const code = error?.cause?.code;
     throw new Error(
-      `Source service returned HTTP ${result.status}${result.status === 429 ? " (rate limited; retry later)" : ""}`,
+      `Network request to ${new URL(url).hostname} failed${typeof code === "string" && /^[A-Z_0-9]+$/.test(code) ? ` (${code})` : ""}: ${error?.name === "TimeoutError" ? "timed out" : "fetch failed"}`,
     );
+  }
+  if (!result.ok) {
+    const after = result.headers.get("retry-after");
+    const reset = result.headers.get("x-ratelimit-reset");
+    const retryTime = after
+      ? /^\d+(\.\d+)?$/.test(after)
+        ? Date.now() + Number(after) * 1000
+        : Date.parse(after)
+      : result.status === 429 &&
+          result.headers.get("x-ratelimit-remaining") === "0" &&
+          reset
+        ? Date.now() + Number(reset) * 1000
+        : NaN;
+    throw new SourceServiceError(
+      `Source service returned HTTP ${result.status}${result.status === 429 ? " (rate limited; retry later)" : ""}`,
+      result.status,
+      Number.isFinite(retryTime)
+        ? new Date(retryTime).toISOString()
+        : undefined,
+    );
+  }
   return result.json();
 }
 export async function openAlexWork(
@@ -96,29 +120,88 @@ export async function openAlexWork(
       "Duplicate citation key; resolve the bibliography ambiguity first.",
     );
   const doi = entryDoi(entry.fields);
-  const data = doi
-    ? await fetchJson(
-        `https://api.openalex.org/works/https://doi.org/${encodeURIComponent(doi)}`,
-        {},
-        signal,
-      )
-    : (
-        await fetchJson(
-          `https://api.openalex.org/works?search=${encodeURIComponent(entry.fields.title ?? key)}&per-page=5`,
+  let data;
+  try {
+    data = doi
+      ? await fetchJson(
+          `https://api.openalex.org/works/https://doi.org/${encodeURIComponent(doi)}`,
           {},
           signal,
         )
-      ).results?.find((work: any) =>
-        titlesSimilar(work.display_name ?? "", entry.fields.title ?? ""),
-      );
-  if (
-    !data?.id ||
-    !titlesSimilar(data.display_name ?? "", entry.fields.title ?? "")
-  )
+      : (
+          await fetchJson(
+            `https://api.openalex.org/works?search=${encodeURIComponent(entry.fields.title ?? key)}&per-page=5`,
+            {},
+            signal,
+          )
+        ).results?.find((work: any) =>
+          titlesSimilar(work.display_name ?? "", entry.fields.title ?? ""),
+        );
+  } catch (error) {
+    if (!doi || !(error instanceof SourceServiceError) || error.status !== 404)
+      throw error;
+    const matches = await fetchJson(
+      `https://api.openalex.org/works?search=${encodeURIComponent(entry.fields.title ?? key)}&per-page=5`,
+      {},
+      signal,
+    );
+    data = matches.results?.find((work: any) =>
+      titlesSimilar(work.display_name ?? "", entry.fields.title ?? ""),
+    );
+  }
+  if (!data?.id || !matchesOpenAlexIdentity(data, entry.fields, doi))
     throw new Error(
       "OpenAlex could not resolve this bibliography entry reliably",
     );
   return data;
+}
+function matchesOpenAlexIdentity(
+  work: any,
+  fields: Record<string, string>,
+  doi?: string,
+) {
+  if (titlesSimilar(work.display_name ?? "", fields.title ?? "")) return true;
+  // Some OpenAlex DOI records omit a subtitle (e.g. "Yago"). Accept a
+  // matching main title only when DOI, publication year and author agree too.
+  const normalize = (text: string) =>
+    text
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  const main = normalize((fields.title ?? "").split(/[:—–]/)[0]);
+  const indexed = normalize(work.display_name ?? "");
+  const exactDoi =
+    typeof work.doi === "string" &&
+    work.doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "").toLowerCase() ===
+      doi?.toLowerCase();
+  const year = Number(fields.year);
+  const families = (fields.author ?? "")
+    .split(/\s+and\s+/)
+    .map((name) =>
+      normalize(
+        name.includes(",")
+          ? name.split(",")[0]
+          : (name.trim().split(/\s+/).at(-1) ?? ""),
+      ),
+    )
+    .filter((name) => name.length > 2);
+  const authorMatch = (work.authorships ?? []).some((a: any) => {
+    const name = normalize(a.author?.display_name ?? "");
+    return families.some(
+      (family) => name === family || name.endsWith(` ${family}`),
+    );
+  });
+  return (
+    exactDoi &&
+    main.length >= 4 &&
+    main === indexed &&
+    Number.isFinite(year) &&
+    year > 1000 &&
+    Math.abs(work.publication_year - year) <= 1 &&
+    authorMatch
+  );
 }
 function openAlexHit(work: any): PaperHit {
   const doi =

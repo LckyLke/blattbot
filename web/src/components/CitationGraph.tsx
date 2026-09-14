@@ -1,14 +1,18 @@
 import {
   useCallback,
   useEffect,
-  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api";
 import type { CitationGraph as Graph, GraphNode } from "../research";
-
+import CitationGraphCanvas, { type GraphCamera } from "./CitationGraphCanvas";
+import { graphNeighborhood, searchGraph } from "./graph-model";
+import "./citation-graph.css";
+import PaperSignals from "./PaperSignals";
 interface Props {
   projectId: string;
   busy: boolean;
@@ -23,48 +27,6 @@ interface QueryResult {
   note: string;
   ranking?: string;
 }
-/** Deterministic force layout, bounded to the currently visible nodes. */
-function layout(nodes: GraphNode[], edges: Graph["edges"]) {
-  const points = nodes.map((n, i) => ({
-    ...n,
-    x: 460 + Math.cos(i * 2.39996) * (n.inProject ? 120 : 290),
-    y: 310 + Math.sin(i * 2.39996) * (n.inProject ? 100 : 240),
-  }));
-  const byId = new Map(points.map((p) => [p.id, p]));
-  for (let step = 0; step < 100; step++) {
-    for (let i = 0; i < points.length; i++)
-      for (let j = i + 1; j < points.length; j++) {
-        const a = points[i],
-          b = points[j],
-          dx = a.x - b.x,
-          dy = a.y - b.y,
-          d2 = Math.max(60, dx * dx + dy * dy);
-        const force = Math.min(4, 240 / d2);
-        a.x += dx * force;
-        a.y += dy * force;
-        b.x -= dx * force;
-        b.y -= dy * force;
-      }
-    for (const edge of edges) {
-      const a = byId.get(edge.from),
-        b = byId.get(edge.to);
-      if (!a || !b) continue;
-      const dx = b.x - a.x,
-        dy = b.y - a.y,
-        d = Math.hypot(dx, dy) || 1,
-        force = ((d - 130) / d) * 0.012;
-      a.x += dx * force;
-      a.y += dy * force;
-      b.x -= dx * force;
-      b.y -= dy * force;
-    }
-    for (const point of points) {
-      point.x = Math.max(50, Math.min(850, point.x + (450 - point.x) * 0.002));
-      point.y = Math.max(45, Math.min(565, point.y + (300 - point.y) * 0.002));
-    }
-  }
-  return byId;
-}
 export default function CitationGraph({ projectId, busy, stamp }: Props) {
   const [graph, setGraph] = useState<Graph>();
   const [error, setError] = useState("");
@@ -73,19 +35,12 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
   const [working, setWorking] = useState("");
   const [selected, setSelected] = useState("");
   const [filter, setFilter] = useState("");
-  const [onlyProject, setOnlyProject] = useState(false);
   const [first, setFirst] = useState("");
   const [second, setSecond] = useState("");
   const [answer, setAnswer] = useState<QueryResult>();
   const [lastQuery, setLastQuery] = useState<Record<string, unknown>>();
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const drag = useRef<
-    { x: number; y: number; panX: number; panY: number } | undefined
-  >(undefined);
   const lock = useRef(false);
   const alive = useRef(true);
-  const marker = useId().replaceAll(":", "");
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -98,7 +53,19 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
     const result = await api.research<Graph>(projectId, "/graph");
     if (alive.current && seq === generation.current)
       setGraph((prev) =>
-        JSON.stringify(prev) === JSON.stringify(result) ? prev : result,
+        prev
+          ? {
+              ...result,
+              nodes:
+                JSON.stringify(prev.nodes) === JSON.stringify(result.nodes)
+                  ? prev.nodes
+                  : result.nodes,
+              edges:
+                JSON.stringify(prev.edges) === JSON.stringify(result.edges)
+                  ? prev.edges
+                  : result.edges,
+            }
+          : result,
       );
     return result;
   }, [projectId]);
@@ -163,87 +130,255 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
         setLastQuery(body);
       }
     });
+  const [fullscreen, setFullscreen] = useState(false);
+  const [mode, setMode] = useState<"network" | "timeline">("network");
+  const [scope, setScope] = useState("all");
+  const [sort, setSort] = useState("project");
+  const [depth, setDepth] = useState(0);
+  const [direction, setDirection] = useState<"both" | "outgoing" | "incoming">(
+    "both",
+  );
+  const [labels, setLabels] = useState(true);
+  const [since, setSince] = useState("");
+  const [page, setPage] = useState(0);
+  const [compare, setCompare] = useState(false);
+  const [detail, setDetail] = useState<GraphNode>();
+  const [detailError, setDetailError] = useState("");
+  const [detailBusy, setDetailBusy] = useState(false);
+  const [detailRetry, setDetailRetry] = useState(0);
+  const mount = useRef<HTMLDivElement>(null);
+  const [host] = useState(() => {
+    const element = document.createElement("div");
+    element.className = "research-panel cg-portal-root";
+    return element;
+  });
+  useLayoutEffect(() => {
+    (fullscreen ? document.body : mount.current)?.appendChild(host);
+    return () => host.remove();
+  }, [host, fullscreen]);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const fullscreenButton = useRef<HTMLButtonElement>(null);
+  const camera = useRef<GraphCamera>(null);
+  const wasFullscreen = useRef(false);
+  useEffect(() => {
+    const element = dialog.current!;
+    element.close();
+    if (fullscreen) element.showModal();
+    else element.show();
+    if (fullscreen) search.current?.focus();
+    else if (wasFullscreen.current) fullscreenButton.current?.focus();
+    wasFullscreen.current = fullscreen;
+    return () => element.close();
+  }, [fullscreen]);
+  useEffect(() => {
+    if (!fullscreen) return;
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, [fullscreen]);
+  useEffect(() => {
+    setPage(0);
+  }, [filter, scope, since, depth, direction, selected]);
   const selectedNode = graph?.nodes.find((n) => n.id === selected);
-  const neighbors = useMemo(
+  useEffect(() => {
+    let cancelled = false;
+    setDetail(undefined);
+    setDetailError("");
+    setDetailBusy(false);
+    if (!selected || !/^W\d+$/.test(selected)) return;
+    setDetailBusy(true);
+    void api
+      .research<GraphNode>(projectId, "/graph/details", { node: selected })
+      .then((node) => {
+        if (!cancelled) setDetail(node);
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setDetailError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setDetailBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, selected, detailRetry]);
+  const node = selectedNode
+    ? { ...selectedNode, ...(detail?.id === selected ? detail : {}) }
+    : undefined;
+  const projects = useMemo(
+    () => graph?.nodes.filter((n) => n.inProject) ?? [],
+    [graph?.nodes],
+  );
+  const incoming = useMemo(
     () =>
-      new Set(
-        graph?.edges.flatMap((e) =>
-          e.from === selected ? [e.to] : e.to === selected ? [e.from] : [],
-        ) ?? [],
-      ),
-    [graph, selected],
+      new Set(graph?.edges.filter((e) => e.to === selected).map((e) => e.from)),
+    [graph?.edges, selected],
+  );
+  const outgoing = useMemo(
+    () =>
+      new Set(graph?.edges.filter((e) => e.from === selected).map((e) => e.to)),
+    [graph?.edges, selected],
   );
   const visible = useMemo(() => {
-    const degree = new Map<string, number>();
-    for (const e of graph?.edges ?? [])
-      degree.set(e.to, (degree.get(e.to) ?? 0) + 1);
-    return (graph?.nodes ?? [])
-      .filter(
-        (n) =>
-          (!onlyProject || n.inProject) &&
-          (!filter ||
-            `${n.title} ${n.keys.join(" ")} ${n.id}`
-              .toLowerCase()
-              .includes(filter.toLowerCase())),
-      )
-      .sort(
-        (a, b) =>
-          Number(b.id === selected) - Number(a.id === selected) ||
-          Number(neighbors.has(b.id)) - Number(neighbors.has(a.id)) ||
-          Number(b.inProject) - Number(a.inProject) ||
-          (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0),
-      )
-      .slice(0, 80);
-  }, [graph, filter, onlyProject, selected, neighbors]);
-  const points = useMemo(
+    const neighborhood =
+      selected && depth
+        ? graphNeighborhood(graph?.edges ?? [], selected, depth, direction)
+        : undefined;
+    return new Set(
+      (graph?.nodes ?? [])
+        .filter(
+          (n) =>
+            (!neighborhood || neighborhood.has(n.id)) &&
+            (scope === "all" ||
+              (scope === "project" ? n.inProject : !n.inProject)) &&
+            (!since || (!!n.year && n.year >= Number(since))),
+        )
+        .map((n) => n.id),
+    );
+  }, [graph?.nodes, graph?.edges, selected, depth, direction, scope, since]);
+  const results = useMemo(
     () =>
-      layout(
-        [...visible].sort((a, b) => a.id.localeCompare(b.id)),
-        graph?.edges ?? [],
-      ),
-    [visible, graph],
+      searchGraph(graph?.nodes ?? [], filter)
+        .filter((n) => visible.has(n.id))
+        .sort(
+          (a, b) =>
+            (sort === "relevance"
+              ? (b.relevance?.score ?? -1) - (a.relevance?.score ?? -1)
+              : sort === "impact"
+                ? (b.citationPercentile ?? -1) - (a.citationPercentile ?? -1)
+                : sort === "citations"
+                  ? (b.citationCount ?? -1) - (a.citationCount ?? -1)
+                  : sort === "recent"
+                    ? (b.year ?? 0) - (a.year ?? 0)
+                    : Number(b.inProject) - Number(a.inProject)) ||
+            a.title.localeCompare(b.title),
+        ),
+    [graph?.nodes, filter, visible, sort],
   );
-  const bounds = useMemo(() => {
-    const positions = [...points.values()];
-    if (!positions.length) return { x: 0, y: 0, width: 900, height: 600 };
-    const left = Math.min(...positions.map((p) => p.x)) - 50;
-    const top = Math.min(...positions.map((p) => p.y)) - 70;
-    const width = Math.max(
-      500,
-      Math.max(...positions.map((p) => p.x)) + 230 - left,
-    );
-    const height = Math.max(
-      320,
-      Math.max(...positions.map((p) => p.y)) + 70 - top,
-    );
-    return { x: left, y: top, width, height };
-  }, [points]);
-  const pick = (node: GraphNode) => {
-    setSelected(node.id);
+  const matches = useMemo(
+    () => (filter.trim() ? new Set(results.map((n) => n.id)) : undefined),
+    [results, filter],
+  );
+  const path = useMemo(() => answer?.path?.map((n) => n.id) ?? [], [answer]);
+  const connections = useMemo(
+    () =>
+      (graph?.nodes ?? []).filter(
+        (n) =>
+          (direction !== "incoming" && outgoing.has(n.id)) ||
+          (direction !== "outgoing" && incoming.has(n.id)),
+      ),
+    [graph?.nodes, outgoing, incoming, direction],
+  );
+  const pick = (paper: GraphNode) => {
+    setSelected(paper.id);
     setFilter("");
-    setOnlyProject(false);
+    setScope("all");
+    setSince("");
+    requestAnimationFrame(() => camera.current?.center(paper.id));
   };
-  const projects = graph?.nodes.filter((n) => n.inProject) ?? [];
   const a = first || projects[0]?.id || "",
     b = second || projects[1]?.id || "";
   const indexing = graph?.indexing;
   const building =
     indexing?.state === "building" || indexing?.state === "queued";
   const gaps = Object.entries(graph?.errors ?? {});
-  return (
-    <div className="research-graph-view">
-      <div className="research-section-heading">
-        <h3>Citation graph</h3>
-        {graph && (
-          <span>
-            {projects.length} project · {graph.nodes.length - projects.length}{" "}
-            external
-          </span>
-        )}
-      </div>
-      <p className="research-intro">
-        Follow your sources and discover the papers they share.
-      </p>
+  const exportGraph = () => {
+    if (!graph) return;
+    const url = URL.createObjectURL(
+      new Blob(
+        [
+          JSON.stringify(
+            {
+              ...graph,
+              view: { visibleNodeIds: [...visible], selected, layout: mode },
+            },
+            null,
+            2,
+          ),
+        ],
+        { type: "application/json" },
+      ),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "citation-graph.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const paperButton = (paper: GraphNode) => (
+    <button
+      key={paper.id}
+      type="button"
+      className="cg-paper"
+      aria-label={`${paper.inProject ? "Project" : "External"} source: ${paper.title}`}
+      onClick={() => pick(paper)}
+    >
+      <span
+        className={`cg-paper-dot ${paper.inProject ? "project" : "external"}`}
+      />
+      <span>
+        <strong>{paper.title}</strong>
+        <small>
+          {paper.keys[0] || paper.id} · {paper.year ?? "Year unknown"}
+          {paper.venue ? ` · ${paper.venue}` : ""}
+        </small>
+      </span>
+    </button>
+  );
+  const content = (
+    <dialog
+      ref={dialog}
+      className={`research-graph-view cg-shell ${fullscreen ? "cg-fullscreen" : ""}`}
+      aria-label="Citation graph explorer"
+      onCancel={(event) => {
+        event.preventDefault();
+        setFullscreen(false);
+      }}
+      onKeyDown={(event) => {
+        const typing = (event.target as HTMLElement).matches(
+          "input, textarea, select",
+        );
+        if (
+          (event.key === "/" && !typing) ||
+          ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f")
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          search.current?.focus();
+          search.current?.select();
+        }
+        if (event.key === "Escape" && !fullscreen && selected) {
+          event.preventDefault();
+          setSelected("");
+        }
+      }}
+    >
+      <header className="cg-heading">
+        <div>
+          <span className="cg-eyebrow">RESEARCH EXPLORER</span>
+          <h3>Citation graph</h3>
+          <p>
+            {projects.length} project papers <span>·</span>{" "}
+            {graph ? graph.nodes.length - projects.length : 0} external{" "}
+            <span>·</span> {graph?.edges.length ?? 0} citations
+          </p>
+        </div>
+        <button
+          type="button"
+          ref={fullscreenButton}
+          className="cg-fullscreen-button"
+          aria-label={
+            fullscreen ? "Exit full screen" : "Open graph full screen"
+          }
+          onClick={() => setFullscreen((v) => !v)}
+        >
+          {fullscreen ? "↙  Exit full screen" : "⛶  Full screen"}
+        </button>
+      </header>
       {(error || loadError) && (
         <p role="alert" className="research-alert">
           {error || loadError}
@@ -269,19 +404,29 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
           {indexing &&
             indexing.state !== "ready" &&
             indexing.state !== "empty" && (
-              <div className="research-index-status" role="status">
+              <div className="cg-index-status" role="status">
                 <div>
-                  <span
-                    className={
-                      building ? "research-live-dot" : "research-wait-dot"
-                    }
-                  />
                   <strong>
-                    {building ? "Building automatically" : "Waiting to retry"}
+                    {building
+                      ? "Building automatically"
+                      : indexing.reason === "network"
+                        ? "Connection interrupted"
+                        : indexing.reason === "rate_limit"
+                          ? "OpenAlex rate limit"
+                          : "Some sources need attention"}
                   </strong>
                   <span>
-                    {indexing.completed} / {indexing.total} sources
+                    {indexing.completed} / {indexing.total} sources connected
                   </span>
+                  <button
+                    type="button"
+                    disabled={
+                      !!working || building || indexing.reason === "rate_limit"
+                    }
+                    onClick={retry}
+                  >
+                    Retry now
+                  </button>
                 </div>
                 <progress
                   aria-label="Citation graph indexing"
@@ -293,478 +438,657 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
                     ? indexing.currentKey
                       ? `Looking up ${indexing.currentKey}`
                       : "Your sources are queued for lookup"
-                    : indexing.retryAt
-                      ? `Next attempt after ${new Date(indexing.retryAt).toLocaleTimeString()}`
-                      : "Some sources could not be resolved yet."}
+                    : (indexing.message ??
+                      "Some sources could not be resolved yet.")}
+                  {!building && indexing.retryAt
+                    ? ` Next attempt after ${new Date(indexing.retryAt).toLocaleTimeString()}.`
+                    : ""}
+                  {indexing.metadataPending
+                    ? ` ${indexing.metadataPending} sources have incomplete paper metadata.`
+                    : ""}
                 </p>
               </div>
             )}
-          <div className="research-graph-toolbar">
-            <input
-              aria-label="Find a paper"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Find a title or citation key…"
-            />
-            <label className="research-inline">
+          <div className="cg-controls">
+            <div className="cg-search">
+              <span aria-hidden="true">⌕</span>
               <input
-                type="checkbox"
-                checked={onlyProject}
-                onChange={(e) => setOnlyProject(e.target.checked)}
+                ref={search}
+                type="search"
+                aria-label="Find a paper"
+                placeholder="Search titles, authors, citation keys, DOI…"
+                value={filter}
+                onChange={(e) => {
+                  setFilter(e.target.value);
+                  setSelected("");
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && results[0]) {
+                    event.preventDefault();
+                    pick(results[0]);
+                  }
+                }}
               />
-              Project only
-            </label>
-          </div>
-          <div className="research-graph-canvas">
-            <div className="research-graph-legend">
-              <span>
-                <i />
-                Project
-              </span>
-              <span>
-                <i />
-                External
-              </span>
-              <span>Arrows show citations</span>
+              <kbd>/</kbd>
             </div>
-            {!visible.length ? (
-              <p className="research-empty">No papers match this filter.</p>
-            ) : (
-              <svg
-                className="citation-graph"
-                viewBox={`${bounds.x + pan.x + (bounds.width * (1 - 1 / zoom)) / 2} ${bounds.y + pan.y + (bounds.height * (1 - 1 / zoom)) / 2} ${bounds.width / zoom} ${bounds.height / zoom}`}
-                role="group"
-                aria-label="Interactive directed citation graph"
-                onPointerDown={(e) => {
-                  if ((e.target as SVGElement).closest("[data-node]")) return;
-                  drag.current = {
-                    x: e.clientX,
-                    y: e.clientY,
-                    panX: pan.x,
-                    panY: pan.y,
-                  };
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                }}
-                onPointerMove={(e) => {
-                  if (!drag.current) return;
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const factor =
-                    Math.max(
-                      bounds.width / rect.width,
-                      bounds.height / rect.height,
-                    ) / zoom;
-                  setPan({
-                    x:
-                      drag.current.panX - (e.clientX - drag.current.x) * factor,
-                    y:
-                      drag.current.panY - (e.clientY - drag.current.y) * factor,
-                  });
-                }}
-                onPointerUp={() => {
-                  drag.current = undefined;
-                }}
-                onPointerCancel={() => {
-                  drag.current = undefined;
-                }}
+            <div className="cg-filters">
+              <select
+                aria-label="Paper scope"
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
               >
-                <defs>
-                  <marker
-                    id={marker}
-                    viewBox="0 0 10 10"
-                    refX="19"
-                    refY="5"
-                    markerWidth="5"
-                    markerHeight="5"
-                    orient="auto-start-reverse"
-                  >
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d9275" />
-                  </marker>
-                </defs>
-                {graph.edges.map((e) => {
-                  const from = points.get(e.from),
-                    to = points.get(e.to);
-                  if (!from || !to) return null;
-                  const active =
-                    !selected || e.from === selected || e.to === selected;
-                  return (
-                    <line
-                      key={`${e.from}:${e.to}`}
-                      x1={from.x}
-                      y1={from.y}
-                      x2={to.x}
-                      y2={to.y}
-                      stroke="#7d9275"
-                      strokeWidth={active && selected ? 2 : 1.4}
-                      opacity={active ? 0.7 : 0.12}
-                      markerEnd={`url(#${marker})`}
-                    >
-                      <title>
-                        {from.title} cites {to.title} · OpenAlex · {e.at}
-                      </title>
-                    </line>
-                  );
-                })}
-                {[...points.values()].map((node) => (
-                  <g
-                    key={node.id}
-                    data-node={node.id}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`${node.inProject ? "Project source" : "External source"}: ${node.title}`}
-                    onClick={() => pick(node)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        pick(node);
-                      }
-                    }}
-                    style={{ cursor: "pointer" }}
-                  >
-                    <title>
-                      {node.title} · {node.keys.join(", ") || node.id}
-                      {!node.resolved ? " · Unresolved" : ""}
-                    </title>
-                    {node.id === selected && (
-                      <circle
-                        cx={node.x}
-                        cy={node.y}
-                        r={22}
-                        fill="#8fb57318"
-                        stroke="#8fb57355"
-                      />
-                    )}
-                    <circle
-                      cx={node.x}
-                      cy={node.y}
-                      r={node.inProject ? 11 : 8}
-                      fill={node.inProject ? "#8fb573" : "#29251e"}
-                      stroke={node.inProject ? "#b9d3a6" : "#cfa75b"}
-                      strokeWidth={1.7}
-                      strokeDasharray={node.resolved ? undefined : "3 3"}
-                    />
-                    {(visible.length <= 22 ||
-                      node.inProject ||
-                      node.id === selected ||
-                      neighbors.has(node.id)) && (
-                      <text
-                        x={node.x + 17}
-                        y={node.y + 5}
-                        fontSize="14"
-                        fill="#d8ddcf"
-                        paintOrder="stroke"
-                        stroke="#151b22"
-                        strokeWidth="4"
-                      >
-                        {(node.keys[0] || node.title).slice(0, 28)}
-                        {(node.keys[0] || node.title).length > 28 ? "…" : ""}
-                      </text>
-                    )}
-                  </g>
-                ))}
-              </svg>
-            )}
-            <div className="research-graph-footer">
-              <span>
-                {graph.edges.length} links
-                {visible.length < graph.nodes.length
-                  ? ` · ${visible.length} of ${graph.nodes.length} papers shown`
-                  : ""}
-              </span>
-              <div className="research-zoom">
-                <button
-                  type="button"
-                  aria-label="Zoom out"
-                  disabled={zoom <= 0.6}
-                  onClick={() => setZoom((z) => Math.max(0.6, z - 0.2))}
-                >
-                  −
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setZoom(1);
-                    setPan({ x: 0, y: 0 });
-                    setSelected("");
-                  }}
-                >
-                  Reset view
-                </button>
-                <button
-                  type="button"
-                  aria-label="Zoom in"
-                  disabled={zoom >= 3}
-                  onClick={() => setZoom((z) => Math.min(3, z + 0.2))}
-                >
-                  +
-                </button>
-              </div>
+                <option value="all">All papers</option>
+                <option value="project">Project only</option>
+                <option value="external">External only</option>
+              </select>
+              <select
+                aria-label="Graph layout"
+                value={mode}
+                onChange={(e) => setMode(e.target.value as typeof mode)}
+              >
+                <option value="network">Network</option>
+                <option value="timeline">Timeline</option>
+              </select>
+              <input
+                type="number"
+                min="1000"
+                max="2100"
+                aria-label="Published since year"
+                placeholder="Since year"
+                value={since}
+                onChange={(e) => setSince(e.target.value)}
+              />
+              <label>
+                <input
+                  type="checkbox"
+                  checked={labels}
+                  onChange={(e) => setLabels(e.target.checked)}
+                />
+                Labels
+              </label>
+              <button
+                type="button"
+                onClick={exportGraph}
+                title="Download papers, directed citations, and provenance"
+              >
+                Export JSON ↓
+              </button>
             </div>
           </div>
-          {selectedNode && (
-            <article className="research-card research-node-detail">
-              <div className="research-section-heading">
-                <span
-                  className={`research-badge ${selectedNode.inProject ? "research-supported" : "research-abstract"}`}
-                >
-                  {selectedNode.inProject
-                    ? "In your project"
-                    : "Outside your project"}
+          <div className="cg-workspace">
+            <div className="cg-map">
+              <div className="cg-legend">
+                <span>
+                  <i className="project" />
+                  Project
                 </span>
-                <button
-                  type="button"
-                  className="research-icon-button"
-                  aria-label="Close paper details"
-                  onClick={() => setSelected("")}
-                >
-                  ×
-                </button>
+                <span>
+                  <i className="external" />
+                  External
+                </span>
+                <span>
+                  <i className="pending" />
+                  Unresolved
+                </span>
+                <small>A → B means A cites B</small>
               </div>
-              <h3>{selectedNode.title}</h3>
-              <p className="research-meta">
-                {selectedNode.keys.join(", ") || selectedNode.id}
-                {selectedNode.year ? ` · ${selectedNode.year}` : ""}
-              </p>
-              <p>
-                {graph.edges.filter((e) => e.from === selected).length}{" "}
-                references ·{" "}
-                {graph.edges.filter((e) => e.to === selected).length} incoming
-                links in this graph
-              </p>
-              <div className="research-actions">
-                <button
-                  type="button"
-                  disabled={!!working || building}
-                  title={
-                    building
-                      ? "Available when the automatic lookup finishes"
-                      : undefined
-                  }
-                  onClick={expand}
-                >
-                  {selectedNode.referencesLoaded
-                    ? "Refresh references"
-                    : "Expand references"}
-                </button>
-                <button
-                  type="button"
-                  disabled={!!working}
-                  onClick={() =>
-                    query({
-                      query: "neighbors",
-                      node: selected,
-                      direction: "both",
-                    })
-                  }
-                >
-                  List connected papers
-                </button>
-                {selectedNode.doi && (
-                  <a
-                    href={`https://doi.org/${encodeURIComponent(selectedNode.doi)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Publisher record ↗
-                  </a>
-                )}
-                {!selectedNode.inProject && selectedNode.ref && (
+              <CitationGraphCanvas
+                ref={camera}
+                nodes={graph.nodes}
+                edges={graph.edges}
+                selected={selected}
+                visible={visible}
+                matches={matches}
+                path={path}
+                mode={mode}
+                labels={labels}
+                onSelect={setSelected}
+              />
+              <div className="cg-map-footer">
+                <span>
+                  {visible.size.toLocaleString()} /{" "}
+                  {graph.nodes.length.toLocaleString()} papers
+                  {mode === "timeline"
+                    ? " · Older → newer; undated at left"
+                    : " · Scroll to zoom; drag to explore"}
+                </span>
+                <div>
                   <button
                     type="button"
-                    className="research-primary"
-                    disabled={busy || !!working}
+                    aria-label="Zoom out"
+                    onClick={() => camera.current?.zoom(false)}
+                  >
+                    −
+                  </button>
+                  <button type="button" onClick={() => camera.current?.fit()}>
+                    Fit graph
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Zoom in"
+                    onClick={() => camera.current?.zoom(true)}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              {visible.size === 0 && (
+                <div className="cg-no-matches">
+                  No papers match these filters.
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSince("");
+                      setScope("all");
+                      setDepth(0);
+                    }}
+                  >
+                    Reset filters
+                  </button>
+                </div>
+              )}
+            </div>
+            <aside
+              className="cg-sidebar"
+              aria-label={node ? "Paper details" : "Graph papers"}
+            >
+              {node ? (
+                <>
+                  <div className="cg-detail-heading">
+                    <span
+                      className={`research-badge ${node.inProject ? "research-supported" : "research-abstract"}`}
+                    >
+                      {node.inProject
+                        ? "In your project"
+                        : "Outside your project"}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Close paper details"
+                      onClick={() => setSelected("")}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <h3 className="cg-paper-title">{node.title}</h3>
+                  <p className="cg-authors">
+                    {node.authors?.length
+                      ? node.authors.join(", ")
+                      : "Authors not available"}
+                  </p>
+                  <p className="cg-publication">
+                    {[node.year, node.venue, node.type?.replaceAll("-", " ")]
+                      .filter(Boolean)
+                      .join(" · ") || "Publication details not available"}
+                  </p>
+                  <p className="cg-key">{node.keys.join(", ") || node.id}</p>
+                  <div className="cg-metrics">
+                    <div>
+                      <strong>
+                        {node.referencesLoaded ? outgoing.size : "—"}
+                      </strong>
+                      <span>references loaded</span>
+                    </div>
+                    <div>
+                      <strong>{incoming.size}</strong>
+                      <span>citers in this graph</span>
+                    </div>
+                    {node.citationCount !== undefined && (
+                      <div>
+                        <strong>{node.citationCount.toLocaleString()}</strong>
+                        <span>citations in OpenAlex</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="cg-detail-actions">
+                    {node.doi && (
+                      <a
+                        href={`https://doi.org/${encodeURIComponent(node.doi)}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Publisher record ↗
+                      </a>
+                    )}
+                    {/^W\d+$/.test(node.id) && (
+                      <a
+                        href={`https://openalex.org/${node.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        OpenAlex ↗
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      disabled={!!working || building}
+                      onClick={expand}
+                    >
+                      {node.referencesLoaded
+                        ? "Refresh references"
+                        : "Expand references"}
+                    </button>
+                    {!node.inProject && node.ref && (
+                      <button
+                        type="button"
+                        className="research-primary"
+                        disabled={busy || !!working}
+                        onClick={() =>
+                          void act("Adding reference…", async () => {
+                            const added = await api.research<{
+                              key: string;
+                              verification?: {
+                                status: string;
+                                detail?: string;
+                              };
+                            }>(projectId, "/add-reference", { ref: node.ref });
+                            await load();
+                            if (
+                              alive.current &&
+                              added.verification?.status !== "verified"
+                            )
+                              setError(
+                                `${added.key} was added, but its identity check is ${added.verification?.status ?? "unavailable"}. ${added.verification?.detail ?? "Review it in References."}`,
+                              );
+                          })
+                        }
+                      >
+                        Add to bibliography
+                      </button>
+                    )}
+                  </div>
+                  {detailBusy && (
+                    <p role="status" className="research-meta">
+                      Loading paper information…
+                    </p>
+                  )}
+                  {detailError && (
+                    <div className="research-alert" role="alert">
+                      Paper information unavailable: {detailError}
+                      <button
+                        type="button"
+                        onClick={() => setDetailRetry((v) => v + 1)}
+                      >
+                        Retry paper details
+                      </button>
+                    </div>
+                  )}
+                  <div className="cg-abstract">
+                    <h4>Abstract</h4>
+                    <p>
+                      {node.abstract ||
+                        (detailBusy
+                          ? "Retrieving the indexed abstract…"
+                          : "No abstract available in the saved OpenAlex metadata. Open the paper to read its content.")}
+                    </p>
+                    <small>
+                      Index metadata; this does not mean BlattBot has read the
+                      full paper.
+                    </small>
+                  </div>
+                  <PaperSignals
+                    node={node}
+                    question={graph.researchQuestion}
+                    projectCount={projects.length}
+                    projectCiters={
+                      projects.filter((paper) => incoming.has(paper.id)).length
+                    }
+                  />
+                  <div className="cg-connection-heading">
+                    <h4>Connections</h4>
+                    <select
+                      aria-label="Connection direction"
+                      value={direction}
+                      onChange={(e) =>
+                        setDirection(e.target.value as typeof direction)
+                      }
+                    >
+                      <option value="both">Both directions</option>
+                      <option value="outgoing">References →</option>
+                      <option value="incoming">← Cited by</option>
+                    </select>
+                  </div>
+                  <div className="cg-focus">
+                    <select
+                      aria-label="Neighborhood depth"
+                      value={depth}
+                      onChange={(e) => setDepth(Number(e.target.value))}
+                    >
+                      <option value="0">Show entire graph</option>
+                      <option value="1">Focus: 1 step</option>
+                      <option value="2">Focus: 2 steps</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => camera.current?.center(node.id)}
+                    >
+                      Center paper
+                    </button>
+                  </div>
+                  <p className="research-meta">
+                    {connections.length} connected papers loaded.{" "}
+                    {direction === "both"
+                      ? "Gold arrows: references. Blue arrows: papers citing this work."
+                      : ""}
+                  </p>
+                  <div className="cg-paper-list">
+                    {connections
+                      .slice(page * 50, (page + 1) * 50)
+                      .map(paperButton)}
+                  </div>
+                  {!connections.length && (
+                    <p className="research-meta">
+                      {node.referencesLoaded
+                        ? "No connections in the loaded graph."
+                        : "Expand references to retrieve this paper’s bibliography."}
+                    </p>
+                  )}
+                  {connections.length > 50 && (
+                    <div className="cg-pagination">
+                      <button
+                        type="button"
+                        disabled={page === 0}
+                        onClick={() => setPage((v) => v - 1)}
+                      >
+                        Previous
+                      </button>
+                      <span>
+                        {page + 1} / {Math.ceil(connections.length / 50)}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={(page + 1) * 50 >= connections.length}
+                        onClick={() => setPage((v) => v + 1)}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                  <small className="cg-provenance">
+                    Source: OpenAlex
+                    {node.retrievedAt
+                      ? ` · Retrieved ${new Date(node.retrievedAt).toLocaleString()}`
+                      : ""}
+                    . Coverage can be incomplete.
+                  </small>
+                </>
+              ) : (
+                <>
+                  <div className="cg-list-heading">
+                    <h4>
+                      {filter ? "Search results" : "Explore your sources"}
+                    </h4>
+                    <span>{results.length.toLocaleString()}</span>
+                  </div>
+                  <p className="research-meta">
+                    {filter
+                      ? "Matches are highlighted on the graph. Select a paper to see its connections."
+                      : "Select a node or paper to see its abstract, publication details and citation connections."}
+                  </p>
+                  <label className="cg-sort">
+                    Sort papers
+                    <select
+                      aria-label="Sort graph papers"
+                      value={sort}
+                      onChange={(event) => {
+                        setSort(event.target.value);
+                        setPage(0);
+                      }}
+                    >
+                      <option value="project">Project papers first</option>
+                      <option value="relevance">Topic match</option>
+                      <option value="impact">
+                        Field-normalized citation impact
+                      </option>
+                      <option value="citations">Citation count</option>
+                      <option value="recent">Newest first</option>
+                    </select>
+                  </label>
+                  {sort === "relevance" && !graph.researchQuestion && (
+                    <p className="research-meta">
+                      Set a research question in Memory first.
+                    </p>
+                  )}
+                  {sort === "impact" && (
+                    <p className="research-meta">
+                      {
+                        results.filter(
+                          (paper) => paper.citationPercentile !== undefined,
+                        ).length
+                      }{" "}
+                      / {results.length} papers have loaded impact metrics. Open
+                      a paper to retrieve its metrics; unavailable values sort
+                      last.
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    className="research-primary cg-discover-button"
+                    disabled={!!working}
+                    onClick={() => query({ query: "missing" })}
+                  >
+                    Find missing sources
+                  </button>
+                  <div className="cg-paper-list">
+                    {results.slice(page * 50, (page + 1) * 50).map(paperButton)}
+                  </div>
+                  {!results.length && (
+                    <p>
+                      No papers match. Try a title, author, citation key or DOI,
+                      or clear the filters.
+                    </p>
+                  )}
+                  {results.length > 50 && (
+                    <div className="cg-pagination">
+                      <button
+                        type="button"
+                        disabled={page === 0}
+                        onClick={() => setPage((v) => v - 1)}
+                      >
+                        Previous
+                      </button>
+                      <span>
+                        {page + 1} / {Math.ceil(results.length / 50)}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={(page + 1) * 50 >= results.length}
+                        onClick={() => setPage((v) => v + 1)}
+                      >
+                        Next
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </aside>
+          </div>
+          <div className="cg-bottom">
+            <details
+              className="research-card research-compare"
+              open={compare}
+              onToggle={(event) => setCompare(event.currentTarget.open)}
+            >
+              <summary>Compare two papers</summary>
+              {compare && (
+                <>
+                  <div className="research-columns">
+                    <label>
+                      First paper
+                      <select
+                        value={a}
+                        onChange={(e) => setFirst(e.target.value)}
+                      >
+                        {graph.nodes.map((n) => (
+                          <option key={n.id} value={n.id}>
+                            {n.keys[0] || n.id} · {n.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Second paper
+                      <select
+                        value={b}
+                        onChange={(e) => setSecond(e.target.value)}
+                      >
+                        {graph.nodes.map((n) => (
+                          <option key={n.id} value={n.id}>
+                            {n.keys[0] || n.id} · {n.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="research-actions">
+                    <button
+                      type="button"
+                      disabled={!!working || !a || !b || a === b}
+                      onClick={() =>
+                        query({ query: "shared_references", nodes: [a, b] })
+                      }
+                    >
+                      Find shared references
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!!working || !a || !b}
+                      onClick={() =>
+                        query({
+                          query: "path",
+                          node: a,
+                          target: b,
+                          direction: "outgoing",
+                        })
+                      }
+                    >
+                      Find citation path
+                    </button>
+                  </div>
+                </>
+              )}
+            </details>
+            {answer && (
+              <div className="research-card cg-query-results">
+                <div className="research-section-heading">
+                  <h3>
+                    {lastQuery?.query === "missing"
+                      ? "Sources to explore"
+                      : "Connections"}
+                  </h3>
+                  <button
+                    type="button"
+                    aria-label="Close query results"
+                    onClick={() => setAnswer(undefined)}
+                  >
+                    ×
+                  </button>
+                </div>
+                {answer.ranking && (
+                  <p className="research-meta">{answer.ranking}</p>
+                )}
+                {answer.found !== undefined && (
+                  <p>
+                    {answer.found
+                      ? "Citation path (in arrow order), highlighted in the graph:"
+                      : "No path found in the loaded graph."}
+                  </p>
+                )}
+                {(answer.path ?? answer.results ?? []).map((item, i) => {
+                  const paper = "node" in item ? item.node : item,
+                    citedBy = "citedBy" in item ? item.citedBy : undefined;
+                  return (
+                    <div key={`${paper.id}:${i}`} className="research-finding">
+                      <button
+                        type="button"
+                        className="research-link"
+                        onClick={() => pick(paper)}
+                      >
+                        {paper.keys.join(", ") || paper.id} · {paper.title}
+                      </button>
+                      {citedBy && (
+                        <p className="research-meta">
+                          Cited by {citedBy.length} project papers:{" "}
+                          {citedBy.map((n) => n.keys.join(", ")).join("; ")}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+                {answer.total === 0 && (
+                  <p>No matching works in the loaded graph.</p>
+                )}
+                {answer.nextOffset !== undefined && (
+                  <button
+                    type="button"
+                    disabled={!!working}
                     onClick={() =>
-                      void act("Adding reference…", async () => {
-                        const added = await api.research<{
-                          key: string;
-                          verification?: { status: string; detail?: string };
-                        }>(projectId, "/add-reference", {
-                          ref: selectedNode.ref,
-                        });
-                        await load();
-                        if (
-                          alive.current &&
-                          added.verification?.status !== "verified"
-                        )
-                          setError(
-                            `${added.key} was added, but its identity check is ${added.verification?.status ?? "unavailable"}. ${added.verification?.detail ?? "Review it in References."}`,
-                          );
-                      })
+                      query({ ...lastQuery, offset: answer.nextOffset })
                     }
                   >
-                    Add to bibliography
+                    Next results
                   </button>
                 )}
               </div>
-            </article>
-          )}
-          <div className="research-actions research-graph-discover">
-            <button
-              type="button"
-              className="research-primary"
-              disabled={!!working}
-              onClick={() => query({ query: "missing" })}
-            >
-              Find missing sources
-            </button>
-            <span>Works referenced by your papers</span>
-          </div>
-          <details className="research-card research-compare">
-            <summary>Compare two papers</summary>
-            <div className="research-columns">
-              <label>
-                First paper
-                <select value={a} onChange={(e) => setFirst(e.target.value)}>
-                  {graph.nodes.map((n) => (
-                    <option key={n.id} value={n.id}>
-                      {n.keys[0] || n.id} · {n.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Second paper
-                <select value={b} onChange={(e) => setSecond(e.target.value)}>
-                  {graph.nodes.map((n) => (
-                    <option key={n.id} value={n.id}>
-                      {n.keys[0] || n.id} · {n.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="research-actions">
-              <button
-                type="button"
-                disabled={!!working || !a || !b || a === b}
-                onClick={() =>
-                  query({ query: "shared_references", nodes: [a, b] })
-                }
-              >
-                Find shared references
-              </button>
-              <button
-                type="button"
-                disabled={!!working || !a || !b}
-                onClick={() =>
-                  query({
-                    query: "path",
-                    node: a,
-                    target: b,
-                    direction: "outgoing",
-                  })
-                }
-              >
-                Find citation path
-              </button>
-            </div>
-          </details>
-          {answer && (
-            <div className="research-card">
-              <div className="research-section-heading">
-                <h3>
-                  {lastQuery?.query === "missing"
-                    ? "Sources to explore"
-                    : "Connections"}
-                </h3>
-                <button
-                  type="button"
-                  className="research-icon-button"
-                  aria-label="Close query results"
-                  onClick={() => setAnswer(undefined)}
-                >
-                  ×
-                </button>
-              </div>
-              {answer.ranking && (
-                <p className="research-meta">{answer.ranking}</p>
-              )}
-              {answer.found !== undefined && (
-                <p>
-                  {answer.found
-                    ? "Citation path (in arrow order):"
-                    : "No path found in the loaded graph."}
-                </p>
-              )}
-              {(answer.path ?? answer.results ?? []).map((item, i) => {
-                const node = "node" in item ? item.node : item,
-                  citedBy = "citedBy" in item ? item.citedBy : undefined;
-                return (
-                  <div key={`${node.id}:${i}`} className="research-finding">
-                    <button
-                      type="button"
-                      className="research-link"
-                      onClick={() => pick(node)}
-                    >
-                      {node.keys.join(", ") || node.id} · {node.title}
-                    </button>
-                    {citedBy && (
-                      <p className="research-meta">
-                        Cited by {citedBy.length} project papers:{" "}
-                        {citedBy.map((n) => n.keys.join(", ")).join("; ")}
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
-              {answer.total === 0 && (
-                <p>No matching works in the loaded graph.</p>
-              )}
-              {answer.nextOffset !== undefined && (
-                <button
-                  type="button"
-                  disabled={!!working}
-                  onClick={() =>
-                    query({ ...lastQuery, offset: answer.nextOffset })
-                  }
-                >
-                  Next results
-                </button>
-              )}
-            </div>
-          )}
-          {!!gaps.length && (
-            <details className="research-card research-graph-gaps">
-              <summary>
-                {gaps.length}{" "}
-                {gaps.length === 1 ? "lookup needs" : "lookups need"} attention
-              </summary>
-              {gaps.map(([key, detail]) => (
-                <p key={key}>
-                  <strong>{key}</strong> · {detail}
-                </p>
-              ))}
-              <button
-                type="button"
-                disabled={!!working || building}
-                onClick={retry}
-              >
-                Retry unresolved sources
-              </button>
-            </details>
-          )}
-          {graph.truncated && (
-            <p className="research-alert">
-              Some relationships were omitted because the graph reached its data
-              limit.
-            </p>
-          )}
-          <details className="research-meta research-graph-about">
-            <summary>About this graph · OpenAlex</summary>
-            <p>{graph.note}</p>
-            <p>
-              Drag to pan. Up to 80 papers are shown; searches and chat queries
-              use the full saved graph. Dashed nodes have unresolved metadata.
-            </p>
-            <p>
-              Codex can query connections, shared references, missing sources
-              and citation paths from chat.
-            </p>
-            {graph.at && (
-              <p>Last update: {new Date(graph.at).toLocaleString()}</p>
             )}
-          </details>
+            {!!gaps.length && (
+              <details className="research-card research-graph-gaps">
+                <summary>
+                  {gaps.length}{" "}
+                  {gaps.length === 1 ? "lookup needs" : "lookups need"}{" "}
+                  attention
+                </summary>
+                {gaps.map(([key, message]) => (
+                  <p key={key}>
+                    <strong>{key}</strong> · {message}
+                  </p>
+                ))}
+                <button
+                  type="button"
+                  disabled={
+                    !!working || building || indexing?.reason === "rate_limit"
+                  }
+                  onClick={retry}
+                >
+                  Retry unresolved sources
+                </button>
+              </details>
+            )}
+            {graph.truncated && (
+              <p className="research-alert">
+                The saved graph reached its limit (5,000 papers / 20,000
+                citations); some relationships were omitted.
+              </p>
+            )}
+            <details className="research-meta research-graph-about">
+              <summary>About this graph · OpenAlex</summary>
+              <p>{graph.note}</p>
+              <p>
+                Every saved paper is available in the explorer. Search
+                highlights matches without discarding the surrounding graph.
+                Node size reflects incoming links in this graph. Use / to
+                search; focus the map and use arrow keys to pan, +/− to zoom,
+                and 0 to fit.
+              </p>
+              <p>
+                Codex can query connections, shared references, missing sources
+                and citation paths from chat. Export JSON includes the directed
+                graph and retrieval dates.
+              </p>
+              {graph.at && (
+                <p>Last update: {new Date(graph.at).toLocaleString()}</p>
+              )}
+            </details>
+          </div>
         </>
       )}
-    </div>
+    </dialog>
+  );
+  return (
+    <>
+      <div ref={mount} className="cg-mount" />
+      {createPortal(content, host)}
+    </>
   );
 }
