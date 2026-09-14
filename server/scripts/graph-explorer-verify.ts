@@ -148,6 +148,8 @@ export async function verifyGraphExplorer(
     const panel = explorer.getByRole("complementary", {
       name: "Paper details",
     });
+    await explorer.getByRole("button", { name: "Center paper", exact: true }).click();
+    await page.waitForTimeout(300);
     const widthBefore = (await panel.boundingBox())!.width;
     await divider.focus();
     await divider.press("ArrowLeft");
@@ -165,6 +167,9 @@ export async function verifyGraphExplorer(
     await page.mouse.up();
     if ((await panel.boundingBox())!.width < widthBefore + 75)
       throw new Error("Pointer panel resize failed");
+    const resizedStage = (await explorer.locator(".cg-stage").boundingBox())!;
+    await page.mouse.move(resizedStage.x + resizedStage.width / 2, resizedStage.y + resizedStage.height / 2);
+    await page.waitForFunction(() => document.querySelector(".cg-tooltip strong")?.textContent === "Learning relational structure with graph networks");
     // Keyboard-accessible result lists and filters still work for nodes beyond the old cap.
     await explorer.getByRole("button", { name: "Close paper details" }).click();
     await search.fill("10.1234/paper1842");

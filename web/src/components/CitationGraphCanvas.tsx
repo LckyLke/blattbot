@@ -259,7 +259,11 @@ export default forwardRef<GraphCamera, Props>(
         if (Date.now() >= suppressClickUntil) latest.current.onSelect("");
       });
       const observer = new ResizeObserver(() => {
-        if (renderer.current === sigma) sigma.resize();
+        if (renderer.current === sigma) {
+          sigma.resize();
+          // Resizing WebGL canvases clears them; redraw after splitter/portal moves.
+          sigma.scheduleRefresh();
+        }
       });
       observer.observe(container.current!);
       return () => {
