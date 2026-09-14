@@ -32,6 +32,23 @@ afterEach(() => {
 });
 
 describe("direct paper reading", () => {
+  it.each([
+    ["Towards Foundation Models for Knowledge Graph Reasoning", "T OWARDS F OUNDATION M ODELS FOR K NOWLEDGE G RAPH R EASONING"],
+    ["InGram: Inductive Knowledge Graph Embedding via Relation Graphs", "I N G RAM: Inductive Knowledge Graph Embedding via Relation Graphs"],
+    ["An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale", "A N I MAGE IS W ORTH 16 X 16 W ORDS: T RANSFORMERS FOR I MAGE R ECOGNITION AT S CALE"],
+  ])("recognizes the complete title despite small-cap PDF spacing: %s", async (title, heading) => {
+    writeFileSync(join(dir, "refs.bib"), `@article{smith2020, title={${title}}, year={2020}}`);
+    writeFileSync(join(uploads, "smith2020.pdf"), textPdf([`${heading}\nAbstract\nActual paper contents.`]));
+    const { readPaper } = await import("../src/papers.js");
+    expect(await readPaper("p1", dir, "smith2020")).toMatchObject({ basis: "full_text" });
+  });
+
+  it("does not use small-cap title mentions in the abstract as paper identity", async () => {
+    writeFileSync(join(dir, "refs.bib"), "@article{smith2020, title={Towards Foundation Models for Knowledge Graph Reasoning}, year={2020}}");
+    writeFileSync(join(uploads, "smith2020.pdf"), textPdf(["A Different Paper. Abstract. We review T OWARDS F OUNDATION M ODELS FOR K NOWLEDGE G RAPH R EASONING."]));
+    const { readPaper } = await import("../src/papers.js");
+    expect(await readPaper("p1", dir, "smith2020")).toMatchObject({ basis: "none" });
+  });
   it("opens an attached PDF, searches later pages, and reuses the binding for verification", async () => {
     const path = join(uploads, "author-manuscript.pdf");
     writeFileSync(path, textPdf(["Graph Models. Introduction.", "Ablation accuracy was 91 percent."]));

@@ -537,7 +537,17 @@ export async function getPaperContent(
 
 function pdfMatchesEntry(pages: string[], entry: BibEntry): boolean {
   const title = normTitle(entry.fields.title ?? "");
-  return Boolean(title && normTitle(pages.slice(0, 2).join(" ")).includes(title));
+  if (!title) return false;
+  if (normTitle(pages.slice(0, 2).join(" ")).includes(title)) return true;
+  // Small-cap headings often extract as "T OWARDS F OUNDATION M ODELS".
+  // Require the complete ordered title, ignoring typography only. Limit this
+  // fallback to the first-page heading so mentions in the abstract/body cannot
+  // establish identity; short, ambiguous titles still require the normal match.
+  const compact = (text: string) => text.normalize("NFKD")
+    .replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const expected = compact(entry.fields.title ?? "");
+  const heading = (pages[0] ?? "").split(/\bA\s*B\s*S\s*T\s*R\s*A\s*C\s*T\b/i)[0].slice(0, 2000);
+  return expected.length >= 24 && title.split(" ").length >= 4 && compact(heading).includes(expected);
 }
 
 export interface PaperReadResult extends Omit<PaperContent, "pages"> {

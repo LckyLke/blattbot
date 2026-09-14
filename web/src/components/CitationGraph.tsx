@@ -188,7 +188,8 @@ export default function CitationGraph({ projectId, busy, stamp }: Props) {
     setDetail(undefined);
     setDetailError("");
     setDetailBusy(false);
-    if (!selected || !/^W\d+$/.test(selected)) return;
+    // Bibliography-only nodes can still have an indexed local paper.
+    if (!selected) return;
     setDetailBusy(true);
     void api
       .research<GraphNode>(projectId, "/graph/details", { node: selected })
