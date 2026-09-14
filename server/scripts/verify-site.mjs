@@ -19,8 +19,9 @@ try {
   await video.scrollIntoViewIfNeeded();
   await page.waitForFunction(() => document.querySelector("video").readyState >= 1);
   assert(await video.evaluate(el => el.paused && !el.autoplay && el.controls), "Explicit playback with native controls");
+  assert(await video.evaluate(el => el.currentSrc.includes("/workflow.mp4")), "The complete editing workflow leads the site");
   await page.screenshot({ path: join(shots, "desktop-demos.png") });
-  for (const clip of ["graph", "writing", "evidence"]) {
+  for (const clip of ["writing", "evidence", "graph", "workflow"]) {
     await page.locator(`#demo-${clip}`).click();
     await page.waitForFunction(key => { const el = document.querySelector("video"); return el.currentSrc.includes(`/${key}.mp4`) && el.readyState >= 2 && el.currentTime > 0.2; }, clip);
     assert(await video.evaluate(el => el.duration > 15 && el.duration < 60), "A short playable video");
@@ -32,14 +33,14 @@ try {
     await video.evaluate(el => { el.textTracks[0].mode = "hidden"; });
     await page.waitForFunction(() => document.querySelector("video").textTracks[0]?.cues?.length >= 4);
   }
-  await page.locator("#demo-evidence").focus();
+  await page.locator("#demo-workflow").focus();
   await page.keyboard.press("ArrowRight");
-  assert.equal(await page.locator("#demo-graph").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#demo-writing").getAttribute("aria-selected"), "true");
   assert(await video.evaluate(el => el.paused), "Keyboard browsing does not start motion");
   await page.keyboard.press("End");
-  assert.equal(await page.locator("#demo-writing").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#demo-graph").getAttribute("aria-selected"), "true");
   await page.keyboard.press("Home");
-  assert.equal(await page.locator("#demo-evidence").getAttribute("aria-selected"), "true");
+  assert.equal(await page.locator("#demo-workflow").getAttribute("aria-selected"), "true");
   await page.locator("#demo-play").click();
   await page.locator("footer").scrollIntoViewIfNeeded();
   await page.waitForFunction(() => document.querySelector("video").paused);
@@ -72,7 +73,7 @@ try {
   const noJs = await browser.newContext({ javaScriptEnabled: false });
   const fallback = await noJs.newPage();
   await fallback.goto(base);
-  assert.equal(await fallback.locator("noscript a").count(), 3);
+  assert.equal(await fallback.locator("noscript a").count(), 4);
   await noJs.close();
   console.log(`Website passed: playable clips, captions, keyboard controls, offscreen pause, image loading, lightbox, responsive layout and no-JS links. Screenshots: ${shots}`);
 } finally { await browser.close(); }

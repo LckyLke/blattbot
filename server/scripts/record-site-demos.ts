@@ -1,5 +1,5 @@
 /** Record real UI walkthroughs against site-demo-project's isolated, prepared data.
- * DEMO_CLIP=evidence|graph|writing records one clip; default records all three.
+ * DEMO_CLIP=workflow|evidence|graph|writing records one clip; default records all four.
  * DEMO_OUT_DIR changes the output folder. Run site-demo-project.ts --prepare first.
  * Captions and the pointer are presentation overlays; app state comes from real APIs.
  */
@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { demoRoot, project, projectPath, manuscript } from "./site-demo-project.js";
+import { commitAll } from "../src/git.js";
 
 const out = process.env.DEMO_OUT_DIR ?? join(demoRoot, "recordings");
 mkdirSync(out, { recursive: true });
@@ -60,22 +61,37 @@ try {
   }
   if (!token) throw new Error(`Server failed: ${logs}`);
   browser = await chromium.launch({ executablePath: process.env.BLATTBOT_BROWSER_EXECUTABLE ?? "/usr/bin/chromium", headless: true });
-  const clips = process.env.DEMO_CLIP ? [process.env.DEMO_CLIP] : ["evidence", "graph", "writing"];
+  const clips = process.env.DEMO_CLIP ? [process.env.DEMO_CLIP] : ["workflow", "evidence", "graph", "writing"];
   for (const clip of clips) {
-    if (!["evidence", "graph", "writing"].includes(clip)) throw new Error("Unknown clip");
+    if (!["workflow", "evidence", "graph", "writing"].includes(clip)) throw new Error("Unknown clip");
     writeFileSync(join(projectPath, "main.tex"), manuscript);
+    if (clip === "workflow") {
+      await commitAll(projectPath, "Prepare a clean starting draft for the workflow demo");
+      await api("/chats", {});
+    }
     await api("/compile", {});
     await api("/research/policy", { strict: false }, "PUT");
     const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, recordVideo: { dir: out, size: { width: 1600, height: 1000 } } });
     await context.addInitScript(({ clip }) => {
-      localStorage.setItem("blattbot.paneLeft.v2", clip === "writing" ? "source" : "pdf");
-      localStorage.setItem("blattbot.paneRight.v2", clip === "writing" ? "pdf" : "research");
+      localStorage.setItem("blattbot.paneLeft.v2", clip === "workflow" ? "chat" : clip === "writing" ? "source" : "pdf");
+      localStorage.setItem("blattbot.paneRight.v2", ["workflow", "writing"].includes(clip) ? "pdf" : "research");
       localStorage.setItem("blattbot.panelWidth", clip === "writing" ? "540" : "690");
       localStorage.setItem("blattbot.sourceWrap", "1");
     }, { clip });
     const page = await context.newPage();
     const started = Date.now();
     const marks: { at: number; text: string }[] = [];
+    const toolEvents: { at: number; name: string }[] = [];
+    let segments: { start: number; end: number }[] | undefined;
+    page.on("websocket", socket => socket.on("framereceived", frame => {
+      try {
+        const event = JSON.parse(String(frame.payload));
+        if (event.type === "tool_start") {
+          toolEvents.push({ at: (Date.now() - started) / 1000, name: event.name });
+          console.log(`Actual agent tool: ${event.name}`);
+        }
+      } catch {}
+    }));
     const errors: string[] = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(base, { waitUntil: "networkidle" });
@@ -91,14 +107,76 @@ try {
     });
     const caption = async (text: string) => {
       marks.push({ at: (Date.now() - started) / 1000, text });
-      await page.evaluate(({ clip, text }) => { const el = document.getElementById("demo-caption")!; el.replaceChildren(); const tag = document.createElement("span"); tag.textContent = clip === "evidence" ? "READ & VERIFY" : clip === "graph" ? "CONNECT YOUR SOURCES" : "FIND & REFINE"; el.append(tag, text); }, { clip, text });
+      await page.evaluate(({ clip, text }) => { const el = document.getElementById("demo-caption")!; el.replaceChildren(); const tag = document.createElement("span"); tag.textContent = clip === "workflow" ? "EDIT · COMPILE · REVIEW" : clip === "evidence" ? "READ & VERIFY" : clip === "graph" ? "CONNECT YOUR SOURCES" : "FIND & REFINE"; el.append(tag, text); }, { clip, text });
       console.log(`${clip}: ${text}`);
     };
     const shot = async (name: string) => {
       await page.screenshot({ path: join(out, `${name}.png`) });
     };
     const research = page.locator(".research-panel").filter({ visible: true });
-    if (clip === "evidence") {
+    if (clip === "workflow") {
+      const now = () => (Date.now() - started) / 1000;
+      await caption("Your draft, its PDF, and an assistant ready to help.");
+      await page.waitForTimeout(2200);
+      await click(page, page.getByRole("button", { name: "Edit", exact: true }));
+      await caption("Describe the change you want.");
+      const composer = page.getByPlaceholder(/Ask BlattBot/);
+      await point(page, composer);
+      await composer.focus();
+      await page.keyboard.type("Turn the related-work plan into a three-item numbered checklist. Keep the meaning and citations unchanged. Only edit that section, then compile.", { delay: 24 });
+      await page.waitForTimeout(1000);
+      await page.keyboard.press("Enter");
+      await caption("The agent edits and compiles. Waiting time is shortened.");
+      const sent = now();
+      await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ timeout: 30000 });
+      let showedDiff = false;
+      for (let i = 0; i < 600; i++) {
+        const state = await api("");
+        if (state.hasChanges && !showedDiff) {
+          await click(page, tab(page, "right", "Proof"));
+          showedDiff = true;
+        }
+        if (!state.turnActive) break;
+        if (i === 599) throw new Error("Agent turn did not finish");
+        await page.waitForTimeout(1000);
+      }
+      await page.getByText(/turn complete/).first().waitFor({ timeout: 30000 });
+      const complete = now();
+      if (!toolEvents.some(e => /compile/i.test(e.name))) throw new Error("The agent did not compile its edit");
+      const changed = readFileSync(join(projectPath, "main.tex"), "utf8");
+      const section = String.raw`\section{A plan for related work}`;
+      const after = String.raw`\section{Questions to resolve}`;
+      if (!changed.includes(String.raw`\begin{enumerate}`) || changed.split(section)[0] !== manuscript.split(section)[0] || changed.split(after)[1] !== manuscript.split(after)[1]) throw new Error("The agent edit exceeded the requested section");
+      if (!(await api("")).lastCompile?.ok) throw new Error("The agent's final PDF did not compile");
+      await click(page, tab(page, "right", "Proof"));
+      await caption("Read the exact changes before approving.");
+      await page.waitForTimeout(4500);
+      await shot("workflow-proof");
+      await click(page, tab(page, "right", "PDF"));
+      await page.locator(".textLayer").first().waitFor();
+      await caption("Check the result in the compiled PDF.");
+      await page.waitForTimeout(4000);
+      await click(page, tab(page, "right", "Proof"));
+      await caption("Approve the edit when you are happy with it.");
+      await page.waitForTimeout(1600);
+      await click(page, page.getByRole("button", { name: "Approve & push", exact: true }));
+      await page.getByText(/No pending changes/).waitFor({ timeout: 30000 });
+      if ((await api("")).hasChanges) throw new Error("Approval left uncommitted changes");
+      await caption("Saved locally. Connected projects can also sync to Overleaf.");
+      await page.waitForTimeout(1800);
+      await click(page, tab(page, "right", "PDF"));
+      await page.waitForTimeout(3300);
+      // Keep real tool activity and the entire review/approval, removing long idle waits.
+      const activity = toolEvents.filter(e => e.at >= sent && e.at < complete);
+      const chosen = [activity[0], activity.find(e => /edit|write/i.test(e.name)), activity.find(e => /compile/i.test(e.name))].filter((e): e is { at: number; name: string } => !!e);
+      const windows = [{ start: marks[0].at, end: sent + 1 }, ...chosen.map(e => ({ start: Math.max(sent, e.at - 0.4), end: Math.min(complete, e.at + 2.8) })), { start: complete, end: now() }].sort((a, b) => a.start - b.start);
+      segments = [];
+      for (const window of windows) {
+        const previous = segments.at(-1);
+        if (previous && window.start <= previous.end) previous.end = Math.max(previous.end, window.end);
+        else segments.push(window);
+      }
+    } else if (clip === "evidence") {
       await click(page, research.getByRole("button", { name: "Evidence", exact: true }));
       await research.getByText("Supports claim", { exact: true }).first().waitFor();
       await research.locator(".research-body").evaluate(el => { el.scrollTop = 0; }).catch(() => {});
@@ -189,7 +267,7 @@ try {
     const path = await page.video()!.path();
     await context.close();
     if (errors.length) throw new Error(`Browser errors: ${errors.join("; ")}`);
-    writeFileSync(join(out, `${clip}.json`), JSON.stringify({ clip, raw: path, start: marks[0].at, end, marks, size: [1600, 1000] }, null, 2));
+    writeFileSync(join(out, `${clip}.json`), JSON.stringify({ clip, raw: path, start: marks[0].at, end, marks, segments, toolEvents, size: [1600, 1000] }, null, 2));
     console.log(`RECORDED ${clip}: ${(end - marks[0].at).toFixed(1)} seconds`);
   }
 } finally {

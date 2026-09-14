@@ -6,9 +6,9 @@ Every change, whether you typed it or the built-in agent made it, lands as a rev
 
 ![BlattBot demo](docs/assets/demo.gif)
 
-[Watch the Research walkthroughs](https://blattbot.com/#demos) — real app interactions with a sample project; evidence checks and citation data prepared before recording.
+[Watch BlattBot in action](https://blattbot.com/#demos) — a real agent edit, compilation, diff review and local approval, followed by editor and Research walkthroughs.
 
-*Read the evidence, explore citation connections, and search the source and PDF. An edited overview of the current source build.*
+*Ask for a change, review the result, then approve it. Recorded in the current source build with a real agent; waiting periods shortened.*
 
 ```
 Overleaf (any instance) ⇄ local git mirror ⇄ editor + Codex agent

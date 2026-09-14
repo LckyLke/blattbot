@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BlattBot · research, write and review in LaTeX</title>
-  <meta name="description" content="Read source papers, explore citation graphs and write LaTeX with an AI assistant. Original evidence, local projects and changes you review. Sync with Overleaf when you choose.">
+  <title>BlattBot · AI LaTeX editing, review and Overleaf sync</title>
+  <meta name="description" content="Edit LaTeX with an AI assistant, compile locally and review every change. Work in a full source and PDF editor, sync with Overleaf and investigate your sources with integrated Research tools.">
   <link rel="icon" type="image/svg+xml" href="logo.svg">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="BlattBot · research, write and review in LaTeX">
-  <meta property="og:description" content="Your papers, their evidence and your writing in one local LaTeX workspace. Explore citation graphs, inspect source passages and review every change.">
+  <meta property="og:title" content="BlattBot · AI LaTeX editing, review and Overleaf sync">
+  <meta property="og:description" content="Ask for an edit. Check the compiled PDF. Review and approve the diff. Your local LaTeX workspace, connected to Overleaf when you need it.">
   <meta property="og:url" content="https://blattbot.com/">
   <meta property="og:image" content="https://blattbot.com/assets/demo-poster.png">
   <meta name="twitter:card" content="summary_large_image">
@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:ital,wght@0,400;0,600;0,700;1,400&display=swap">
   <link rel="canonical" href="https://blattbot.com/">
-  <link rel="stylesheet" href="styles.css?v=research-20260914-2">
+  <link rel="stylesheet" href="styles.css?v=workflow-20260914">
 </head>
 <body>
 
@@ -26,7 +26,7 @@
     <span class="tex-logo brand-mark">Bl<span class="up">a</span>ttB<span class="down">o</span>t</span>
   </a>
   <nav class="site-nav" aria-label="Site">
-    <a href="#research">Research</a>
+    <a href="#workflow">Workflow</a>
     <a href="#demos">Demos</a>
     <a href="#how">Get started</a>
     <a href="https://github.com/lckylke/blattbot">GitHub</a>
@@ -38,8 +38,8 @@
   <section class="hero">
     <img class="hero-leaf" src="logo.svg" alt="" width="34" height="64">
     <h1 class="tex-logo hero-mark" aria-label="BlattBot"><span class="lt">B</span><span class="lt">l</span><span class="lt"><span class="up">a</span></span><span class="lt">t</span><span class="lt">t</span><span class="lt">B</span><span class="lt"><span class="down">o</span></span><span class="lt">t</span></h1>
-    <p class="claim">Read the papers. Connect the ideas.<br><em>Write with the evidence in reach.</em></p>
-    <p class="hero-description">Your sources, your LaTeX and your AI assistant in one local workspace.<br>Connect to Overleaf whenever you need to.</p>
+    <p class="claim">Your LaTeX. Your assistant.<br><em>You approve the changes.</em></p>
+    <p class="hero-description">Ask for edits, inspect the PDF, and review the diff.<br>Work locally or sync with Overleaf.</p>
 
     <button class="install" id="install" type="button" aria-label="Copy the command npx blattbot to the clipboard">
       <span class="install-prompt" aria-hidden="true">$</span>
@@ -49,32 +49,94 @@
     <p class="visually-hidden" role="status" id="copy-status"></p>
 
     <p class="subline">Runs on your machine with Codex, Claude Code, or your own model endpoint.</p>
-    <p class="release-note">Research preview · The demos show the latest source build.<br><a href="https://github.com/LckyLke/blattbot#install-from-source">Get the Research preview <span aria-hidden="true">↗</span></a> · <code>npx</code> installs the stable release.</p>
+    <p class="release-note">Walkthroughs recorded in the latest source build.<br><a href="https://github.com/LckyLke/blattbot#install-from-source">Get the Research preview <span aria-hidden="true">↗</span></a> · <code>npx</code> installs the stable release.</p>
 
     <div class="demo-showcase hero-shot" id="demos">
-      <div class="demo-heading"><span class="eyebrow">Inside BlattBot</span><span>Three short walkthroughs</span></div>
+      <div class="demo-heading"><span class="eyebrow">See the main workflow</span><span>Then explore the details</span></div>
       <div class="demo-tabs" role="tablist" aria-label="Product walkthroughs">
-        <button id="demo-evidence" role="tab" aria-selected="true" aria-controls="demo-panel" data-demo="evidence"><span>01</span> Read &amp; verify</button>
-        <button id="demo-graph" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo="graph"><span>02</span> Connect your sources</button>
-        <button id="demo-writing" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo="writing"><span>03</span> Find &amp; refine</button>
+        <button id="demo-workflow" role="tab" aria-selected="true" aria-controls="demo-panel" data-demo="workflow"><span>01</span> Edit &amp; approve</button>
+        <button id="demo-writing" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo="writing"><span>02</span> Source &amp; PDF</button>
+        <button id="demo-evidence" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo="evidence"><span>03</span> Read &amp; verify</button>
+        <button id="demo-graph" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo="graph"><span>04</span> Citation graph</button>
       </div>
-      <figure class="shot demo-player" id="demo-panel" role="tabpanel" aria-labelledby="demo-evidence" tabindex="0">
+      <figure class="shot demo-player" id="demo-panel" role="tabpanel" aria-labelledby="demo-workflow" tabindex="0">
         <video id="walkthrough" muted loop playsinline controls preload="metadata"
-               poster="assets/evidence-poster.webp" width="1600" height="1000"
-               aria-label="Read and verify: inspect cited claims, open their original evidence and search the paper library.">
-          <source src="assets/evidence.mp4" type="video/mp4">
-          <track kind="captions" src="assets/evidence.vtt" srclang="en" label="English">
-          Your browser cannot play this video. <a href="assets/evidence.mp4">Download the walkthrough.</a>
+               poster="assets/workflow-poster.webp" width="1600" height="1000"
+               aria-label="Edit and approve: ask the agent for an edit, check its compiled PDF, review the diff and approve the local change.">
+          <source src="assets/workflow.mp4" type="video/mp4">
+          <track kind="captions" src="assets/workflow.vtt" srclang="en" label="English">
+          Your browser cannot play this video. <a href="assets/workflow.mp4">Download the walkthrough.</a>
         </video>
-        <figcaption id="demo-caption">Follow a citation back to the paper, then find relevant passages across your library.</figcaption>
+        <figcaption id="demo-caption">One complete edit: ask the assistant, check the PDF, review the diff and approve.</figcaption>
       </figure>
       <div class="demo-meta"><span>Actual app · sample project · silent, edited walkthroughs</span><button id="demo-play" type="button">Play walkthrough <span aria-hidden="true">▶</span></button></div>
-      <details class="demo-transcript"><summary>Read the walkthrough</summary><ol id="demo-transcript"><li>Open Evidence to inspect the status of cited passages in the draft.</li><li>Expand an assessment and open its quoted source passage with the PDF page number.</li><li>Search the indexed library for passages from the project’s papers.</li><li>Turn on strict mode to keep unresolved evidence visible before approval.</li></ol><p>Evidence assessments and the citation index are prepared before recording. Model checks remain fallible; read the source and review the result.</p></details>
-      <noscript><p class="demo-transcript">Watch: <a href="assets/evidence.mp4">Read &amp; verify</a> · <a href="assets/graph.mp4">Connect your sources</a> · <a href="assets/writing.mp4">Find &amp; refine</a>.</p></noscript>
+      <details class="demo-transcript"><summary>Read the walkthrough</summary><ol id="demo-transcript"><li>Open a project with the assistant beside the compiled PDF.</li><li>Ask for a change in plain language.</li><li>Watch the agent edit the LaTeX and compile the document.</li><li>Read the exact diff and inspect the resulting PDF.</li><li>Approve the change to save it to the local project history.</li></ol><p id="demo-note">Recorded with a real agent turn in a local project. Waiting periods are shortened. On a connected project, approval can also push the changes to Overleaf.</p></details>
+      <noscript><p class="demo-transcript">Watch: <a href="assets/workflow.mp4">Edit &amp; approve</a> · <a href="assets/writing.mp4">Source &amp; PDF</a> · <a href="assets/evidence.mp4">Read &amp; verify</a> · <a href="assets/graph.mp4">Citation graph</a>.</p></noscript>
     </div>
   </section>
 
   <hr class="booktabs" aria-hidden="true">
+
+  <section class="feature" id="workflow" aria-labelledby="f-proof">
+    <div class="feature-text">
+      <p class="eyebrow">\section{proof}</p>
+      <h2 id="f-proof">Agent edits land as diffs you approve</h2>
+      <p>The agent works in a local git checkout and compiles after editing to check its own work. You can watch the diff grow during the turn. Keep what you want and discard the rest — as a text diff or as a rendered PDF diff that highlights the pages that visually changed. On a connected project, approved changes are pushed to Overleaf with a normal history entry; if Overleaf changed in the meantime, a conflicting push is blocked until you resolve it.</p>
+      <a class="text-link" href="#demos" data-watch="workflow">Watch a complete edit <span aria-hidden="true">↗</span></a>
+    </div>
+    <figure class="shot">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the review diff">
+        <img src="assets/workflow-proof.webp" width="1600" height="1000" loading="lazy"
+             alt="A real agent turn beside the exact LaTeX diff it produced: a prose plan converted into a numbered checklist, ready for review and local approval.">
+      </button>
+      <figcaption>A real edit, compiled and ready for your review.</figcaption>
+    </figure>
+  </section>
+
+  <section class="feature flip" aria-labelledby="f-editor">
+    <div class="feature-text">
+      <p class="eyebrow">\section{editor}</p>
+      <h2 id="f-editor">A full editor on its own</h2>
+      <p>Keep LaTeX and the compiled PDF side by side. Ctrl/Cmd+F searches the pane you are using, with match counts, case and whole-word options. Source search adds regular expressions and replacement; PDF search handles ligatures and line hyphenation with precise, persistent highlights.</p>
+    </div>
+    <figure class="shot">
+      <button class="figure-zoom" type="button" aria-label="Enlarge source and PDF search">
+        <img src="assets/editor-search.webp" width="1600" height="1000" loading="lazy"
+             alt="Source and PDF side by side. A LaTeX file with syntax highlighting in the editor pane and the freshly compiled document in the PDF pane.">
+      </button>
+      <figcaption>Find the passage, refine the source, inspect the compiled result.</figcaption>
+    </figure>
+  </section>
+
+  <section class="feature" aria-labelledby="f-overleaf">
+    <div class="feature-text">
+      <p class="eyebrow">\section{overleaf}</p>
+      <h2 id="f-overleaf">Syncs with any Overleaf</h2>
+      <p>Overleaf.com works, and so does a self-hosted server — even without a git bridge, through your existing browser session. Pushes update documents in place, so comments, tracked changes, and history survive, and a Verify button runs Overleaf's own compiler on the pushed state. You can keep several accounts side by side. When a local project is ready to share, publish it to Overleaf.</p>
+    </div>
+    <figure class="shot">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the project dashboard">
+        <img src="assets/dashboard-accounts.png" width="1600" height="1000" loading="lazy"
+             alt="The projects dashboard with an Overleaf account section listing five projects, two of them connected and the rest with an Import button, a separate section for local and git projects, and buttons to add an account, create a blank project, or connect a git repository.">
+      </button>
+      <figcaption>a workspace of several projects, two imported and the rest one click away.</figcaption>
+    </figure>
+  </section>
+
+  <section class="feature flip" aria-labelledby="f-citations">
+    <div class="feature-text">
+      <p class="eyebrow">\section{citations}</p>
+      <h2 id="f-citations">Paper search, built in</h2>
+      <p>Search OpenAlex, Semantic Scholar, DBLP, and Crossref from inside the app. Each paper comes with a one-line summary so you can judge relevance quickly. New entries are deduped and normalized on the way in, and a citation audit checks each one against Crossref and OpenAlex, badging it verified, unresolved, or mismatched. The References tab shows where every entry is cited and flags the ones that never get used. BibTeX import and export are there too.</p>
+    </div>
+    <figure class="shot">
+      <button class="figure-zoom" type="button" aria-label="Enlarge the references workspace">
+        <img src="assets/references-usage.png" width="1600" height="1000" loading="lazy"
+             alt="The References tab beside the chat, listing four bibliography entries with cite keys, years and usage counts, three of them just added by the agent, each with PDF, TL;DR and edit actions next to Import and Export buttons.">
+      </button>
+      <figcaption>the References tab after the turn. Three entries the agent found and added, each already cited.</figcaption>
+    </figure>
+  </section>
 
   <section class="feature" id="research" aria-labelledby="f-evidence">
     <div class="feature-text">
@@ -107,66 +169,6 @@
   <section class="research-workflow" aria-labelledby="f-related">
     <div><p class="eyebrow">\section{related_work}</p><h2 id="f-related">Give the writing a foundation.</h2><p>Compare the papers before asking for the paragraph.</p></div>
     <ol class="workflow-steps"><li><span>01</span><h3>Read &amp; compare</h3><p>Build a literature matrix of methods, data, results and limitations, with original quotations.</p></li><li><span>02</span><h3>Review the outline</h3><p>Check the comparison and approve a plan that makes gaps and incomparable results explicit.</p></li><li><span>03</span><h3>Write &amp; review</h3><p>Draft Related Work from the reviewed material. Read the diff and decide what belongs in your paper.</p></li></ol>
-  </section>
-
-  <section class="feature" aria-labelledby="f-proof">
-    <div class="feature-text">
-      <p class="eyebrow">\section{proof}</p>
-      <h2 id="f-proof">Agent edits land as diffs you approve</h2>
-      <p>The agent works in a local git checkout and compiles after editing to check its own work. You can watch the diff grow during the turn. Keep what you want and discard the rest — as a text diff or as a rendered PDF diff that highlights the pages that visually changed. On a connected project, approved changes are pushed to Overleaf with a normal history entry; if Overleaf changed in the meantime, a conflicting push is blocked until you resolve it.</p>
-    </div>
-    <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge the review diff">
-        <img src="assets/review-proof.png" width="1600" height="1000" loading="lazy"
-             alt="The chat on the left with the agent's full turn, reading files, editing, compiling and summarizing its changes. On the right the Proof tab with diffs for main.tex and refs.bib, a commit message field, and buttons to approve and push or discard.">
-      </button>
-      <figcaption>an actual edit. The full turn on the left, the diff it produced on the right, ready to approve and push.</figcaption>
-    </figure>
-  </section>
-
-  <section class="feature flip" aria-labelledby="f-editor">
-    <div class="feature-text">
-      <p class="eyebrow">\section{editor}</p>
-      <h2 id="f-editor">A full editor on its own</h2>
-      <p>Keep LaTeX and the compiled PDF side by side. Ctrl/Cmd+F searches the pane you are using, with match counts, case and whole-word options. Source search adds regular expressions and replacement; PDF search handles ligatures and line hyphenation with precise, persistent highlights.</p>
-    </div>
-    <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge source and PDF search">
-        <img src="assets/editor-search.webp" width="1600" height="1000" loading="lazy"
-             alt="Source and PDF side by side. A LaTeX file with syntax highlighting in the editor pane and the freshly compiled document in the PDF pane.">
-      </button>
-      <figcaption>Find the passage, refine the source, inspect the compiled result.</figcaption>
-    </figure>
-  </section>
-
-  <section class="feature" aria-labelledby="f-citations">
-    <div class="feature-text">
-      <p class="eyebrow">\section{citations}</p>
-      <h2 id="f-citations">Paper search, built in</h2>
-      <p>Search OpenAlex, Semantic Scholar, DBLP, and Crossref from inside the app. Each paper comes with a one-line summary so you can judge relevance quickly. New entries are deduped and normalized on the way in, and a citation audit checks each one against Crossref and OpenAlex, badging it verified, unresolved, or mismatched. The References tab shows where every entry is cited and flags the ones that never get used. BibTeX import and export are there too.</p>
-    </div>
-    <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge the references workspace">
-        <img src="assets/references-usage.png" width="1600" height="1000" loading="lazy"
-             alt="The References tab beside the chat, listing four bibliography entries with cite keys, years and usage counts, three of them just added by the agent, each with PDF, TL;DR and edit actions next to Import and Export buttons.">
-      </button>
-      <figcaption>the References tab after the turn. Three entries the agent found and added, each already cited.</figcaption>
-    </figure>
-  </section>
-
-  <section class="feature flip" aria-labelledby="f-overleaf">
-    <div class="feature-text">
-      <p class="eyebrow">\section{overleaf}</p>
-      <h2 id="f-overleaf">Syncs with any Overleaf</h2>
-      <p>Overleaf.com works, and so does a self-hosted server — even without a git bridge, through your existing browser session. Pushes update documents in place, so comments, tracked changes, and history survive, and a Verify button runs Overleaf's own compiler on the pushed state. You can keep several accounts side by side. When a local project is ready to share, publish it to Overleaf.</p>
-    </div>
-    <figure class="shot">
-      <button class="figure-zoom" type="button" aria-label="Enlarge the project dashboard">
-        <img src="assets/dashboard-accounts.png" width="1600" height="1000" loading="lazy"
-             alt="The projects dashboard with an Overleaf account section listing five projects, two of them connected and the rest with an Import button, a separate section for local and git projects, and buttons to add an account, create a blank project, or connect a git repository.">
-      </button>
-      <figcaption>a workspace of several projects, two imported and the rest one click away.</figcaption>
-    </figure>
   </section>
 
   <section class="feature" aria-labelledby="f-trust">
@@ -231,7 +233,7 @@
   </div>
 </footer>
 
-<script src="demos.js?v=research-20260914" defer></script>
+<script src="demos.js?v=workflow-20260914" defer></script>
 <script>
   (function () {
     var btn = document.getElementById('install');

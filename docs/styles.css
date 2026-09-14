@@ -326,7 +326,7 @@ hr.booktabs::after {
 .demo-showcase { text-align: left; scroll-margin-top: 24px; border: 1px solid var(--rule); border-radius: 14px; background: var(--ink-2); padding: 12px; }
 .demo-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 8px 12px 16px; color: var(--graphite); font-size: .8rem; }
 .demo-heading .eyebrow { margin: 0; }
-.demo-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding-bottom: 12px; }
+.demo-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding-bottom: 12px; }
 .demo-tabs button { display: flex; align-items: center; justify-content: center; gap: .7rem; font: 500 .94rem var(--sans); border: 1px solid transparent; border-radius: 7px; padding: 13px 10px; color: var(--paper-dim); background: transparent; cursor: pointer; }
 .demo-tabs button span { font: .75rem var(--mono); color: var(--graphite); }
 .demo-tabs button:hover { background: var(--ink-3); }
@@ -353,6 +353,7 @@ hr.booktabs::after {
 @media (max-width: 880px) {
   .hero .demo-showcase { width: 100%; margin-left: 0; padding: 8px; border-radius: 10px; }
   .demo-showcase .shot { width: 100%; margin-left: 0; }
+  .demo-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .demo-tabs button { gap: 5px; padding: 10px 5px; font-size: .75rem; flex-direction: column; }
   .demo-heading { font-size: .72rem; padding: 6px 4px 12px; }
   .demo-heading .eyebrow { font-size: .73rem; }
