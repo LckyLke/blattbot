@@ -1599,7 +1599,12 @@ function AppShell() {
           />
         );
       case "research":
-        return <ResearchPanel key={selectedId!} projectId={selectedId!} stamp={sourceStamp + chat.length} busy={busy} onJump={revealInSource} />;
+        return <ResearchPanel key={selectedId!} projectId={selectedId!} stamp={sourceStamp + chat.length} busy={busy} onJump={revealInSource}
+          onCodeAudit={(focus) => {
+            if (busy) return;
+            setPanes(prev => prev.left === "research" ? { left: "research", right: "chat" } : { left: "chat", right: "research" });
+            void send(`Check this manuscript's claims against the attached Git repositories and save the evidence. ${focus.trim() ? `Focus: ${focus.trim()}` : "Prioritize the method, training configuration, data splits and evaluation."} Report disagreements and anything that remains unchecked.`, "code");
+          }} />;
       case "refs":
         return (
           <RefsPanel

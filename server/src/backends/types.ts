@@ -57,6 +57,8 @@ export interface BackendTurnContext {
   attachments: TurnAttachment[];
   /** Read-only modes (review, understand): every file-editing tool must be blocked. */
   readOnly: boolean;
+  /** Static code audits also block native execution and delegation. */
+  staticCodeReview?: boolean;
   /** Per-chat session continuity: resume id in, new id out. */
   session: { sessionId?: string; onSessionId?: (sessionId: string) => void };
   /** Aborts the turn (interrupt button). */

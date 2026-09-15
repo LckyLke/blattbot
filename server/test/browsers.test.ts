@@ -17,6 +17,10 @@ let sandbox: string;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), "blattbot-browsers-"));
+  // Linux fixtures must not discover the host's real Windows browser stores
+  // when this suite itself runs under WSL. WSL cases opt in below.
+  vi.stubEnv("BLATTBOT_WSL", "0");
+  vi.stubEnv("BLATTBOT_WSL_MNT", join(sandbox, "mnt"));
   process.env.BLATTBOT_HOME = sandbox;
   process.env.XDG_CONFIG_HOME = join(sandbox, ".config");
 });
@@ -24,6 +28,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.BLATTBOT_HOME;
   delete process.env.XDG_CONFIG_HOME;
+  vi.unstubAllEnvs();
   rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 

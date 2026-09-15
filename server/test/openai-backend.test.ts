@@ -357,7 +357,7 @@ describe("openai backend turn loop", () => {
     ]);
   });
 
-  it.each(["review", "understand"] as const)(
+  it.each(["review", "understand", "code"] as const)(
     "%s mode drops the editing tools and blocks stray write calls",
     async (mode) => {
       const { agent, project, dir } = await setup();

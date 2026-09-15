@@ -11,6 +11,7 @@ import { resolve, sep } from "node:path";
 import { projectDir, type Project, type ProjectSettings } from "./config.js";
 import { loadSettings, type Settings } from "./settings.js";
 import { contextDirectories, formatContextManifest } from "./context.js";
+import { repositoryManifest } from "./repositories.js";
 import { citationPassages, unreadCitationChanges } from "./sourcecoverage.js";
 import { memoryPrompt } from "./research/memory.js";
 import { abortQuestion } from "./questions.js";
@@ -146,7 +147,7 @@ export function projectModelOverride(project: Pick<Project, "settings"> | undefi
 
 // ---- Modes ------------------------------------------------------------------
 
-export type AgentMode = "edit" | "research" | "polish" | "review" | "understand";
+export type AgentMode = "edit" | "research" | "polish" | "review" | "understand" | "code";
 
 export interface AgentModeInfo {
   id: AgentMode;
@@ -216,6 +217,19 @@ The user wants to UNDERSTAND, not change: answer questions about the project and
 - When attached context can answer the question, read it — a linked codebase settles what a formula, algorithm, or constant in the text actually does far better than reasoning about the prose.
 You must not modify any files in this mode; file-editing tools are disabled. If the user asks for changes, tell them to switch to Edit mode.`,
     readOnly: true,
+  },
+  {
+    id: "code",
+    label: "Check code",
+    description: "Verify manuscript claims against attached Git snapshots — file edits are blocked.",
+    readOnly: true,
+    prompt: `Mode: Check code — audit the manuscript against attached Git snapshots without editing or executing code.
+- First inspect the manuscript and enumerate claims in the requested scope. If no focus is given, prioritize the central method, training/configuration, data splits and evaluation claims.
+- Use inspect_repository to list attached repositories and pin reads to their recorded commits. If none are attached, explain how to add one under External context or Research → Checks.
+- Discover entry points, search relevant symbols and counterevidence, and trace callers, active configuration, implementation and evaluation. A README statement or matching function name is not sufficient. Check whether the cited code path actually implements the described experiment. Seek differences in defaults, reductions, masks, units, datasets, preprocessing and metric aggregation.
+- For each assessable claim, use verify_code_claim with its exact manuscript quotation and relevant source ranges. Classify implementation, empirical and theoretical claims honestly. Read source ranges before submitting them. Reuse only current saved assessments from list_code_evidence.
+- Report which claims were assessed and which remain unchecked, evidence locations and commits, conflicts, and specific missing artifacts or follow-up checks. Never present a sampled review as exhaustive. Do not infer successful experiments from source or test definitions. Code assessments do not establish theoretical guarantees.
+- No repository code, dependencies, setup scripts or tests may be executed. Do not modify manuscript files. Save assessments as research evidence and explain disagreements so the user can decide what to correct.`,
   },
 ];
 
@@ -339,6 +353,7 @@ export function buildSystemAppend(
       `NEVER create, modify, or delete anything inside them, and never copy their content into the ` +
       `project verbatim beyond normal quotation.`;
   }
+  append += repositoryManifest(project.id);
   if (settings.systemPromptAppend.trim()) {
     append += `\n\nAdditional instructions from the user's BlattBot settings:\n${settings.systemPromptAppend.trim()}`;
   }
@@ -403,6 +418,7 @@ export async function runTurn(
     contextDirs,
     attachments,
     readOnly: Boolean(modeInfo.readOnly),
+    staticCodeReview: mode === "code",
     session: {
       sessionId: session ? session.sessionId : project.sessionId,
       onSessionId: session?.onSessionId,

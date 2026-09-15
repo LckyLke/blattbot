@@ -52,6 +52,7 @@ The agent works in the local git mirror and every turn ends in a diff you approv
 - **Rendered PDF diff.** Besides the text diff, the Proof tab can render the current and pre-change PDFs and highlight the pages and regions that visually changed — the latexdiff use case, without Perl.
 - **Edit in Proof.** Click **Edit** on a file or passage to revise it inside the Proof pane. The full editor supports autocomplete, undo, and Ctrl/Cmd+S; drafts stay in sync with Source. Save locally, return to the diff, then approve when ready.
 - **External context.** Link the paper's codebase, an experiment folder, or a stack of PDFs (sidebar → External context → *Browse folders…*). The agent may read and grep them but never edit them, and they never sync to Overleaf. Each turn starts from a fresh listing of what those folders contain, so the agent can check the manuscript against the thing it describes — a formula against the implementation, a stated hyperparameter against the config, a reported number against the results — and is told to report a disagreement rather than quietly rewrite the text.
+- **Git repository evidence.** Use **External context → Git repositories → Add repository**, or **Research → Checks → Verify claims against code**. Attach an HTTPS/SSH Git URL or a local Git repository and select a branch, tag or commit. BlattBot records an immutable commit snapshot, outside the manuscript. Private repositories use your existing Git credential helper or SSH setup; passwords/tokens in URLs and interactive login are unsupported. SSH hosts must already be trusted. Local uncommitted changes are excluded; use a linked folder when those changes are the intended evidence.
 - **Cost transparency.** Every turn shows its cost (or token count), each project shows a running total, and a disclosure generator writes an AI-use statement from your actual usage logs — useful for venue and institutional AI policies.
 - **Review mode.** A structured referee-report mode with a venue-style rubric; file edits are blocked in it.
 - **Understand mode.** A read-only Q&A mode that explains the project's text, math, and arguments, grounding every answer in quoted passages from your files; file edits are blocked in it too.
@@ -83,6 +84,31 @@ PDF page images prefer **Poppler** (`pdftoppm`) and fall back to PDF.js. OCR req
 Zotero settings: enable local API access under Zotero's Advanced settings and normally use user library `0`; for web access, supply the numeric user/group ID and a read-only API key for private libraries. Keys are stored separately from agent-readable project data. [Zotero API documentation](https://www.zotero.org/support/dev/web_api/v3/basics). OpenAlex supports keyless basic access and an optional `OPENALEX_API_KEY` environment variable for a larger request budget; credentials are sent only to OpenAlex. [Authentication](https://help.openalex.org/api/authentication/). Publication checks query Crossref notices that target the cited DOI, including indexed Retraction Watch data. No flag is not proof of no retraction. [Crossref update filters](https://www.crossref.org/documentation/retrieve-metadata/rest-api/rest-api-filters/).
 
 Research artifacts are saved locally under the BlattBot data directory. New checks and writing helpers use the selected model and may incur its normal usage costs. Run `npm run test:research-ui --workspace=server` after building to exercise the workflow against an isolated fixture model, with no paid calls.
+
+### Verify manuscript claims against a Git repository
+
+For a local repository, choose **Add repository → Local folder → Browse folders…**. The picker marks Git folders, previews the current branch and commit, and recognizes repository roots when you open a subfolder. Use Home/Up, filter folder names, or paste a path (including `~/Projects`). It remembers the last selected folder and fills in the current branch automatically.
+
+In **Research → Checks → Verify claims against code**, optionally name a focus (for example, loss reduction, training defaults, preprocessing, data splits or evaluation metrics), then select **Check manuscript against code**. You can also select **Check code** directly in chat. This starts a read-only agent turn that explores the attached snapshots, identifies manuscript claims, searches for supporting and contradictory code, and saves individual assessments. It uses the selected agent; each saved assessment also uses a separate model call to judge the selected excerpts. Normal provider usage charges apply.
+
+All three backends have the same `inspect_repository` tool:
+
+```json
+{"action":"list"}
+{"action":"files","repositoryId":"<id>","commit":"<full SHA>","path":"src/","limit":80}
+{"action":"search","repositoryId":"<id>","commit":"<full SHA>","query":"reduction"}
+{"action":"read","repositoryId":"<id>","commit":"<full SHA>","path":"src/loss.py","startLine":30,"endLine":80}
+```
+
+File listings include hidden configuration and support pagination. Search covers tracked text across the snapshot using case-insensitive literal matching. Follow `nextOffset` and `nextLine`; search hits are leads, and the agent must read surrounding code before using them as evidence. `verify_code_claim` takes an exact manuscript quotation and selected Git line ranges with roles such as implementation, caller, configuration, evaluation, test or counterevidence. `list_code_evidence` retrieves saved assessments.
+
+Assessments distinguish **implementation agrees**, **contradiction found**, **insufficient evidence**, and **execution required**. They retain manuscript hashes, full commit and blob identities, inspected excerpts, validated quotations and line numbers, the configured assessor backend/model, limitations and follow-up checks. Export the records as JSON from Checks. Changing the manuscript or refreshing to a different commit marks affected assessments stale; previously fetched commits remain readable until the repository is removed. New versions of a claim's evidence retain earlier snapshot assessments.
+
+This is static evidence review, not a reproducibility certification. No repository code, setup scripts or tests are executed. Empirical findings cannot receive a supported verdict from this tool, and code alone cannot prove a theoretical claim. The agent can miss relevant files, branches or claims, and a real quotation does not guarantee a correct interpretation. Unchecked claims remain unchecked; code assessments do not satisfy the separate strict paper-citation gate.
+
+Snapshots are shallow and include committed files only. Submodules, symlink targets and Git LFS payloads are not fetched or followed. Reads reject binary files and files over 2 MiB; excerpts are limited to 400 lines/40,000 characters, and one assessment accepts up to 12 excerpts/90,000 characters. Git fetches time out after two minutes; source searches have bounded time and output and report failure instead of presenting partial results as complete. Refreshes are explicit. Removing an attachment deletes its managed Git objects, preserves saved evidence as stale, and leaves the original repository untouched.
+
+Run `npm run test:code-ui --workspace=server` after building the web app to exercise attachment, a full agent/tool/assessment loop, evidence export, refresh invalidation and removal in a real browser using a fixture model. Set `BLATTBOT_BROWSER_EXECUTABLE` if Chromium is outside the usual locations. These fixtures test software behavior, not real-model scientific accuracy.
 
 ### Writing readiness and long tasks
 

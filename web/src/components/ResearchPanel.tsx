@@ -1,4 +1,5 @@
 import { appUrl } from "../urls";
+import { CodeChecks } from "./CodeRepositories";
 import {
   PaperLibrary,
   QualityChecks,
@@ -41,6 +42,7 @@ interface Props {
   stamp: number;
   busy: boolean;
   onJump: (file: string, line: number) => void;
+  onCodeAudit?: (focus: string) => void;
 }
 const labels: Record<string, string> = {
   unchecked: "Not checked",
@@ -134,6 +136,7 @@ export default function ResearchPanel({
   stamp,
   busy,
   onJump,
+  onCodeAudit,
 }: Props) {
   const [data, setData] = useState<ResearchData>();
   const [refreshVersion, setRefreshVersion] = useState(0);
@@ -380,12 +383,12 @@ export default function ResearchPanel({
             </>
           )}
           {tab === "checks" && (
-            <Checks
+            <><CodeChecks projectId={projectId} stamp={stamp} busy={busy} onAudit={onCodeAudit} onJump={onJump} /><Checks
               projectId={projectId}
               data={data}
               act={act}
               onJump={onJump}
-            />
+            /></>
           )}
           {tab === "memory" && (
             <MemoryEditor

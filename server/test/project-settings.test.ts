@@ -81,13 +81,14 @@ describe("validateProjectSettingsPatch", () => {
 });
 
 describe("AGENT_MODES catalog", () => {
-  it("marks exactly review and understand as read-only (the flag both backends gate on)", () => {
+  it("marks review, understand and code checks as read-only (the flag all backends gate on)", () => {
     // The Claude backend adds Edit/Write/MultiEdit/NotebookEdit/add_citation to
     // disallowedTools and the openai backend drops its editing tools whenever
     // ctx.readOnly — which runTurn sets from this flag — is true.
     expect(AGENT_MODES.filter((m) => m.readOnly).map((m) => m.id)).toEqual([
       "review",
       "understand",
+      "code",
     ]);
   });
 

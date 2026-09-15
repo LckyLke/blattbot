@@ -23,6 +23,14 @@ import { answerQuestion, dismissQuestion } from "../src/questions.js";
 import { isEffortLevel, isFableFamily, resolveFallbackModel } from "../src/backends/types.js";
 import { projectDir } from "../src/config.js";
 
+describe("static code audit execution fence", () => {
+  it.each(["Bash", "Task", "Agent", "Skill"])("blocks %s before SDK permission bypass", async tool_name => {
+    const hook = makeFenceHook("static-audit", [], true);
+    const result = await hook({ hook_event_name: "PreToolUse", tool_name, tool_input: { command: "python setup.py" } } as any, undefined, { signal: new AbortController().signal });
+    expect(result).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });
+  });
+});
+
 describe("turnModelOptions", () => {
   it("passes only the model when nothing else is configured (non-Fable)", () => {
     expect(turnModelOptions("claude-sonnet-5", { effort: "", fallbackModel: "" })).toEqual({

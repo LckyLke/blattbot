@@ -68,6 +68,9 @@ import {
   semanticPaperSearch,
 } from "./pdfreading.js";
 import { readStore, updateStore } from "./store.js";
+import { attachRepository, attachRepositorySchema, listRepositories, queryRepository, refreshRepository, removeRepository, repositoryQuerySchema } from "../repositories.js";
+import { codeAssessments, codeClaimSchema, verifyCodeClaim } from "./code-evidence.js";
+import { browseLocalRepositories } from "../repositories.js";
 
 const text = z.string().min(1).max(4000);
 const keyBody = z.object({ key: text });
@@ -120,6 +123,15 @@ export function registerResearchRoutes(
       },
     });
   }
+  route("GET", "/repositories", null, (id) => listRepositories(id));
+  route("GET", "/repositories/local", null, (_id, _dir, _body, req) =>
+    browseLocalRepositories(z.object({ path: z.string().max(4000).optional() }).parse(req.query).path));
+  route("POST", "/repositories", attachRepositorySchema, (id, _dir, body) => attachRepository(id, body));
+  route("POST", "/repositories/refresh", z.object({ repositoryId: text }), (id, _dir, body) => refreshRepository(id, body.repositoryId));
+  route("POST", "/repositories/remove", z.object({ repositoryId: text }), (id, _dir, body) => removeRepository(id, body.repositoryId));
+  route("POST", "/repositories/inspect", repositoryQuerySchema, (id, _dir, body) => queryRepository(id, body));
+  route("GET", "/code-evidence", null, (id, dir) => codeAssessments(id, dir));
+  route("POST", "/code-evidence", codeClaimSchema, (id, dir, body) => verifyCodeClaim(id, dir, body));
   route("GET", "", null, (id, dir) => ({
     jobs: listResearchJobs(id),
     strict: strictReport(id, dir),

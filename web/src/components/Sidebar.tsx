@@ -1,4 +1,5 @@
 import { appUrl } from "../urls";
+import { RepositoryManager } from "./CodeRepositories";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type DirListing, type Project, type ProjectContext } from "../api";
 
@@ -283,6 +284,7 @@ export default function Sidebar({
           </button>
         </div>
 
+        <RepositoryManager key={project.id} projectId={project.id} compact />
         {ctxOpen && (
           <div className="mx-3 mb-1.5 rounded border border-rule bg-ink p-2">
             <label className="block text-[10.5px] text-graphite">

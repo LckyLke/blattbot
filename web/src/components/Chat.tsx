@@ -284,6 +284,7 @@ const MODES = [
   { id: "polish", label: "Polish", hint: "Grammar, style, and LaTeX consistency only." },
   { id: "review", label: "Review", hint: "Structured referee report — file edits are blocked." },
   { id: "understand", label: "Understand", hint: "Explain the project's text and math — file edits are blocked." },
+  { id: "code", label: "Check code", hint: "Verify manuscript claims against attached Git snapshots — file edits are blocked." },
 ];
 
 const isModeId = (v: string | null | undefined): v is string => MODES.some((m) => m.id === v);
@@ -321,6 +322,9 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__blattbot__add_citation: "Adding citation",
   mcp__blattbot__list_citations: "Reading bibliography",
   mcp__blattbot__read_paper: "Reading paper",
+  mcp__blattbot__inspect_repository: "Inspecting repository",
+  mcp__blattbot__verify_code_claim: "Checking claim against code",
+  mcp__blattbot__list_code_evidence: "Reading code assessments",
 };
 
 function toolLabel(name: string): string {

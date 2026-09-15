@@ -106,6 +106,7 @@ export function secretRoots(): string[] {
     join(DATA_DIR, "oai-sessions"),
     join(DATA_DIR, "chats"),
     join(DATA_DIR, "research-secrets"),
+    join(DATA_DIR, "repositories"),
     join(home, ".ssh"),
     join(home, ".aws"),
     join(home, ".gnupg"),

@@ -116,6 +116,7 @@ import { makeTurnEventSink } from "./livediff.js";
 import { RESEARCH_TOOLS } from "./research/tools.js";
 import { GraphIndexer } from "./research/graph-indexer.js";
 import { registerResearchRoutes } from "./research/routes.js";
+import { repositoriesDir } from "./repositories.js";
 import { OverleafAuthError, OverleafClient, canonicalOrigin, parseProjectUrl } from "./overleaf/olclient.js";
 import { applySnapshot, unpackZip } from "./overleaf/olsync.js";
 import { captureViaBrowser, noSessionMessage, scanBrowsers } from "./overleaf/cookiegrab.js";
@@ -745,6 +746,7 @@ app.delete<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) =
   rmSync(projectDir(id), { recursive: true, force: true });
   rmSync(buildDir(id), { recursive: true, force: true });
   rmSync(contextUploadsDir(id), { recursive: true, force: true });
+  rmSync(repositoriesDir(id), { recursive: true, force: true });
   // The chat transcripts that referenced them are going too.
   deleteChatUploads(id);
   return { ok: true };

@@ -445,11 +445,16 @@ export function extractResultUsage(m: any): {
  * object (no opinion) for everything the fence allows and for every other
  * hook event. Exported for unit tests.
  */
-export function makeFenceHook(projectId: string, contextDirs: string[] = []): HookCallback {
+const CODE_AUDIT_BLOCKED_TOOLS = ["Bash", "Task", "Agent", "Skill"];
+export function makeFenceHook(projectId: string, contextDirs: string[] = [], staticCodeReview = false): HookCallback {
   const dir = projectDir(projectId);
   const extraReadRoots = projectReadRoots(projectId);
   return async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
+    if (staticCodeReview && CODE_AUDIT_BLOCKED_TOOLS.includes(input.tool_name)) {
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny",
+        permissionDecisionReason: "Check code mode permits static source inspection only; execution and delegation are disabled." } };
+    }
     const toolInput =
       input.tool_input && typeof input.tool_input === "object"
         ? (input.tool_input as Record<string, unknown>)
@@ -637,6 +642,7 @@ export const claudeBackend: AgentBackend = {
     const extraDirs = ctx.attachments.length > 0 ? [chatUploadsDir(project.id)] : [];
     const openDirs = [...contextDirs, ...extraDirs];
     const disallowed = [
+      ...(ctx.staticCodeReview ? CODE_AUDIT_BLOCKED_TOOLS : []),
       ...(ctx.readOnly
         ? [...DISALLOWED_TOOLS, "Edit", "Write", "MultiEdit", "NotebookEdit", "mcp__blattbot__add_citation"]
         : DISALLOWED_TOOLS),
@@ -684,7 +690,7 @@ export const claudeBackend: AgentBackend = {
         // as an interactive question card in the chat; allows everything else.
         canUseTool: makeCanUseTool(project.id, ctx.emit, ctx.signal, ctx.contextDirs),
         // The file fence that bypass mode actually consults (see makeFenceHook).
-        hooks: { PreToolUse: [{ hooks: [makeFenceHook(project.id, ctx.contextDirs)] }] },
+        hooks: { PreToolUse: [{ hooks: [makeFenceHook(project.id, ctx.contextDirs, ctx.staticCodeReview)] }] },
         // A safety-classifier decline asks the user (question card) whether to
         // retry on the fallback model — never a silent model swap.
         onUserDialog: makeOnUserDialog(project.id, ctx.emit, ctx.signal),
