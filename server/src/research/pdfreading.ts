@@ -7,8 +7,10 @@ import {
   rmSync,
   mkdtempSync,
   renameSync,
+  writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
+import { createRequire } from "node:module";
 import { DATA_DIR } from "../config.js";
 import { digest, modelCall, parseJson, researchSignal, assertResearchActive, type ModelCall } from "./store.js";
 import { getPaperContent, type PaperReadOptions } from "../papers.js";
@@ -23,6 +25,32 @@ import { z } from "zod";
 const exec = promisify(execFile);
 const renderer = () => process.env.BLATTBOT_PDFTOPPM || "pdftoppm";
 const ocr = () => process.env.BLATTBOT_TESSERACT || "tesseract";
+async function renderWithPdfJs(path: string, pageNumber: number, image: string) {
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const assets = dirname(createRequire(import.meta.url).resolve("pdfjs-dist/package.json"));
+  const task = getDocument({ data: new Uint8Array(readFileSync(path)), useSystemFonts: false, isEvalSupported: false,
+    standardFontDataUrl: join(assets, "standard_fonts") + sep, cMapUrl: join(assets, "cmaps") + sep, cMapPacked: true });
+  try {
+    const doc = await task.promise;
+    const page = await doc.getPage(pageNumber);
+    const base = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: 1800 / Math.max(base.width, base.height) });
+    const factory = doc.canvasFactory as { create(w: number, h: number): any; destroy(target: any): void };
+    const target = factory.create(Math.ceil(viewport.width), Math.ceil(viewport.height));
+    try {
+      const render = page.render({ canvasContext: target.context, viewport });
+      const abort = () => render.cancel();
+      const signal = researchSignal();
+      signal?.addEventListener("abort", abort, { once: true });
+      try {
+        assertResearchActive();
+        await render.promise;
+        assertResearchActive();
+        writeFileSync(image, target.canvas.toBuffer("image/png"));
+      } finally { signal?.removeEventListener("abort", abort); }
+    } finally { factory.destroy(target); }
+  } finally { await task.destroy(); }
+}
 export async function readingCapabilities() {
   const available = async (file: string, args: string[]) => {
     try {
@@ -32,15 +60,19 @@ export async function readingCapabilities() {
       return false;
     }
   };
-  const [render, textRecognition] = await Promise.all([
+  const [poppler, textRecognition] = await Promise.all([
     available(renderer(), ["-v"]),
     available(ocr(), ["--version"]),
   ]);
+  let bundled = false;
+  try { const { createCanvas } = await import("@napi-rs/canvas"); createCanvas(1, 1); bundled = true; } catch { /* optional platform binding unavailable */ }
+  const render = poppler || bundled;
   return {
     render,
     ocr: render && textRecognition,
     visual: render,
-    note: "PDF page rendering uses Poppler (pdftoppm); OCR uses Tesseract. Visual interpretation also requires an image-capable model in your selected backend.",
+    renderer: poppler ? "poppler" : bundled ? "pdfjs" : "unavailable",
+    note: "PDF pages use Poppler when available, with a bundled PDF.js renderer as fallback. OCR still requires Tesseract. Visual interpretation requires an image-capable model.",
   };
 }
 export async function renderPdfPage(
@@ -56,7 +88,7 @@ export async function renderPdfPage(
   if (existsSync(image)) return image;
   const work = mkdtempSync(join(dir, "render-"));
   try {
-    await exec(
+    try { await exec(
       renderer(),
       [
         "-f",
@@ -71,7 +103,10 @@ export async function renderPdfPage(
         join(work, "page"),
       ],
       { timeout: 45000, maxBuffer: 1024 * 1024, signal: researchSignal() },
-    );
+    ); } catch (error: any) {
+      if (error.code !== "ENOENT") throw error;
+      await renderWithPdfJs(path, page, join(work, "page.png"));
+    }
     assertResearchActive();
     if (!existsSync(join(work, "page.png")))
       throw new Error("PDF page does not exist or could not be rendered");

@@ -160,10 +160,29 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
     await client.initialize();
     signal.throwIfAborted();
     const config = await client.threadConfig();
+    const editing = Boolean(ctx && !ctx.readOnly);
+    // The native policy also supplies model-visible permission instructions.
+    // Keep it aligned with the host tools, including when resuming old chats.
+    const sandboxPolicy = editing
+      ? { type: "workspaceWrite", writableRoots: [ctx!.dir], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true }
+      : { type: "readOnly", networkAccess: false };
+    const access = !ctx
+      ? "This is a tool-less one-shot call. No project tools are available."
+      : ctx.readOnly
+        ? "Current BlattBot turn: project editing is DISABLED (read-only mode). Do not call write_file, edit_file, or add_citation. Read and analysis tools remain available."
+        : "Current BlattBot turn: project editing is ENABLED. Use write_file and edit_file for requested project changes; add_citation is also available. Attached external context remains read-only.";
     const common = {
-      cwd: codexWorkspace(), sandbox: "read-only", approvalPolicy: "never",
-      config, baseInstructions: instructions,
-      developerInstructions: "Use only the provided BlattBot tools for project access. Native shell, patch, and external integration tools are unavailable.",
+      cwd: codexWorkspace(), sandbox: editing ? "workspace-write" : "read-only", approvalPolicy: "never",
+      config: { ...config, sandbox_workspace_write: {
+        writable_roots: editing ? [ctx!.dir] : [], network_access: false,
+        exclude_tmpdir_env_var: true, exclude_slash_tmp: true,
+      } }, baseInstructions: instructions,
+      developerInstructions: [
+        "Use only the provided BlattBot tools for project access. Native shell and patch tools are unavailable.",
+        "The sandbox policy and BlattBot's host-tool permissions reflect the current mode: workspace-write for editing turns, read-only for review/understand and tool-less calls. Use write_file and edit_file for project edits. Attached external context remains read-only. Native shell and patch tools remain disabled in every mode.",
+        "A mode switch applies on the next turn. Use the current environment permissions and tool results; older assistant statements about a previous mode are not current permission evidence. If a tool rejects an operation, report that specific error.",
+        access,
+      ].join("\n\n"),
       ...(model ? { model } : {}),
     };
     const previous = ctx?.session.sessionId;
@@ -190,8 +209,10 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
     emit({ type: "thinking" });
     const turn = await client.request("turn/start", {
       threadId,
+      sandboxPolicy,
+      approvalPolicy: "never",
       input: [
-        { type: "text", text: prompt, text_elements: [] },
+        { type: "text", text: ctx ? `[BlattBot access for this turn]\n${access}\n\n${prompt}` : prompt, text_elements: [] },
         ...(ctx?.attachments ?? []).map((a) => ({ type: "localImage", path: a.path })),
         ...images.map((path) => ({ type: "localImage", path })),
       ],

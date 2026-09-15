@@ -1,5 +1,6 @@
 import { appUrl } from "../urls";
 import { findPdfMatches } from "../pdf-search";
+import PdfSectionNav from "./PdfSectionNav";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { GlobalWorkerOptions, TextLayer, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -772,6 +773,8 @@ export default function PdfPanel({
         </div>
       )}
 
+      {hasPdf && doc && <PdfSectionNav key={pdfUrl} doc={doc} scrollRef={scrollRef} pageWidth={pageWidth} />}
+
       {hasPdf && doc && searchOpen && (
         <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-rule px-3 py-2 text-xs text-paper-dim" role="search" aria-label="PDF search">
           <input
@@ -1203,6 +1206,7 @@ function PdfPage({
   return (
     <div
       ref={holderRef}
+      data-pdf-page={pageNo}
       style={{ width, height: width * aspect }}
       className="relative mx-auto mb-5 bg-white shadow-[0_2px_12px_rgba(0,0,0,0.35)]"
     >

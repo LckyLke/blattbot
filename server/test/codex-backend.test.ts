@@ -94,7 +94,7 @@ describe("Codex background harness", () => {
     })]);
     expect(events.some((e) => e.name === "mcp__blattbot__compile_latex")).toBe(true);
     const start = log().find((m) => m.method === "thread/start").params;
-    expect(start).toMatchObject({ sandbox: "read-only", approvalPolicy: "never" });
+    expect(start).toMatchObject({ sandbox: "workspace-write", approvalPolicy: "never" });
     expect(start.cwd).not.toBe(ctx.dir);
     expect(start.config.mcp_servers).toEqual({ "private.server": { command: "unused", enabled: false } });
     expect(Object.keys(start.config).some(k => k.startsWith("mcp_servers."))).toBe(false);
@@ -149,6 +149,42 @@ describe("Codex background harness", () => {
     expect(log().filter((m) => m.result?.success === false)).toHaveLength(2);
   });
 
+  it("updates host editing permissions when the same read-only chat switches to Edit and back", async () => {
+    const { codexBackend } = await import("../src/backends/codex.js");
+    ctx.session.onSessionId = id => { ctx.session.sessionId = id; };
+
+    ctx.readOnly = true;
+    await codexBackend.runTurn(ctx);
+    expect(readFileSync(join(ctx.dir, "main.tex"), "utf8")).toBe("Original manuscript.\n");
+
+    ctx.readOnly = false;
+    await codexBackend.runTurn(ctx);
+    expect(readFileSync(join(ctx.dir, "main.tex"), "utf8")).toBe("Revised manuscript.\n");
+
+    writeFileSync(join(ctx.dir, "main.tex"), "User's subsequent edit.\n");
+    ctx.readOnly = true;
+    await codexBackend.runTurn(ctx);
+    expect(readFileSync(join(ctx.dir, "main.tex"), "utf8")).toBe("User's subsequent edit.\n");
+
+    const starts = log().filter(m => m.method === "thread/start" || m.method === "thread/resume");
+    expect(starts.map(m => m.method)).toEqual(["thread/start", "thread/resume", "thread/resume"]);
+    expect(starts.map(m => m.params.sandbox)).toEqual(["read-only", "workspace-write", "read-only"]);
+    expect(starts[1].params.config.sandbox_workspace_write).toEqual({
+      writable_roots: [ctx.dir], network_access: false, exclude_tmpdir_env_var: true, exclude_slash_tmp: true,
+    });
+    expect(starts.every(m => m.params.config["features.shell_tool"] === false)).toBe(true);
+    const turns = log().filter(m => m.method === "turn/start");
+    expect(turns.map(m => m.params.sandboxPolicy.type)).toEqual(["readOnly", "workspaceWrite", "readOnly"]);
+    expect(turns[1].params.sandboxPolicy).toEqual({
+      type: "workspaceWrite", writableRoots: [ctx.dir], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true,
+    });
+    for (const [index, permission] of ["DISABLED", "ENABLED", "DISABLED"].entries()) {
+      expect(starts[index].params.developerInstructions).toContain(`project editing is ${permission}`);
+      expect(turns[index].params.input[0].text).toContain(`project editing is ${permission}`);
+    }
+    expect(log().filter(m => m.result?.success === false)).toHaveLength(2);
+  });
+
   it("carries images as local image inputs", async () => {
     const { codexBackend } = await import("../src/backends/codex.js");
     ctx.attachments = [{ path: join(data, "image.png"), mime: "image/png" } as any];
@@ -193,6 +229,7 @@ describe("Codex background harness", () => {
     const { runOneShot } = await import("../src/agent.js");
     expect(await runOneShot("Summarize this paper")).toBe("All done.");
     expect(log().find((m) => m.method === "thread/start").params).toMatchObject({ ephemeral: true, dynamicTools: [] });
+    expect(log().find((m) => m.method === "turn/start").params.sandboxPolicy).toEqual({ type: "readOnly", networkAccess: false });
   });
 
   it("checks installation, login, and the model catalog without starting a turn", async () => {

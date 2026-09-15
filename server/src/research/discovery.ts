@@ -348,7 +348,9 @@ export async function publicationStatus(
   const errors: string[] = [];
   let retracted = false;
   try {
-    retracted = Boolean((await openAlexWork(dir, key)).is_retracted);
+    const work = await openAlexWork(dir, key);
+    retracted = work.is_retracted === true;
+    if (typeof work.is_retracted === "boolean") result.status = retracted ? "retracted" : "not_flagged";
   } catch {
     errors.push("OpenAlex unavailable or not reliably resolved.");
   }
@@ -396,7 +398,9 @@ export async function publicationStatus(
           ? "updated"
           : "not_flagged";
     } catch (error: any) {
-      errors.push(`Crossref check incomplete: ${error.message}`);
+      errors.push(error.status === 404
+        ? "Crossref does not index this DOI; publisher-notice coverage is incomplete."
+        : `Crossref check incomplete: ${error.message}`);
     }
   }
   if (retracted) result.status = "retracted";

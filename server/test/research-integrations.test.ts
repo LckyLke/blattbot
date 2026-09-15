@@ -412,6 +412,15 @@ describe("discovery snapshots and publication status", () => {
       "not_flagged",
     );
   });
+  it("keeps an OpenAlex status with explicit coverage limits when Crossref does not index the DOI", async () => {
+    vi.stubGlobal("fetch", vi.fn(async url => String(url).includes("openalex")
+      ? json({ ...works.W1, is_retracted: false }) : new Response("", { status: 404 })));
+    const { publicationStatus } = await import("../src/research/discovery.js");
+    const result = await publicationStatus("p1", dir, "alpha");
+    expect(result.status).toBe("not_flagged");
+    expect(result.note).toContain("does not index this DOI");
+    expect(result.note).toContain("incomplete");
+  });
   it("preserves an independent retraction flag when Crossref fails", async () => {
     vi.stubGlobal(
       "fetch",

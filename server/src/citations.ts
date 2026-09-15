@@ -13,6 +13,62 @@ import {
 } from "./bib.js";
 import { findBibFiles } from "./latex.js";
 import { loadSettings } from "./settings.js";
+import { setTimeout as sleep } from "node:timers/promises";
+import { researchSignal } from "./research/store.js";
+import { SourceServiceError } from "./research/source-failure.js";
+
+let arxivQueue: Promise<unknown> = Promise.resolve();
+let arxivNextAt = 0;
+let arxivRetryAt = 0;
+const arxivCache = new Map<string, { text: string; expires: number }>();
+
+async function arxivBibtex(id: string): Promise<string> {
+  if (!/^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]{2})?\/\d{7})(?:v\d+)?$/i.test(id)) throw new Error("Invalid arXiv identifier");
+  const run = async () => {
+    const signal = researchSignal();
+    signal?.throwIfAborted();
+    const cached = arxivCache.get(id);
+    if (cached && cached.expires > Date.now()) return cached.text;
+    let failure: Error = new Error("arXiv metadata unavailable");
+    if (arxivRetryAt <= Date.now()) {
+      await sleep(Math.max(0, arxivNextAt - Date.now()), undefined, { signal });
+      arxivNextAt = Date.now() + 3000;
+      try {
+        const response = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`, {
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000),
+        });
+        if (response.ok) {
+          const text = arxivAtomToBibtex(await response.text(), id);
+          arxivCache.set(id, { text, expires: Date.now() + 600000 });
+          if (arxivCache.size > 200) arxivCache.delete(arxivCache.keys().next().value!);
+          return text;
+        }
+        if (response.status === 429 || response.status === 503) {
+          const header = response.headers?.get("retry-after");
+          const retry = header && /^\d+$/.test(header) ? Date.now() + Number(header) * 1000 : Date.parse(header ?? "");
+          arxivRetryAt = Math.max(Date.now() + 60000, retry || 0);
+        }
+        failure = new Error(`arXiv metadata returned HTTP ${response.status}`);
+      } catch (error: any) { signal?.throwIfAborted(); failure = error; }
+    }
+    // DataCite's arXiv DOI is an independent metadata source. Never invent a
+    // citation from the identifier when both metadata routes are unavailable.
+    signal?.throwIfAborted();
+    try {
+      const doi = `10.48550/arXiv.${id.replace(/v\d+$/, "")}`;
+      const text = await fetchBibtex(doi);
+      const entry = parseBib(text)[0];
+      if (entry?.fields.doi?.toLowerCase().replace(/^https?:\/\/doi.org\//, "") !== doi.toLowerCase()) throw new Error("arXiv DOI metadata did not match the requested paper");
+      arxivCache.set(id, { text, expires: Date.now() + 600000 });
+      return text;
+    } catch (error: any) { signal?.throwIfAborted(); failure = new Error(`${failure.message}; DOI fallback: ${error.message}`); }
+    if (arxivRetryAt > Date.now()) throw new SourceServiceError(`arXiv rate limited; retry after ${new Date(arxivRetryAt).toISOString()}. ${failure.message}`, 429, new Date(arxivRetryAt).toISOString());
+    throw failure;
+  };
+  const result = arxivQueue.then(run, run);
+  arxivQueue = result.catch(() => {});
+  return result;
+}
 
 export const CROSSREF_MAILTO = "blattbot@localhost.invalid";
 
@@ -209,7 +265,7 @@ export async function searchPapers(queryText: string, limit = 5): Promise<PaperH
       .map((s) => String(s.reason?.message ?? s.reason));
     throw new Error(`All paper indexes failed: ${reasons.join("; ")}`);
   }
-  return mergeHits(groups, Math.max(n, 8));
+  return mergeHits(groups, n);
 }
 
 /** Fetch a BibTeX entry for a DOI via content negotiation, with a Crossref fallback. */
@@ -320,11 +376,7 @@ export async function fetchBibtexByRef(ref: string): Promise<string> {
   const arxiv = /^arxiv:(.+)$/i.exec(trimmed);
   if (arxiv) {
     const id = arxiv[1].replace(/^abs\//, "");
-    const res = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`, {
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!res.ok) throw new Error(`arXiv query for ${id} failed: HTTP ${res.status}`);
-    return arxivAtomToBibtex(await res.text(), id);
+    return arxivBibtex(id);
   }
   return fetchBibtex(trimmed);
 }

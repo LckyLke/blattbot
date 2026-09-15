@@ -26,8 +26,9 @@ export function codexCommand(executable = codexExecutable(), platform = process.
   return { command: executable, args: [] as string[] };
 }
 
-// Native execution stays read-only. All project access goes through BlattBot's
-// validated dynamic tools. A neutral cwd also avoids loading project config.
+// Native tools stay disabled. All project access goes through BlattBot's
+// validated dynamic tools; the sandbox policy matches the selected mode.
+// A neutral cwd also avoids loading project config.
 export const CODEX_CONFIG: Record<string, unknown> = {
   "features.shell_tool": false,
   "features.unified_exec": false,

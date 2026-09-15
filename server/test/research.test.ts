@@ -331,6 +331,24 @@ describe("scientific consistency review", () => {
     writeFileSync(join(dir, "new.tex"), "New conclusion");
     expect(r.getReview("p1", dir)?.stale).toBe(true);
   });
+  it("reviews text beyond the old limits in bounded overlapping batches", async () => {
+    const ending = "Final result was 73 percent";
+    const full = "Background material.\n".repeat(10000) + ending;
+    writeFileSync(join(dir, "main.tex"), full);
+    const seen: string[] = [];
+    const review = await (await import("../src/research/review.js")).reviewManuscript("p1", dir, [], async prompt => {
+      const inputs = JSON.parse(prompt.slice(prompt.lastIndexOf("Inputs: ") + 8));
+      seen.push(...inputs.map((input: any) => input.content));
+      return JSON.stringify({ coverage: "Batch checked", issues: inputs.some((input: any) => input.content.includes(ending))
+        ? [{ ...issue, locations: [{ file: "main.tex", quote: ending }] }] : [] });
+    });
+    expect(seen.every(text => text.length <= 50000)).toBe(true);
+    expect(seen.some(text => text.includes(ending))).toBe(true);
+    expect(review.inputs[0].charsRead).toBe(full.length);
+    expect(review.limited).toBe(false);
+    expect(review.issues[0].locations[0].line).toBe(10001);
+    expect(review.coverage).toContain("Cross-batch comparisons");
+  });
   it("rejects unattached context paths before model invocation", async () => {
     const r = await import("../src/research/review.js");
     const call = vi.fn();

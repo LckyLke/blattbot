@@ -240,7 +240,7 @@ export interface ResearchJob {
   id: string;
   kind: string;
   state: "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
-  items: { key: string; state: string; error?: string }[];
+  items: { key: string; state: string; error?: string; retryAt?: number }[];
   currentKey?: string;
   message?: string;
 }

@@ -92,6 +92,7 @@ export function ResearchTasks({
                   .map((i) => (
                     <p key={i.key} className="research-meta">
                       {i.key}: {i.error}
+                      {i.retryAt && !["paused", "cancelled"].includes(job.state) && <span> Automatic retry after {new Date(i.retryAt).toLocaleTimeString()}.</span>}
                     </p>
                   ))}
               </details>

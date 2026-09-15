@@ -34,6 +34,9 @@ interface Bucket {
   cooldownUntil: number;
 }
 const buckets = new Map<string, Bucket>();
+export function researchProviderRetryAt(): number {
+  return buckets.get(loadSettings().s2ApiKey.trim())?.cooldownUntil ?? 0;
+}
 const cache = new Map<string, { expires: number; value: any }>();
 let queue: Promise<unknown> = Promise.resolve();
 async function semanticScholarRequest(

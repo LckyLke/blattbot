@@ -13,6 +13,7 @@ import { readAllBibEntries } from "../citations.js";
 import { getPaperContent } from "../papers.js";
 import {
   bibHash,
+  localSourcePath,
   sourceCurrent,
   sourceVersion,
   type SourceVersion,
@@ -77,7 +78,11 @@ export function libraryStatus(id: string, dir: string) {
     const current =
       !!item &&
       existsSync(file(id, entry.key)) &&
-      sourceCurrent(id, dir, item.source);
+      sourceCurrent(id, dir, item.source) &&
+      !(item.source.basis === "abstract" && (() => {
+        const path = localSourcePath(id, dir, entry.key);
+        return path && existsSync(path);
+      })());
     return {
       key: entry.key,
       revision: item ? digest([item.source, item.at, current]) : null,

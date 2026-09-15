@@ -1,5 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { arxivAtomToBibtex, mergeHits, type PaperHit } from "../src/citations.js";
+import { searchPapers } from "../src/citations.js";
+
+it("caps combined provider results at the requested search limit", async () => {
+  vi.stubGlobal("fetch", vi.fn(async url => {
+    if (!String(url).includes("api.crossref.org")) throw new Error("provider offline");
+    return new Response(JSON.stringify({ message: { items: [
+      { DOI: "10.1/one", title: ["First paper"] }, { DOI: "10.1/two", title: ["Second paper"] },
+    ] } }), { headers: { "Content-Type": "application/json" } });
+  }));
+  try { expect(await searchPapers("example", 1)).toHaveLength(1); }
+  finally { vi.unstubAllGlobals(); }
+});
 
 const hit = (over: Partial<PaperHit>): PaperHit => ({
   ref: "10.1/x",
