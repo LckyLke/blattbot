@@ -1,0 +1,28 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { textPdf } from "./fixtures/pdf.js";
+let root: string;
+afterEach(() => { vi.unstubAllEnvs(); if (root) rmSync(root, { recursive: true, force: true, maxRetries: 10 }); });
+it("renders a real PDF page without Poppler and caches the PNG", async () => {
+  root = mkdtempSync(join(tmpdir(), "blattbot-render-test-"));
+  vi.stubEnv("BLATTBOT_DATA_DIR", root);
+  vi.stubEnv("BLATTBOT_PDFTOPPM", join(root, "missing-pdftoppm"));
+  vi.resetModules();
+  const path = join(root, "source.pdf");
+  writeFileSync(path, textPdf(["Test document", "Second page"]));
+  const { renderPdfPage, readingCapabilities } = await import("../src/research/pdfreading.js");
+  expect(await readingCapabilities()).toMatchObject({ render: true, renderer: "pdfjs" });
+  const image = await renderPdfPage(path, 2);
+  expect(readFileSync(image).subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const { loadImage, createCanvas } = await import("@napi-rs/canvas");
+  const png = await loadImage(image);
+  const canvas = createCanvas(png.width, png.height);
+  const context = canvas.getContext("2d");
+  context.drawImage(png, 0, 0);
+  const pixels = context.getImageData(0, 0, png.width, png.height).data;
+  expect(pixels.some((value, index) => index % 4 !== 3 && value < 128)).toBe(true);
+  expect(await renderPdfPage(path, 2)).toBe(image);
+  await expect(renderPdfPage(path, 3)).rejects.toThrow();
+});
