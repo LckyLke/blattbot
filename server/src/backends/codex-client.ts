@@ -51,6 +51,9 @@ export class CodexClient {
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   private stopped?: Error;
   private stderr = "";
+  private closed: Promise<void>;
+  private hasClosed = false;
+  private closing = false;
   onNotification: (method: string, params: any) => void = () => {};
   onRequest: (method: string, params: any) => Promise<unknown> = async (method) => {
     throw new Error(`Unsupported Codex request: ${method}`);
@@ -68,6 +71,10 @@ export class CodexClient {
       // the native codex.exe (BLATTBOT_CODEX_EXECUTABLE can select its path).
       shell: false,
     });
+    this.closed = new Promise((resolve) => this.child.once("close", () => {
+      this.hasClosed = true;
+      resolve();
+    }));
     this.child.stderr.setEncoding("utf8").on("data", (s: string) => { this.stderr = (this.stderr + s).slice(-3000); });
     this.child.on("error", (e: NodeJS.ErrnoException) => this.fail(new Error(
       e.code === "ENOENT"
@@ -150,12 +157,16 @@ export class CodexClient {
     return overrides;
   }
 
-  close(): void {
+  close(): Promise<void> {
+    if (this.closing || this.hasClosed) return this.closed;
+    this.closing = true;
     this.fail(new Error("Codex connection closed"));
     this.child.stdin.end();
     this.child.kill();
     const timer = setTimeout(() => { this.child.kill("SIGKILL"); }, 1000);
     timer.unref();
     this.child.once("close", () => clearTimeout(timer));
+    // Windows keeps the child's working directory locked until it exits.
+    return this.closed;
   }
 }

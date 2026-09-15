@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, symlinkSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ChildProcess } from "node:child_process";
 import type { BackendTurnContext, AgentEvent } from "../src/backends/types.js";
 
 vi.mock("../src/compile.js", () => ({ compileProject: vi.fn(async () => ({ ok: true, engine: "mock", durationMs: 1, mainTex: "main.tex" })) }));
@@ -41,6 +42,29 @@ afterEach(() => {
 });
 
 describe("Codex background harness", () => {
+  it("waits for child process closure and supports repeated shutdown", async () => {
+    const { CodexClient } = await import("../src/backends/codex-client.js");
+    const client = new CodexClient();
+    let closed = false;
+    const kill = ChildProcess.prototype.kill;
+    const killSpy = vi.spyOn(ChildProcess.prototype, "kill").mockImplementation(function (this: ChildProcess, signal) {
+      this.once("close", () => { closed = true; });
+      return kill.call(this, signal);
+    });
+    try {
+      await client.initialize();
+      const closing = client.close();
+      expect(client.close()).toBe(closing);
+      await closing;
+      expect(closed).toBe(true);
+      await client.close();
+      expect(killSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await client.close();
+      killSpy.mockRestore();
+    }
+  });
+
   it("launches Windows npm installations through Node, without shell quoting", async () => {
     const { codexCommand } = await import("../src/backends/codex-client.js");
     const npmDir = join(data, "npm with spaces");

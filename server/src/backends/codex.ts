@@ -94,7 +94,7 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
   void done.catch(() => {});
   const fail = (e: Error) => { if (!settled) { settled = true; rejectDone(e); } };
   client.onFailure = fail;
-  const abort = () => { fail(new Error("Codex turn interrupted")); client.close(); };
+  const abort = () => { fail(new Error("Codex turn interrupted")); void client.close(); };
   signal.addEventListener("abort", abort, { once: true });
 
   client.onRequest = async (method, p) => {
@@ -216,7 +216,7 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
   } finally {
     settled = true;
     signal.removeEventListener("abort", abort);
-    client.close();
+    await client.close();
     // Drain in-flight host tools before the dispatcher releases the project.
     await toolQueue;
   }

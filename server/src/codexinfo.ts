@@ -58,5 +58,5 @@ async function inspect(): Promise<CodexStatus> {
       models: normalizeCodexModels(rows), defaultModel: config?.model || rows.find((r) => r.isDefault)?.model };
   } catch (e: any) {
     return { ...base, available, authenticated: false, message: e.message ?? "Could not connect to Codex." };
-  } finally { client?.close(); }
+  } finally { await client?.close(); }
 }

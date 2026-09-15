@@ -24,6 +24,6 @@ try {
   if (!result.thread?.id) throw new Error("Codex did not create the diagnostic thread");
   console.log("Codex accepted the thread configuration and BlattBot tool schemas. No agent turn was started.");
 } finally {
-  client?.close();
+  await client?.close();
   rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }

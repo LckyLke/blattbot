@@ -452,9 +452,12 @@ describe("Zotero read-only import", () => {
     });
     expect(publicConfig).not.toHaveProperty("apiKey");
     expect(publicConfig.hasApiKey).toBe(true);
-    expect(
-      statSync(join(root, "research-secrets", "p1.json")).mode & 0o777,
-    ).toBe(0o600);
+    // Windows does not expose POSIX owner/group/other permission bits.
+    if (process.platform !== "win32") {
+      expect(
+        statSync(join(root, "research-secrets", "p1.json")).mode & 0o777,
+      ).toBe(0o600);
+    }
     const f = vi.fn(async () =>
       json(
         [
