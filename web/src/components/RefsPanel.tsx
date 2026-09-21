@@ -1001,7 +1001,7 @@ export default function RefsPanel({
                   <p className={`mt-1 font-mono text-[10.5px] font-medium ${VERDICT_COLOR[claimResult.verdict]}`}>
                     {VERDICT_LABEL[claimResult.verdict]}
                     <span className="ml-1.5 font-normal text-graphite/70">
-                      ({claimResult.basis === "none" ? "no readable source" : claimResult.truncated ? "PDF excerpts only" : claimResult.basis === "full_text" ? "full paper text" : "abstract only"})
+                      ({claimResult.basis === "none" ? "no readable source" : claimResult.basis === "summary" ? "publisher summary only" : claimResult.truncated ? "PDF excerpts only" : claimResult.basis === "full_text" ? "full paper text" : "abstract only"})
                     </span>
                   </p>
                   <p className="mt-1 font-serif text-[12.5px] leading-relaxed text-paper-dim">

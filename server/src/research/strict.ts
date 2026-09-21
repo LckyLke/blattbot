@@ -156,7 +156,7 @@ export function strictReport(id: string, dir: string) {
         line: e.line,
         text: e.claim,
         key: e.key,
-        reason: `Evidence: ${e.status}${e.record?.source.basis === "abstract" ? " · abstract only" : ""}`,
+        reason: `Evidence: ${e.status}${e.record?.source.basis === "abstract" ? " · abstract only" : e.record?.source.basis === "summary" ? " · publisher summary only" : ""}`,
         fingerprint: digest([
           e.claimHash,
           e.entryHash,

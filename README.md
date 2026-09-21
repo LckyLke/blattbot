@@ -85,6 +85,22 @@ Zotero settings: enable local API access under Zotero's Advanced settings and no
 
 Research artifacts are saved locally under the BlattBot data directory. New checks and writing helpers use the selected model and may incur its normal usage costs. Run `npm run test:research-ui --workspace=server` after building to exercise the workflow against an isolated fixture model, with no paid calls.
 
+### Recovering missing paper sources
+
+`read_paper` tries attached PDFs and indexed open-access locations, then checks bibliography/repository landing pages, Crossref links and web search for author or publisher copies. A known public PDF or paper page can also be supplied with `url`. Downloaded content must match the bibliography title. Search snippets and generic page descriptions are not evidence. Publisher abstracts and book/chapter summaries retain their source URL and retrieval date, are labeled separately from full text, and do not satisfy strict full-text checks.
+
+In **Settings → Agent**, **Save & test** stores a provider key on the running server before checking it. A key saved on another installation is not used here. Semantic Scholar requests are paced, short authenticated rate limits are retried, and alternate source providers remain available. An API key does not grant access to paywalled articles. An optional **Brave Search API key** enables authenticated web discovery; without it, public web search is attempted and may be blocked. Provider charges may apply. Failed searches report access errors without claiming that no public copy exists.
+
+Unsuccessful source lookups are reused for five minutes to avoid repeated requests. `read_paper` with `refresh: true` retries immediately; changes to bibliography fields or provider credentials also invalidate that cache. Cached publisher text is reused for up to 24 hours and refreshed text invalidates affected evidence. A readable PDF supplied through **External context** remains the fallback when online sources cannot be retrieved.
+
+### University and library access
+
+Open **Settings → University access**, choose a publisher (or enter another public HTTPS website), and select **Open institution sign-in**. In the separate browser window, use the publisher's institution selector to choose your university or library and complete sign-in, including MFA. Return to the publisher site and select **Save publisher session** in Blattbot. The optional institution label is for your reference; no university is hardcoded and the publisher handles institution selection.
+
+Blattbot stores only cookies that belong to the selected publisher host. Paper retrieval can use them on that exact HTTPS origin; general `read_url` requests stay anonymous. Cookies for other domains, including a separate university SSO site, and browser local storage are not saved. A saved session is not a verified subscription: title-matched PDF retrieval determines whether a particular paper is available. Reconnect to replace an expired session, or remove the connection to delete the stored cookies. Saving or removing a connection invalidates recent failed discovery lookups. Cached paper PDFs remain available after removal.
+
+The login window requires a desktop display and an installed Chrome, Edge or Chromium on the machine running Blattbot; `BLATTBOT_BROWSER_EXECUTABLE` can select its executable. A login expires after ten minutes if unfinished. Sites that bind access to browser execution, require local storage, block automated requests, or require API access may still need a manual PDF download and attachment. ScienceDirect provides an [official institutional text-mining API](https://dev.elsevier.com/text_mining.html); university web sign-in is not equivalent to API entitlement. This feature does not purchase access or bypass publisher restrictions.
+
 ### Verify manuscript claims against a Git repository
 
 For a local repository, choose **Add repository → Local folder → Browse folders…**. The picker marks Git folders, previews the current branch and commit, and recognizes repository roots when you open a subfolder. Use Home/Up, filter folder names, or paste a path (including `~/Projects`). It remembers the last selected folder and fills in the current branch automatically.

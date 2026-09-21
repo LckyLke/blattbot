@@ -37,7 +37,7 @@ export const readUrlSchema = z.object({
 });
 
 /** Pin the connection to a checked address, including after each redirect. */
-export async function fetchPublicUrl(raw: string, signal: AbortSignal): Promise<{ url: string; type: string; body: Buffer }> {
+export async function fetchPublicUrl(raw: string, signal: AbortSignal, maxBytes = MAX_BYTES, credentials?: { cookieForUrl: (url: URL) => string | undefined }): Promise<{ url: string; type: string; body: Buffer }> {
   let url = parseUrl(raw);
   for (let redirects = 0; redirects <= 5; redirects++) {
     signal.throwIfAborted();
@@ -49,12 +49,16 @@ export async function fetchPublicUrl(raw: string, signal: AbortSignal): Promise<
       throw new Error("URL resolves to a local or private network address; only public URLs are supported.");
     }
     const address = addresses[0];
+    // Only paper retrieval opts into publisher credentials. Re-evaluate scope
+    // on every redirect; read_url remains anonymous.
+    const cookie = credentials?.cookieForUrl(url);
     const result = await new Promise<{ status: number; location?: string; type: string; body: Buffer }>((resolve, reject) => {
       const request = url.protocol === "https:" ? httpsRequest : httpRequest;
       const req = request(url, {
         method: "GET", signal, agent: false,
-        // No browser cookies, account keys, or authorization headers are inherited.
-        headers: { "User-Agent": "BlattBot/0.4.2", Accept: "text/html, text/plain, application/json, */*", "Accept-Encoding": "identity" },
+        // Never inherit browser cookies, account keys or Authorization headers.
+        // A paper-specific caller may supply a cookie scoped to this exact URL.
+        headers: { "User-Agent": "BlattBot/0.4.2", Accept: "text/html, text/plain, application/json, */*", "Accept-Encoding": "identity", ...(cookie ? { Cookie: cookie } : {}) },
         lookup: (_hostname, options, callback) => {
           if (options.all) callback(null, [address]);
           else callback(null, address.address, address.family);
@@ -75,8 +79,8 @@ export async function fetchPublicUrl(raw: string, signal: AbortSignal): Promise<
         let bytes = 0;
         res.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
-          if (bytes > MAX_BYTES) {
-            const error = new Error("URL response exceeds 4 MiB. Request individual files or a smaller resource.");
+          if (bytes > maxBytes) {
+            const error = new Error(`URL response exceeds ${maxBytes / 1024 / 1024} MiB. Request individual files or a smaller resource.`);
             reject(error);
             res.destroy(error);
           } else chunks.push(chunk);
@@ -107,7 +111,7 @@ export function repositoryUrl(raw: string): string {
   return api.href;
 }
 
-function decodeHtml(text: string): string {
+export function decodeHtml(text: string): string {
   return text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (whole, entity: string) => {
     if (entity[0] === "#") {
       const value = entity[1].toLowerCase() === "x" ? parseInt(entity.slice(2), 16) : Number(entity.slice(1));

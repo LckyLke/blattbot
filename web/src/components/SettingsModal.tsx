@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, type Account, type AgentInfo, type ProjectStats, type Settings, type BackendId, type CodexStatus } from "../api";
 import { tabStripKeyDown } from "../a11y";
 import AccountSignIn from "./AccountSignIn";
+import UniversityAccess from "./UniversityAccess";
 import { useDialog } from "./Dialog";
 
 interface Props {
@@ -15,7 +16,7 @@ interface Props {
   projectName?: string;
 }
 
-type Tab = "accounts" | "agent" | "transparency";
+type Tab = "accounts" | "university" | "agent" | "transparency";
 
 export default function SettingsModal({ onClose, onAccountsChanged, projectId, projectName }: Props) {
   const dialog = useDialog();
@@ -39,16 +40,17 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
   const [clearKey, setClearKey] = useState(false);
   const [s2Key, setS2Key] = useState("");
   const [openAlexKey, setOpenAlexKey] = useState("");
+  const [braveKey, setBraveKey] = useState("");
   const [unpaywallEmail, setUnpaywallEmail] = useState("");
   const [providerBusy, setProviderBusy] = useState("");
   const [providerResult, setProviderResult] = useState<Record<string, string>>({});
-  async function checkProvider(provider: "semantic-scholar" | "openalex") {
+  async function checkProvider(provider: "semantic-scholar" | "openalex" | "brave-search") {
     setProviderBusy(provider);
     try {
-      const key = (provider === "semantic-scholar" ? s2Key : openAlexKey).trim();
+      const key = (provider === "semantic-scholar" ? s2Key : provider === "openalex" ? openAlexKey : braveKey).trim();
       if (key) {
-        setSettings(await api.saveSettings(provider === "semantic-scholar" ? { s2ApiKey: key } : { openAlexApiKey: key }));
-        if (provider === "semantic-scholar") setS2Key(""); else setOpenAlexKey("");
+        setSettings(await api.saveSettings(provider === "semantic-scholar" ? { s2ApiKey: key } : provider === "openalex" ? { openAlexApiKey: key } : { braveSearchApiKey: key }));
+        if (provider === "semantic-scholar") setS2Key(""); else if (provider === "openalex") setOpenAlexKey(""); else setBraveKey("");
       }
       const result = await api.checkResearchProvider(provider);
       setProviderResult(previous => ({ ...previous, [provider]: result.message }));
@@ -194,12 +196,14 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
       else if (clearOaiKey) patch.openaiApiKey = "";
       if (s2Key.trim()) patch.s2ApiKey = s2Key.trim();
       if (openAlexKey.trim()) patch.openAlexApiKey = openAlexKey.trim();
+      if (braveKey.trim()) patch.braveSearchApiKey = braveKey.trim();
       patch.unpaywallEmail = unpaywallEmail.trim();
       const next = await api.saveSettings(patch);
       setSettings(next);
       setApiKey("");
       setS2Key("");
       setOpenAlexKey("");
+      setBraveKey("");
       setClearKey(false);
       setOaiKey("");
       setClearOaiKey(false);
@@ -274,10 +278,11 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
       >
         <header className="booktabs flex flex-wrap items-center gap-2 px-5 pb-3 pt-4 sm:gap-4">
           <h2 className="font-serif text-[17px] font-semibold text-paper">Settings</h2>
-          <nav className="flex gap-1" role="tablist" aria-label="Settings sections">
+          <nav className="flex flex-wrap gap-1" role="tablist" aria-label="Settings sections">
             {(
               [
                 ["accounts", "Accounts"],
+                ["university", "University access"],
                 ["agent", "Agent"],
                 ["transparency", "Transparency"],
               ] as [Tab, string][]
@@ -388,6 +393,8 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
               )}
             </div>
           )}
+
+          {tab === "university" && <UniversityAccess />}
 
           {tab === "agent" && settings && (
             <div className="max-w-[520px]">
@@ -684,17 +691,21 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                 <span className="text-graphite/60">
                   {settings.hasS2ApiKey
                     ? "(saved on this server — request limits still apply)"
-                    : "(optional — the free shared pool is heavily rate-limited)"}
+                    : "(not configured on this server — using shared access)"}
                 </span>
                 <input
                   value={s2Key}
-                  onChange={(e) => setS2Key(e.target.value)}
+                  onChange={(e) => {
+                    setS2Key(e.target.value);
+                    setProviderResult(previous => ({ ...previous, "semantic-scholar": "" }));
+                  }}
                   type="password"
                   placeholder={settings.hasS2ApiKey ? "•••••••• (set)" : "get one free at semanticscholar.org/product/api"}
                   className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                 />
               </label>
 
+              <p className="mt-1 text-[11px] text-graphite">{s2Key.trim() ? "This key has not been saved yet. Use Save & test below to activate it on this server." : "Keys are specific to this server; a key saved on another installation is not used here. A key improves access to metadata and PDF links, but does not unlock paywalled full text."}</p>
               <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("semantic-scholar")} className="mt-2 rounded border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "semantic-scholar" ? "Checking…" : s2Key.trim() ? "Save & test Semantic Scholar key" : "Test Semantic Scholar connection"}</button>
               {providerResult["semantic-scholar"] && <p role="status" className="mt-2 text-xs text-paper-dim">{providerResult["semantic-scholar"]}</p>}
               <label className="mt-4 block text-[11px] text-graphite">
@@ -704,6 +715,13 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
               <p className="mt-1 text-[11px] text-graphite">Used for citation graphs, discovery and paper metadata. <a href="https://openalex.org/settings/api" target="_blank" rel="noreferrer" className="text-leaf">Get a key ↗</a></p>
               <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("openalex")} className="mt-2 rounded border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "openalex" ? "Checking…" : openAlexKey.trim() ? "Save & test OpenAlex key" : "Test OpenAlex connection"}</button>
               {providerResult.openalex && <p role="status" className="mt-2 text-xs text-paper-dim">{providerResult.openalex}</p>}
+              <label className="mt-4 block text-[11px] text-graphite">
+                Brave Search API key <span className="text-graphite/60">{settings.hasBraveSearchApiKey ? "(saved on this server)" : "(optional)"}</span>
+                <input type="password" value={braveKey} onChange={event => { setBraveKey(event.target.value); setProviderResult(previous => ({ ...previous, "brave-search": "" })); }} placeholder={settings.hasBraveSearchApiKey ? "•••••••• (set)" : "Optional key from Brave Search API"} className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper" />
+              </label>
+              <p className="mt-1 text-[11px] text-graphite">{braveKey.trim() ? "This key has not been saved yet. " : ""}When indexed PDFs are missing, searches the web for the paper title and checks author, repository and publisher links. Without a key, public web search is attempted but may be blocked. Search-provider charges may apply when using a key.</p>
+              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("brave-search")} className="mt-2 rounded border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "brave-search" ? "Checking…" : braveKey.trim() ? "Save & test Brave Search key" : "Test web search configuration"}</button>
+              {providerResult["brave-search"] && <p role="status" className="mt-2 text-xs text-paper-dim">{providerResult["brave-search"]}</p>}
               <label className="mt-4 block text-[11px] text-graphite">
                 Unpaywall contact email (optional)
                 <input type="email" value={unpaywallEmail} onChange={event => setUnpaywallEmail(event.target.value)} placeholder="Your contact email" className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 text-xs text-paper" />

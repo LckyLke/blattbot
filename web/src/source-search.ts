@@ -10,6 +10,36 @@ import {
   SearchQuery,
   setSearchQuery,
 } from "@codemirror/search";
+/**
+ * The query the editor runs for one find.
+ *
+ * LaTeX wraps prose over several source lines, so a phrase the reader sees as
+ * one line can hold a line break. A literal search therefore sends each run of
+ * whitespace as `\s+`: one typed space matches a space, a line break, or the
+ * indentation after it. A regular-expression search stays exactly as typed.
+ */
+export function sourceSearchQuery(options: {
+  search: string;
+  replace?: string;
+  caseSensitive?: boolean;
+  wholeWord?: boolean;
+  regexp?: boolean;
+}): SearchQuery {
+  const { search, replace = "", caseSensitive = false, wholeWord = false, regexp = false } = options;
+  if (regexp || !/\s/.test(search))
+    return new SearchQuery({ search, replace, caseSensitive, wholeWord, regexp, literal: !regexp });
+  return new SearchQuery({
+    search: search.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&").replace(/\s+/g, "\\s+"),
+    // The replacement now runs through the regular-expression path, where "$"
+    // starts a group reference. Escape it to keep the typed text literal.
+    replace: replace.replace(/\$/g, "$$$$"),
+    caseSensitive,
+    wholeWord,
+    regexp: true,
+    literal: true,
+  });
+}
+
 /** Compact editor-native search. Literal LaTeX, live counts, and safe read-only replacement controls. */
 export function sourceSearchPanel(view: EditorView): Panel {
   const dom = document.createElement("div");
@@ -85,19 +115,18 @@ export function sourceSearchPanel(view: EditorView): Panel {
   let caseSensitive = false,
     wholeWord = false,
     regexp = false;
+  // The committed query, kept so that update() can tell our own query from one
+  // another command set. Its pattern can differ from the text in the input.
+  let committed: SearchQuery | null = null;
   const commit = () => {
-    view.dispatch({
-      effects: setSearchQuery.of(
-        new SearchQuery({
-          search: search.value,
-          replace: replace.value,
-          caseSensitive,
-          wholeWord,
-          regexp,
-          literal: !regexp,
-        }),
-      ),
+    committed = sourceSearchQuery({
+      search: search.value,
+      replace: replace.value,
+      caseSensitive,
+      wholeWord,
+      regexp,
     });
+    view.dispatch({ effects: setSearchQuery.of(committed) });
   };
   search.oninput = () => {
     const start = search.selectionStart;
@@ -125,11 +154,15 @@ export function sourceSearchPanel(view: EditorView): Panel {
   };
   const update = () => {
     const query = getSearchQuery(view.state);
-    search.value = query.search;
-    replace.value = query.replace;
-    caseSensitive = query.caseSensitive;
-    wholeWord = query.wholeWord;
-    regexp = query.regexp;
+    if (!committed || !query.eq(committed)) {
+      // Another command set the query, for example "search for selection".
+      committed = query;
+      search.value = query.search;
+      replace.value = query.replace;
+      caseSensitive = query.caseSensitive;
+      wholeWord = query.wholeWord;
+      regexp = query.regexp;
+    }
     matchCase.setAttribute("aria-pressed", String(caseSensitive));
     whole.setAttribute("aria-pressed", String(wholeWord));
     regex.setAttribute("aria-pressed", String(regexp));

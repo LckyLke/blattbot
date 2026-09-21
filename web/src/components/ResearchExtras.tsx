@@ -280,7 +280,7 @@ export function PaperLibrary({
       <div className="research-section-heading">
         <h3>Search your papers</h3>
         <span>
-          {status.indexed} full texts · {status.abstractOnly} abstracts
+          {status.indexed} full texts · {status.abstractOnly} abstracts · {status.summaryOnly ?? 0} summaries
         </span>
       </div>
       <p className="research-intro">
@@ -366,6 +366,7 @@ export function PaperLibrary({
                 {hit.key} ·{" "}
                 {hit.basis === "abstract"
                   ? "Abstract only"
+                  : hit.basis === "summary" ? "Publisher summary only"
                   : `PDF page ${hit.page}`}
               </p>
               <blockquote>{hit.quote}</blockquote>
@@ -374,7 +375,7 @@ export function PaperLibrary({
                 className="research-link"
                 onClick={() => open(hit.key, hit.page)}
               >
-                Open source · page {hit.page}
+                {hit.basis === "full_text" ? `Open source · page ${hit.page}` : "Open source"}
               </button>
             </article>
           ))}

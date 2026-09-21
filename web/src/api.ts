@@ -35,6 +35,15 @@ export interface Account {
 
 export type BackendId = "codex" | "claude" | "openai";
 
+export interface PublisherConnection {
+  id: string;
+  origin: string;
+  institution: string;
+  savedAt: string;
+  status: "saved" | "expired";
+}
+export interface PublisherLogin { id: string; origin: string; institution: string }
+
 export interface CodexStatus {
   available: boolean;
   authenticated: boolean;
@@ -52,6 +61,7 @@ export interface Settings {
   hasApiKey: boolean;
   hasS2ApiKey: boolean;
   hasOpenAlexApiKey: boolean;
+  hasBraveSearchApiKey: boolean;
   unpaywallEmail: string;
   anthropicBaseUrl: string;
   systemPromptAppend: string;
@@ -272,7 +282,7 @@ export type CitationVerdict = "supported" | "partially_supported" | "not_support
 export interface CitationCheckResult {
   verdict: CitationVerdict;
   explanation: string;
-  basis: "full_text" | "abstract" | "none";
+  basis: "full_text" | "abstract" | "summary" | "none";
   truncated?: boolean;
 }
 
@@ -425,6 +435,11 @@ export const api = {
       { method: "POST", body: JSON.stringify({ accountId }) },
     ),
   accounts: () => request<Account[]>("/api/accounts"),
+  publisherAccess: () => request<{ connections: PublisherConnection[]; login: PublisherLogin | null }>("/api/publisher-access"),
+  startPublisherLogin: (url: string, institution: string) => request<PublisherLogin>("/api/publisher-access/login", { method: "POST", body: JSON.stringify({ url, institution }) }),
+  finishPublisherLogin: (id: string) => request<PublisherConnection>(`/api/publisher-access/login/${encodeURIComponent(id)}/finish`, { method: "POST" }),
+  cancelPublisherLogin: (id: string) => request(`/api/publisher-access/login/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  removePublisherAccess: (id: string) => request(`/api/publisher-access/${encodeURIComponent(id)}`, { method: "DELETE" }),
   addAccount: (url: string, cookie: string) =>
     request<Account>("/api/accounts", { method: "POST", body: JSON.stringify({ url, cookie }) }),
   refreshAccount: (id: string, mode: "import" | "browser") =>
@@ -433,13 +448,14 @@ export const api = {
   accountProjects: (id: string) =>
     request<{ baseUrl: string; projects: OlProject[] }>(`/api/accounts/${id}/projects`),
   settings: () => request<Settings>("/api/settings"),
-  checkResearchProvider: (provider: "semantic-scholar" | "openalex") => request<{ status: string; configured: boolean; message: string; retryAt?: string }>("/api/settings/research/check", { method: "POST", body: JSON.stringify({ provider }) }),
+  checkResearchProvider: (provider: "semantic-scholar" | "openalex" | "brave-search") => request<{ status: string; configured: boolean; message: string; retryAt?: string }>("/api/settings/research/check", { method: "POST", body: JSON.stringify({ provider }) }),
   saveSettings: (
     patch: Partial<
-      Omit<Settings, "hasApiKey" | "hasS2ApiKey" | "hasOpenaiApiKey" | "hasOpenAlexApiKey" | "settingsPath">
+      Omit<Settings, "hasApiKey" | "hasS2ApiKey" | "hasOpenaiApiKey" | "hasOpenAlexApiKey" | "hasBraveSearchApiKey" | "settingsPath">
     > & {
       apiKey?: string;
       s2ApiKey?: string;
+      braveSearchApiKey?: string;
       openAlexApiKey?: string;
       openaiApiKey?: string;
     },

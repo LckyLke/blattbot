@@ -61,6 +61,15 @@ describe("public URL transport", () => {
     mockResponse(403, {});
     await expect(fetchPublicUrl("https://example.com/private", signal())).rejects.toThrow("HTTP 403");
   });
+  it("rechecks publisher credential scope on each redirect and never sends cookies to another site", async () => {
+    mockResponse(302, { location: "https://download.example.net/paper.pdf" });
+    mockResponse(200, { "content-type": "application/pdf" }, "%PDF-fixture");
+    const cookieForUrl = vi.fn((url: URL) => url.origin === "https://publisher.example" ? "session=secret" : undefined);
+    await fetchPublicUrl("https://publisher.example/article", signal(), 1024, { cookieForUrl });
+    expect((vi.mocked(request).mock.calls[0][1] as any).headers.Cookie).toBe("session=secret");
+    expect((vi.mocked(request).mock.calls[1][1] as any).headers).not.toHaveProperty("Cookie");
+    expect(cookieForUrl).toHaveBeenCalledTimes(2);
+  });
   it("bounds response size and respects an already aborted turn", async () => {
     mockResponse(200, {}, "x".repeat(4 * 1024 * 1024 + 1));
     await expect(fetchPublicUrl("https://example.com", signal())).rejects.toThrow("4 MiB");

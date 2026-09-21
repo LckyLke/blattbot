@@ -131,7 +131,7 @@ export function sourceVersion(
   dir: string,
   content: PaperContent,
 ): SourceVersion {
-  const path = localSourcePath(id, dir, content.key);
+  const path = content.basis === "full_text" ? localSourcePath(id, dir, content.key) : null;
   return {
     key: content.key,
     title: content.title,
@@ -154,7 +154,12 @@ export function sourceCurrent(
   source: SourceVersion,
 ): boolean {
   if (source.entryHash !== bibHash(dir, source.key)) return false;
-  if (!source.fileHash) return true; // Remote abstracts are dated snapshots; refresh explicitly.
+  if (!source.fileHash) {
+    // A refreshed publisher summary invalidates verdicts quoting the older text.
+    const latest = readPaperStore(id)[source.key]?.webSource;
+    if (latest && latest.url === source.source) return source.textHash === digest([latest.text]);
+    return !latest || Date.parse(latest.retrievedAt) <= Date.parse(source.at);
+  }
   const path = localSourcePath(id, dir, source.key);
   return Boolean(
     path &&

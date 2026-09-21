@@ -1,6 +1,7 @@
 import { registerInlineQuestions, isInlineQuestionActive } from "./inline-questions.js";
 import { researchJobs, listResearchJobs } from "./research/jobs.js";
 import { registerDeployment } from "./deployment.js";
+import { registerPublisherAccess } from "./publisher-access.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
@@ -210,6 +211,7 @@ registerResearchRoutes(app, async (id) => {
   const diff = await git.workingDiff(projectDir(id));
   broadcast(id, { type: "diff", diff });
 }, graphIndexer);
+registerPublisherAccess(app);
 app.addHook("onClose", async () => { await Promise.all([graphIndexer.stop(), researchJobs.stop()]); });
 app.addHook("onResponse", (req, reply, done) => {
   const id = (req.params as { id?: string })?.id;
@@ -309,7 +311,7 @@ app.put<{ Body: Partial<Settings> }>("/api/settings", async (req, reply) => {
 
 app.post<{ Body: { provider?: string } }>("/api/settings/research/check", async (req, reply) => {
   const provider = req.body?.provider;
-  if (provider !== "semantic-scholar" && provider !== "openalex") return reply.code(400).send({ error: "Unknown research provider" });
+  if (provider !== "semantic-scholar" && provider !== "openalex" && provider !== "brave-search") return reply.code(400).send({ error: "Unknown research provider" });
   return checkResearchProvider(provider);
 });
 

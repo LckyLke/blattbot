@@ -74,6 +74,91 @@ describe("research provider transport", () => {
     await vi.advanceTimersByTimeAsync(100); controller.abort(); await assertion;
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+  it.each(["seconds", "date", "absent"])("recovers authenticated throttling with a %s Retry-After", async (header) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-17T10:00:00Z"));
+    const { saveSettings } = await import("../src/settings.js");
+    saveSettings({ s2ApiKey: "fixture-private-key" });
+    const { semanticScholarGet, researchProviderRetryAt } = await import("../src/research-providers.js");
+    const times: number[] = [];
+    const retryAfter = header === "seconds" ? "2" : header === "date" ? new Date(Date.now() + 2000).toUTCString() : undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      times.push(Date.now());
+      expect(init?.headers["x-api-key"]).toBe("fixture-private-key");
+      return times.length === 1
+        ? new Response("", { status: 429, headers: retryAfter ? { "Retry-After": retryAfter } : {} })
+        : json({ title: "Recovered paper" });
+    }));
+    const pending = semanticScholarGet("/paper/1");
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toEqual({ title: "Recovered paper" });
+    expect(times[1] - times[0]).toBe(2000);
+    expect(researchProviderRetryAt()).toBeLessThanOrEqual(Date.now());
+  });
+  it("bounds repeated throttling and shares its cooldown with queued callers", async () => {
+    vi.useFakeTimers();
+    const { saveSettings } = await import("../src/settings.js");
+    saveSettings({ s2ApiKey: "fixture-private-key" });
+    const { semanticScholarGet } = await import("../src/research-providers.js");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 429 })));
+    const assertion = expect(semanticScholarGet("/paper/1")).rejects.toMatchObject({ keyConfigured: true });
+    await vi.advanceTimersByTimeAsync(6000);
+    await assertion;
+    expect(fetch).toHaveBeenCalledTimes(3);
+    vi.mocked(fetch).mockResolvedValue(json({ title: "Recovered paper" }));
+    const next = semanticScholarGet("/paper/2");
+    await vi.advanceTimersByTimeAsync(7999);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await next).toEqual({ title: "Recovered paper" });
+  });
+  it("cancels during Retry-After without sending another request", async () => {
+    vi.useFakeTimers();
+    const { saveSettings } = await import("../src/settings.js");
+    saveSettings({ s2ApiKey: "fixture-private-key" });
+    const { semanticScholarGet } = await import("../src/research-providers.js");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 429, headers: { "Retry-After": "2" } })));
+    const controller = new AbortController();
+    const assertion = expect(semanticScholarGet("/paper/1", { signal: controller.signal })).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(100);
+    controller.abort();
+    await assertion;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("uses a key saved while a request was queued, without inheriting the anonymous cooldown", async () => {
+    const { saveSettings } = await import("../src/settings.js");
+    const { semanticScholarGet } = await import("../src/research-providers.js");
+    let finish!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve; })).mockResolvedValue(json({ title: "Paper" })));
+    const first = expect(semanticScholarGet("/paper/1")).rejects.toMatchObject({ keyConfigured: false });
+    await Promise.resolve();
+    const queued = semanticScholarGet("/paper/2");
+    saveSettings({ s2ApiKey: "new-key" });
+    finish(new Response("", { status: 429, headers: { "Retry-After": "90" } }));
+    await first;
+    expect(await queued).toEqual({ title: "Paper" });
+    expect(vi.mocked(fetch).mock.calls[0][1]?.headers).not.toHaveProperty("x-api-key");
+    expect(vi.mocked(fetch).mock.calls[1][1]?.headers).toMatchObject({ "x-api-key": "new-key" });
+  });
+  it("caches explicit paper title resolution but keeps literature searches fresh", async () => {
+    vi.useFakeTimers();
+    const { semanticScholarGet } = await import("../src/research-providers.js");
+    vi.stubGlobal("fetch", vi.fn(async () => json({ data: [{ title: "Paper" }] })));
+    const path = "/paper/search?query=Paper";
+    await Promise.all([semanticScholarGet(path, { cache: true }), semanticScholarGet(path, { cache: true })]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await semanticScholarGet(path);
+    await semanticScholarGet(path);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    await semanticScholarGet(path, { cache: true, fresh: true });
+    expect(fetch).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(300_001);
+    await semanticScholarGet(path, { cache: true });
+    expect(fetch).toHaveBeenCalledTimes(5);
+  });
   it("keeps keys out of public settings and applies OpenAlex auth only to OpenAlex", async () => {
     const { saveSettings, publicSettings } = await import("../src/settings.js");
     saveSettings({ s2ApiKey: "secret-s2", openAlexApiKey: "secret-alex" });

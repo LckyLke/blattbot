@@ -126,7 +126,7 @@ export function noSessionMessage(host: string, scan: BrowserScan): string {
   return parts.join(" ");
 }
 
-function findChromiumExecutable(): string | null {
+export function findChromiumExecutable(): string | null {
   // A real installed browser first: Google's OAuth refuses "insecure" browsers,
   // and branded Chrome/Chromium builds pass where the Playwright build won't.
   for (const p of [
@@ -134,8 +134,14 @@ function findChromiumExecutable(): string | null {
     "/usr/bin/google-chrome-stable",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
+    "/usr/bin/microsoft-edge",
+    "/usr/bin/brave-browser",
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+    ...(process.env.LOCALAPPDATA ? [join(process.env.LOCALAPPDATA, "Google/Chrome/Application/chrome.exe")] : []),
   ]) {
     if (existsSync(p)) return p;
   }

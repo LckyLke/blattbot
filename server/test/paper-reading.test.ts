@@ -108,6 +108,19 @@ describe("direct paper reading", () => {
     expect(result.content).toContain("Content: ABSTRACT");
     expect(result.content).toContain("We study graphs");
     expect(events).toContainEqual(expect.objectContaining({ type: "notice", text: expect.stringContaining("Only the abstract") }));
+    const notice = events.find(event => event.type === "notice");
+    expect(notice?.type === "notice" && String(notice.text).match(/Only the abstract is available\./g)).toHaveLength(1);
+  });
+
+  it("reuses title metadata for the PDF and abstract stages of a paper read", async () => {
+    vi.stubGlobal("fetch", vi.fn(async url => String(url).includes("api.semanticscholar.org")
+      ? new Response(JSON.stringify({ data: [{ title: "Graph Models", abstract: "We study graphs." }] }))
+      : new Response("", { status: 404 })));
+    const { readPaper } = await import("../src/papers.js");
+    const result = await readPaper("p1", dir, "smith2020");
+    expect(result.basis).toBe("abstract");
+    expect(result.excerpt?.text).toContain("We study graphs.");
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("api.semanticscholar.org"))).toHaveLength(1);
   });
 
   it("does not treat summaries or a zero-hit search as having read evidence", async () => {

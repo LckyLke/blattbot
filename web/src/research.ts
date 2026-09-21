@@ -5,7 +5,7 @@ export interface Quote {
 export interface SourceVersion {
   key: string;
   title: string;
-  basis: "full_text" | "abstract" | "none";
+  basis: "full_text" | "abstract" | "summary" | "none";
   source?: string;
   fileHash?: string;
   extractionHash?: string;
@@ -264,6 +264,7 @@ export interface StrictReport {
 export interface LibraryStatus {
   indexed: number;
   abstractOnly: number;
+  summaryOnly: number;
   pending: string[];
   sources: {
     key: string;

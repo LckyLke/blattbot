@@ -227,7 +227,7 @@ describe("getTldr", () => {
     writeBib(DOI_ENTRY);
     vi.stubGlobal("fetch", vi.fn(async () => jsonRes(429, {})));
     await expect(papers.getTldr("proj1", projectDir, "lecun2015deep")).rejects.toThrow(
-      /rate limited — add a Semantic Scholar API key in Settings/,
+      /No API key is configured on this server/,
     );
   });
 
@@ -446,7 +446,7 @@ describe("ensurePaperPdf", () => {
       };
     }));
     await expect(papers.ensurePaperPdf("proj1", projectDir, "closed2020")).rejects.toThrow(
-      /no open-access PDF found/,
+      /no readable PDF retrieved/,
     );
   });
 
@@ -502,7 +502,7 @@ describe("ensurePaperPdf", () => {
       return jsonRes(404, {});
     }));
     await expect(papers.ensurePaperPdf("proj1", projectDir, "knuth1984")).rejects.toThrow(
-      /no open-access PDF found/,
+      /no readable PDF retrieved/,
     );
   });
 });
@@ -584,7 +584,7 @@ describe("verifyCitationSupport", () => {
     const judge = vi.fn(async () => "SUPPORTED\nshould never be reached");
     const result = await papers.verifyCitationSupport("proj1", projectDir, "knuth1984", "Any claim.", { judge });
     expect(result.verdict).toBe("unclear");
-    expect(result.explanation).toMatch(/no open-access pdf or abstract/i);
+    expect(result.explanation).toMatch(/no readable pdf or abstract was retrieved/i);
     expect(judge).not.toHaveBeenCalled();
   });
 

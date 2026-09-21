@@ -1,6 +1,7 @@
 /** Source gaps reach the chat directly, independent of the model's final answer. */
 import { formatCitationCheckResult, formatPaperReadResult, readPaper, verifyCitationSupportBatch, type CitationCheckResult, type PaperReadOptions } from "../papers.js";
 import type { BackendTurnContext } from "./types.js";
+import { withResearchOperation } from "../research/store.js";
 
 const notices = new WeakMap<BackendTurnContext, Set<string>>();
 function warn(ctx: BackendTurnContext, text: string): void {
@@ -13,10 +14,11 @@ function warn(ctx: BackendTurnContext, text: string): void {
 
 export async function readPaperTool(ctx: BackendTurnContext, key: string, opts: PaperReadOptions = {}): Promise<string> {
   try {
-    const result = await readPaper(ctx.project.id, ctx.dir, key, { ...opts, contextDirs: ctx.contextDirs });
+    const result = await withResearchOperation(ctx.signal, () => readPaper(ctx.project.id, ctx.dir, key, { ...opts, contextDirs: ctx.contextDirs }));
     if (result.excerpt?.hasText) (ctx.paperReads ??= new Set()).add(key);
     if (result.basis !== "full_text") {
-      warn(ctx, `${result.title} (${key}): ${result.basis === "abstract" ? "Only the abstract is available." : "No readable source is available."} ${result.limitations.join(" ")}`);
+      const limitations = result.limitations.map(line => line.replace(/^Only the abstract is available\.\s*/, "")).join(" ");
+      warn(ctx, `${result.title} (${key}): ${result.basis === "abstract" ? "Only the abstract is available." : result.basis === "summary" ? "Only a publisher summary is available." : "No readable source is available."} ${limitations}`);
     } else if (result.limitations.some((line) => line.startsWith("No extractable text on pages"))) {
       warn(ctx, `${result.title} (${key}): ${result.limitations.join(" ")}`);
     }

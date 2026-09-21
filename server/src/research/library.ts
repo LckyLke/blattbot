@@ -79,7 +79,7 @@ export function libraryStatus(id: string, dir: string) {
       !!item &&
       existsSync(file(id, entry.key)) &&
       sourceCurrent(id, dir, item.source) &&
-      !(item.source.basis === "abstract" && (() => {
+      !(item.source.basis !== "full_text" && (() => {
         const path = localSourcePath(id, dir, entry.key);
         return path && existsSync(path);
       })());
@@ -93,7 +93,7 @@ export function libraryStatus(id: string, dir: string) {
           ? "stale"
           : item.source.basis === "full_text"
             ? "indexed"
-            : "abstract",
+            : item.source.basis === "summary" ? "summary" : "abstract",
       pages: item?.pages ?? 0,
       emptyPages: item?.emptyPages ?? [],
       limitations: item?.limitations ?? [],
@@ -103,6 +103,7 @@ export function libraryStatus(id: string, dir: string) {
     sources,
     indexed: sources.filter((s) => s.status === "indexed").length,
     abstractOnly: sources.filter((s) => s.status === "abstract").length,
+    summaryOnly: sources.filter((s) => s.status === "summary").length,
     pending: sources
       .filter((s) => ["missing", "stale"].includes(s.status))
       .map((s) => s.key),
@@ -160,7 +161,7 @@ export async function indexPaper(id: string, dir: string, key: string) {
     title: content.title,
     at,
     chunks: chunks.length,
-    pages: content.pages.length,
+    pages: content.basis === "full_text" ? content.pages.length : 0,
     emptyPages: content.pages.flatMap((page, i) =>
       page.trim() ? [] : [i + 1],
     ),
@@ -201,7 +202,7 @@ export async function searchLibrary(
   const papers = status.sources
     .filter(
       (s) =>
-        ["indexed", "abstract"].includes(s.status) &&
+        ["indexed", "abstract", "summary"].includes(s.status) &&
         (!args.keys || args.keys.includes(s.key)),
     )
     .map((s) => ({

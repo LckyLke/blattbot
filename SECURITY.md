@@ -18,6 +18,10 @@ Overleaf session cookies and git tokens live in `~/.local/share/blattbot` (overr
 
 There is no OS-keychain integration yet — file permissions are the protection, chosen so the same code works headless and across Linux/macOS/Windows. Keychain support is a reasonable future step.
 
+Publisher connections created in **Settings → University access** live in `research-secrets/publisher-access.json` beneath the same data directory, with `0600` file permissions and a `0700` parent directory. This entire directory is excluded from agent file access, including when its parent is linked as external context. Public API responses contain connection labels and status, never cookie values.
+
+Institution sign-in opens a separate, nonpersistent browser context. You enter credentials and complete MFA directly on the institution's site. Blattbot has no agent tool to inspect or operate that window. On **Save publisher session**, only cookies matching the selected publisher host are retained; cookies for other domains (including a separate university SSO site) and local storage are not exported. Saving, cancelling, closing the browser or reaching the ten-minute timeout closes the temporary session. Saved cookies are used only by paper retrieval, on the exact HTTPS origin selected in Settings and subject to their domain, path and expiration. Redirects recheck both public network addresses and credential scope. Cookies are not inherited by general `read_url` or metadata-provider requests. Remove a connection to delete its local cookies; this does not revoke the publisher's server-side session or erase PDFs already cached.
+
 To revoke access: log out of Overleaf in your browser (invalidates the session server-side), and/or delete `accounts.json`. Deleting the whole data dir removes every stored credential and token.
 
 ## Browser cookie import
@@ -29,7 +33,7 @@ To revoke access: log out of Overleaf in your browser (invalidates the session s
 - **Your configured model provider.** Agent turns and model-backed helpers (such as paper summaries and citation-support checks) send their input to your selected backend: Codex using its local CLI credentials and provider configuration, Anthropic via Claude Code, or your OpenAI-compatible endpoint. Configuration failures do not silently switch providers. Codex connection checks and model listing start no model turn.
 - **Your Overleaf instance.** Sync, push, and "Verify on Overleaf" talk to the instance a project is connected to, and to nothing else.
 - **Citation services.** Paper search and the citation audit query `api.openalex.org`, `api.semanticscholar.org`, `dblp.org`, `api.crossref.org`, `doi.org`, and `export.arxiv.org` with search queries, titles, and DOIs — never your manuscript itself.
-- **Open-access PDF hosts.** The References tab's fetch-PDF action downloads a paper's PDF from `arxiv.org` or from whatever open-access URL Semantic Scholar reports for it — which can be any publisher's host (e.g. a journal or conference CDN). This happens only when you trigger the fetch, and sends nothing but the request for that PDF.
+- **Paper hosts.** Paper retrieval checks indexed PDF locations, publisher/repository pages and additional discovery routes. Requests are anonymous unless you have explicitly connected the matching publisher in University access; those paper requests may include that publisher's scoped session cookies. Retrieved paper text can be sent to the configured model when you read, summarize or verify it.
 - **npm registry.** An update check fetches `registry.npmjs.org/blattbot/latest` at most once a day. No telemetry, no analytics; nothing else phones home.
 
 ## Prompt injection

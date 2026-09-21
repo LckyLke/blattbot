@@ -307,6 +307,8 @@ export function toolDefinitions(readOnly: boolean) {
     fnDef("read_paper", info("read_paper"), {
       key: { type: "string", description: "Bibliography cite key of the paper to read" },
       path: { type: "string", description: "Optional project-relative or absolute attached-context PDF path; remembered for this entry" },
+      url: { type: "string", maxLength: 8000, description: "Public PDF or repository/publisher page; downloads and remembers a title-matched PDF. Use either path or url." },
+      refresh: { type: "boolean", description: "Retry failed source discovery immediately, or refresh a supplied URL" },
       ...reading,
       ocr: { type: "boolean", description: "Run OCR on page 1 and the requested page; requires Poppler and Tesseract" },
       page: { type: "integer", minimum: 1, maximum: 1000, description: "PDF page to OCR when ocr=true" },

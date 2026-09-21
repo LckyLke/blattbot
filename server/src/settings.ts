@@ -20,10 +20,12 @@ export interface Settings {
   /** Preferred TeX engine, tried first; the others stay as fallbacks.
    *  "" = auto-detect in priority order (latexmk → pdflatex → tectonic). */
   engine: "" | "tectonic" | "latexmk" | "pdflatex";
-  /** Optional Semantic Scholar API key — lifts the shared-pool rate limit on paper search. */
+  /** Optional Semantic Scholar API key — uses a personal quota for search and reading. */
   s2ApiKey: string;
   /** OpenAlex key for graphs, discovery and paper metadata. */
   openAlexApiKey: string;
+  /** Optional authenticated web search for author/repository copies. */
+  braveSearchApiKey: string;
   /** Contact email required by the optional Unpaywall open-access lookup. */
   unpaywallEmail: string;
   /** Agent backend running the turns. "" = Codex (the default). */
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
   engine: "",
   s2ApiKey: "",
   openAlexApiKey: "",
+  braveSearchApiKey: "",
   unpaywallEmail: "",
   backend: "",
   codexModel: "",
@@ -96,11 +99,12 @@ export function saveSettings(patch: Partial<Settings>): Settings {
 
 /** Settings as sent to the UI — key material never leaves the server. */
 export function publicSettings(s = loadSettings()) {
-  const { apiKey, s2ApiKey, openaiApiKey, openAlexApiKey, ...rest } = s;
+  const { apiKey, s2ApiKey, openaiApiKey, openAlexApiKey, braveSearchApiKey, ...rest } = s;
   return {
     ...rest,
     hasApiKey: Boolean(apiKey),
     hasS2ApiKey: Boolean(s2ApiKey.trim()),
+    hasBraveSearchApiKey: Boolean(braveSearchApiKey.trim()),
     hasOpenAlexApiKey: Boolean(openAlexApiKey.trim() || process.env.OPENALEX_API_KEY?.trim()),
     hasOpenaiApiKey: Boolean(openaiApiKey),
     settingsPath: SETTINGS_PATH,

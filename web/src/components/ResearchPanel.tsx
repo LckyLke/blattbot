@@ -53,6 +53,7 @@ const labels: Record<string, string> = {
   unclear: "Insufficient evidence",
   full_text: "PDF text",
   abstract: "Abstract only",
+  summary: "Publisher summary only",
   none: "Source missing",
   not_flagged: "No indexed flag",
   unavailable: "Check unavailable",
@@ -435,6 +436,7 @@ export default function ResearchPanel({
               {source.key} ·{" "}
               {source.basis === "abstract"
                 ? "Abstract"
+                : source.basis === "summary" ? "Publisher summary"
                 : `PDF page ${source.page}`}
             </h3>
             <button type="button" onClick={() => setSource(undefined)}>

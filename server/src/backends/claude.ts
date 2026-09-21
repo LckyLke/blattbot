@@ -169,6 +169,8 @@ export function buildMcpServer(ctx: BackendTurnContext) {
     {
       key: z.string().describe("Bibliography cite key of the paper to read"),
       path: z.string().optional().describe("Optional project-relative or absolute attached-context PDF path"),
+      url: z.string().url().max(8000).optional().describe("Public PDF or repository/publisher page; downloads and remembers a title-matched PDF"),
+      refresh: z.boolean().optional().describe("Retry failed source discovery immediately, or refresh a supplied URL"),
       offset: z.number().int().min(0).optional().describe("Character offset returned by a previous read/search"),
       limit: z.number().int().min(100).max(40000).optional().describe("Maximum text characters; default 20000"),
       query: z.string().min(1).optional().describe("Exact phrase to search throughout the paper, case-insensitive"),
