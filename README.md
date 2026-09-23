@@ -181,7 +181,6 @@ The server binds to 127.0.0.1 only, checks the Host header on every request and 
 git clone https://github.com/LckyLke/blattbot.git
 cd blattbot
 npm install
-npm run build --workspace=web
 npm run dev
 ```
 
@@ -193,7 +192,7 @@ npm workspaces. `server/` is Fastify and TypeScript, `web/` is React and Vite.
 
 ```bash
 npm install
-npm run dev                            # server on :4560
+npm run dev                            # rebuild frontend, then server on :4560
 npm run dev:web                        # Vite dev server on :4561
 npm test                               # unit tests
 npm run codex:check --workspace=server # installed Codex protocol check, no model turn
@@ -202,6 +201,8 @@ npx tsx server/scripts/ui-verify.ts    # browser UI verification without agent t
 npx tsx server/scripts/e2e.ts          # full loop with a real agent turn
 npm run release:pack                   # build and pack the npm tarball
 ```
+
+`npm run dev` rebuilds the frontend once before starting the server. For live frontend updates while editing, also run `npm run dev:web` in a second terminal and open port 4561.
 
 CI runs the suite on Ubuntu, macOS and Windows. Release notes live in [CHANGELOG.md](CHANGELOG.md).
 

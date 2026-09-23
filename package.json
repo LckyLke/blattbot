@@ -9,6 +9,7 @@
     "web"
   ],
   "scripts": {
+    "predev": "npm run build --workspace=web",
     "dev": "npm run dev --workspace=server",
     "dev:web": "npm run dev --workspace=web",
     "build": "npm run build --workspace=web && npm run build --workspace=server",
