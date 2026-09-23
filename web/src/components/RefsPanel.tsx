@@ -1,14 +1,21 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type CitationCheckResult, type ImportBibResult, type RefEntry, type RefsResponse } from "../api";
 import { relTime } from "./Chat";
 import ReferenceDetails from "./ReferenceDetails";
-import { groupReferences, REFERENCE_GROUPINGS, type ReferenceGrouping } from "../reference-groups";
+import { groupReferences, sortReferences, REFERENCE_GROUPINGS, REFERENCE_SORTS, type ReferenceGrouping, type ReferenceSort } from "../reference-groups";
 
 function savedGrouping(projectId: string): ReferenceGrouping {
   try {
     const saved = localStorage.getItem(`blattbot:refs-grouping:${projectId}`);
     return REFERENCE_GROUPINGS.find(([value]) => value === saved)?.[0] ?? "none";
   } catch { return "none"; }
+}
+
+function savedSorting(projectId: string): ReferenceSort {
+  try {
+    const saved = localStorage.getItem(`blattbot:refs-sorting:${projectId}`);
+    return REFERENCE_SORTS.find(([value]) => value === saved)?.[0] ?? "original";
+  } catch { return "original"; }
 }
 
 interface Props {
@@ -117,15 +124,21 @@ export default function RefsPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [grouping, setGrouping] = useState<ReferenceGrouping>(() => savedGrouping(projectId));
+  const [sorting, setSorting] = useState<ReferenceSort>(() => savedSorting(projectId));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   useEffect(() => {
     setGrouping(savedGrouping(projectId));
+    setSorting(savedSorting(projectId));
     setCollapsedGroups(new Set());
   }, [projectId]);
   function changeGrouping(value: ReferenceGrouping) {
     setGrouping(value);
     setCollapsedGroups(new Set());
     try { localStorage.setItem(`blattbot:refs-grouping:${projectId}`, value); } catch { /* Storage may be unavailable. */ }
+  }
+  function changeSorting(value: ReferenceSort) {
+    setSorting(value);
+    try { localStorage.setItem(`blattbot:refs-sorting:${projectId}`, value); } catch { /* Storage may be unavailable. */ }
   }
   const [unusedOnly, setUnusedOnly] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
@@ -233,7 +246,7 @@ export default function RefsPanel({
   });
 
   const entryId = (e: RefEntry) => `${e.file}:${e.key}`;
-  const grouped = useMemo(() => groupReferences(entries, grouping), [entries, grouping]);
+  const grouped = useMemo(() => groupReferences(sortReferences(entries, sorting), grouping), [entries, grouping, sorting]);
   const visibleIds = new Set(visible.map(entryId));
   const groups = grouped.map(group => ({ ...group, total: group.entries.length,
     entries: group.entries.filter(entry => visibleIds.has(entryId(entry))),
@@ -633,39 +646,59 @@ export default function RefsPanel({
   }
 
   const chipBase =
-    "rounded-full border px-2 py-0.5 font-mono text-[10.5px] transition-colors";
+    "rounded-md border px-2 py-1 font-mono text-[10.5px] transition-colors focus-visible:outline-2 focus-visible:outline-leaf";
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b border-rule px-4 py-2">
+    <div className="refs-panel flex h-full min-w-0 flex-col">
+      <div className="shrink-0 border-b border-rule bg-ink px-4 pb-3 pt-4">
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="font-serif text-[19px] font-medium text-paper">References</h2>
+          <span className="rounded-full bg-ink-3 px-2 py-0.5 font-mono text-[10px] text-paper-dim">{entries.length}</span>
+          <button
+            onClick={() => { setAddOpen(value => !value); setAddError(null); }}
+            disabled={busy}
+            className="ml-auto rounded-md border border-leaf/40 bg-leaf/10 px-2.5 py-1.5 text-[11px] font-medium text-leaf transition-colors hover:bg-leaf/20 focus-visible:outline-2 focus-visible:outline-leaf disabled:opacity-50"
+          >+ add entry</button>
+        </div>
+        <div className="relative">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-graphite"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg>
         <input
           value={filter}
           aria-label="Filter references"
           onChange={(e) => { setFilter(e.target.value); setCollapsedGroups(new Set()); }}
-          placeholder={`Filter ${entries.length} entr${entries.length === 1 ? "y" : "ies"}…`}
-          className="w-full rounded border border-rule bg-ink-2 px-3 py-1.5 text-[13px] text-paper placeholder:text-graphite/60"
+          placeholder="Search title, author, venue…"
+          className="w-full rounded-lg border border-rule bg-ink-2 py-2 pl-9 pr-8 text-[12px] text-paper placeholder:text-graphite focus:border-leaf/60 focus:outline-none focus:ring-1 focus:ring-leaf/30"
         />
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-graphite">
-          <label className="flex min-w-0 items-center gap-2">
-            Group by
+          {filter && <button aria-label="Clear reference search" onClick={() => setFilter("")} className="absolute right-2 top-1.5 rounded px-1.5 py-0.5 text-graphite hover:text-paper">×</button>}
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-2.5 text-[11px] text-graphite">
+          <label className="flex min-w-0 flex-col gap-1.5">
+            <span className="font-mono text-[9px] uppercase tracking-widest">Group by</span>
             <select
               aria-label="Group references by"
               value={grouping}
               onChange={event => changeGrouping(event.target.value as ReferenceGrouping)}
-              className="min-w-0 rounded border border-rule bg-ink-2 px-2 py-1 text-paper-dim focus:border-leaf"
+              className={`w-full min-w-0 rounded-md border bg-ink-2 px-2 py-2 text-[11px] text-paper-dim focus:border-leaf focus:outline-none ${grouping !== "none" ? "border-leaf/50" : "border-rule"}`}
             >
               {REFERENCE_GROUPINGS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </label>
-          {grouping !== "none" && groups.length > 0 && <button
-            onClick={() => setCollapsedGroups(allCollapsed ? new Set() : new Set(groups.map(group => group.id)))}
-            className="ml-auto hover:text-paper-dim"
-          >{allCollapsed ? "Expand all" : "Collapse all"}</button>}
+          <label className="flex min-w-0 flex-col gap-1.5" title={grouping === "none" ? "Sort all references" : "Sort references within each group"}>
+            <span className="font-mono text-[9px] uppercase tracking-widest">{grouping === "none" ? "Sort by" : "Sort within groups"}</span>
+            <select
+              aria-label="Sort references by"
+              value={sorting}
+              onChange={event => changeSorting(event.target.value as ReferenceSort)}
+              className="w-full min-w-0 rounded-md border border-rule bg-ink-2 px-2 py-2 text-[11px] text-paper-dim focus:border-leaf focus:outline-none"
+            >
+              {REFERENCE_SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
         </div>
         {grouping === "authors" && <p className="mt-1.5 text-[10.5px] leading-snug text-graphite">
           Papers connected by matching author names, including coauthors. Each paper appears once.
         </p>}
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
           {undefinedKeys.length > 0 && (
             <button
               onClick={() => setShowUndefined((v) => !v)}
@@ -681,6 +714,7 @@ export default function RefsPanel({
           )}
           <button
             onClick={() => setUnusedOnly((v) => !v)}
+            aria-pressed={unusedOnly}
             title="Show only entries never cited in the text"
             className={`${chipBase} ${
               unusedOnly
@@ -713,6 +747,7 @@ export default function RefsPanel({
           {claimAudit && (
             <button
               onClick={() => setGapsOnly((v) => !v)}
+              aria-pressed={gapsOnly}
               title="Show only citations whose claim check found a gap"
               className={`${chipBase} ${
                 gapsOnly
@@ -726,19 +761,6 @@ export default function RefsPanel({
             </button>
           )}
           <span className="ml-auto" />
-          <button
-            onClick={() => {
-              setAddOpen((v) => !v);
-              setAddError(null);
-            }}
-            disabled={busy}
-            title="Write a new BibTeX entry by hand"
-            className={`${chipBase} disabled:opacity-50 ${
-              addOpen ? "border-leaf text-leaf" : "border-rule text-paper-dim hover:border-leaf hover:text-leaf"
-            }`}
-          >
-            + add entry
-          </button>
           <button
             onClick={() => setImportOpen((v) => !v)}
             className={`${chipBase} ${
@@ -868,10 +890,17 @@ export default function RefsPanel({
         )}
       </div>
 
-      <ul className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
-        {groups.map(group => <Fragment key={group.id}>
-          {grouping !== "none" && <li className="mt-2 border-b border-rule pb-1 first:mt-0">
-            <h3>
+      <div className="flex shrink-0 items-center justify-between gap-2 px-4 py-2.5 text-[10.5px] text-graphite">
+        <span role="status">{visible.length === entries.length ? `${entries.length} reference${entries.length === 1 ? "" : "s"}` : `${visible.length} of ${entries.length} references`}{grouping !== "none" ? ` · ${groups.length} group${groups.length === 1 ? "" : "s"}` : ""}</span>
+        {grouping !== "none" && groups.length > 0 && <button
+          onClick={() => setCollapsedGroups(allCollapsed ? new Set() : new Set(groups.map(group => group.id)))}
+          className="rounded px-1 py-0.5 text-paper-dim hover:text-leaf focus-visible:outline-2 focus-visible:outline-leaf"
+        >{allCollapsed ? "Expand all" : "Collapse all"}</button>}
+      </div>
+      <ul aria-label="Reference list" className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 pb-4">
+        {groups.map(group => <li key={group.id} className={grouping !== "none" ? "rounded-lg border border-rule bg-ink-2/30" : ""}>
+          {grouping !== "none" && <div className="sticky top-0 z-10 rounded-t-lg border-b border-rule border-l-[3px] border-l-leaf bg-ink-3 shadow-sm">
+            <h3 className="m-0">
               <button
                 type="button"
                 aria-expanded={!collapsedGroups.has(group.id)}
@@ -881,18 +910,18 @@ export default function RefsPanel({
                   if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
                   return next;
                 })}
-                className="flex w-full items-baseline gap-2 rounded py-1 text-left text-[11.5px] text-paper-dim hover:text-paper"
+                className="flex w-full items-center gap-2.5 rounded-t-lg px-3 py-3 text-left text-[12.5px] font-semibold text-paper transition-colors hover:bg-leaf/5 focus-visible:outline-2 focus-visible:outline-leaf"
               >
-                <span aria-hidden="true" className="shrink-0 text-graphite">{collapsedGroups.has(group.id) ? "▸" : "▾"}</span>
+                <span aria-hidden="true" className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-leaf/10 text-leaf">{collapsedGroups.has(group.id) ? "▸" : "▾"}</span>
                 <span className="min-w-0 break-words">{group.label}</span>
-                <span className="ml-auto shrink-0 font-mono text-[10px] text-graphite">
+                <span className="ml-auto shrink-0 rounded-full border border-leaf/20 bg-leaf/10 px-2 py-0.5 font-mono text-[10px] font-normal text-leaf">
                   {group.entries.length}{group.entries.length !== group.total ? ` / ${group.total}` : ""}
                   <span className="sr-only"> references</span>
                 </span>
               </button>
             </h3>
-          </li>}
-          {(grouping === "none" || !collapsedGroups.has(group.id)) && group.entries.map((e) => {
+          </div>}
+          {(grouping === "none" || !collapsedGroups.has(group.id)) && <ul className={grouping === "none" ? "space-y-2.5" : "px-3"}>{group.entries.map((e) => {
           const id = entryId(e);
           const total = usageTotal(e);
           const busyTldr = tldrBusy.has(id);
@@ -907,15 +936,16 @@ export default function RefsPanel({
                 if (el) rowRefs.current.set(e.key, el);
                 else rowRefs.current.delete(e.key);
               }}
-              className={`border-b border-rule/50 py-2.5 last:border-0 ${
+              data-reference-key={e.key}
+              className={`min-w-0 ${grouping === "none" ? "rounded-lg border border-rule/80 bg-ink-2/40 px-3 py-3.5 transition-colors hover:border-graphite/50" : "border-b border-rule/70 py-3.5 last:border-0"} ${
                 flashKey === e.key ? "ref-flash" : ""
               }`}
             >
-              <div className="flex items-baseline gap-2">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                 <button
                   onClick={() => copy(e.key)}
                   title="Copy \cite{…}"
-                  className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[11px] transition-colors ${
+                  className={`max-w-[65%] truncate rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
                     copied === e.key
                       ? "border-leaf text-leaf"
                       : total > 0
@@ -947,13 +977,12 @@ export default function RefsPanel({
                     unused
                   </span>
                 )}
-                <span className="ml-auto truncate font-mono text-[10px] text-graphite/60">{e.file}</span>
                 {confirmDelete === id ? (
                   <button
                     onClick={() => deleteEntry(e)}
                     disabled={busy}
                     aria-label={`Really delete ${e.key}?`}
-                    className="shrink-0 rounded bg-pencil/90 px-1.5 text-[10px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
+                    className="ml-auto shrink-0 rounded bg-pencil/90 px-1.5 text-[10px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
                   >
                     really?
                   </button>
@@ -963,7 +992,7 @@ export default function RefsPanel({
                     disabled={busy}
                     aria-label={`Delete ${e.key}`}
                     title={`Delete ${e.key} from ${e.file}`}
-                    className="shrink-0 rounded px-1 font-mono text-[12px] leading-none text-graphite transition-colors hover:text-pencil disabled:opacity-50"
+                    className="ml-auto shrink-0 rounded px-1.5 py-0.5 font-mono text-[12px] leading-none text-graphite transition-colors hover:bg-pencil/10 hover:text-pencil disabled:opacity-50"
                   >
                     ×
                   </button>
@@ -991,12 +1020,12 @@ export default function RefsPanel({
                 </div>
               )}
               {e.title && (
-                <p className="mt-1 font-serif text-[13.5px] leading-snug text-paper">{e.title}</p>
+                <p className="mt-2 break-words font-serif text-[15px] leading-snug text-paper">{e.title}</p>
               )}
-              {e.author && <p className="mt-0.5 truncate text-[11.5px] text-graphite">{e.author}</p>}
+              {e.author && <p title={e.author} className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-graphite">{e.author}</p>}
               <ReferenceDetails metadata={e.metadata} />
 
-              <div className="mt-1.5 flex items-center gap-2">
+              <div className="refs-entry-actions mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1">
                 {e.link && (
                   <a
                     href={e.link}
@@ -1049,6 +1078,7 @@ export default function RefsPanel({
                 >
                   verify
                 </button>
+                <span title={e.file} className="ml-auto max-w-[45%] truncate font-mono text-[9px] text-graphite/80">{e.file}</span>
               </div>
 
               {verifyOpenId === id && (
@@ -1162,8 +1192,8 @@ export default function RefsPanel({
               )}
             </li>
           );
-          })}
-        </Fragment>)}
+          })}</ul>}
+        </li>)}
         {visible.length === 0 && (
           <li className="py-8 text-center font-serif text-sm text-graphite">
             {loadError

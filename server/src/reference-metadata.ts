@@ -36,7 +36,7 @@ export function cachedReferenceMetadata(projectId: string, entry: BibEntry, stor
   const matches = saved?.fingerprint === fingerprint(entry);
   return {
     metadata: { ...(matches ? saved.value : {}), ...bibliographyVenue(entry) },
-    metadataNeedsRefresh: !matches || saved.retryAt <= Date.now() || saved.version !== 2,
+    metadataNeedsRefresh: !matches || saved.retryAt <= Date.now() || saved.version !== 3,
   };
 }
 
@@ -65,10 +65,12 @@ export async function getReferenceMetadata(projectId: string, entry: BibEntry): 
       const venue = venueName(s2!.publicationVenue?.name) ?? venueName(s2!.venue);
       if (!result.venue && venue) Object.assign(result, { venue, venueType: venueType(s2!.publicationVenue?.type), venueSource: "Semantic Scholar" });
     }
-    if (!foundCount || !result.venue) {
+    // Zero is a statement about one index record, not evidence of no citations.
+    // Check the other index before settling on it, preserving source attribution.
+    if (!foundCount || result.citationCount === 0 || !result.venue) {
       const oa = await resolveOpenAlexPaper(entry).catch(() => null);
       if (matches(oa)) {
-        if (!foundCount && count(oa!.citationCount)) {
+        if (count(oa!.citationCount) && (!foundCount || (result.citationCount === 0 && oa!.citationCount > 0))) {
           Object.assign(result, { citationCount: oa!.citationCount, citationSource: "OpenAlex", citationUrl: oa!.url, citationUpdatedAt: new Date().toISOString() });
           foundCount = true;
         }
@@ -78,8 +80,8 @@ export async function getReferenceMetadata(projectId: string, entry: BibEntry): 
     }
     result.conferenceRanking = await resolveConferenceRanking(result.venue, result.venueType).catch(() => undefined);
     // Preserve old values during outages, with their original observation date.
-    const ttl = foundCount && result.venue ? 24 * 60 * 60_000 : 15 * 60_000;
-    writePaperRecord(projectId, entry.key, { referenceMetadata: { version: 2, fingerprint: hash, value: result, retryAt: Date.now() + ttl } });
+    const ttl = foundCount && result.citationCount! > 0 && result.venue ? 24 * 60 * 60_000 : 15 * 60_000;
+    writePaperRecord(projectId, entry.key, { referenceMetadata: { version: 3, fingerprint: hash, value: result, retryAt: Date.now() + ttl } });
     return result;
   })();
   inFlight.set(key, work);

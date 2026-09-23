@@ -21,7 +21,8 @@ beforeAll(async () => {
     return new Response("{}", { status: 404 });
   }));
   ({ app } = await import("../src/index.js"));
-  token = (await (await fetch(`${base}/api/bootstrap`)).json()).token;
+  const bootstrap = await (await fetch(`${base}/api/bootstrap`)).json() as { token: string };
+  token = bootstrap.token;
   const config = await import("../src/config.js");
   id = config.addProject({ name: "References", kind: "local", gitUrl: "" }).id;
   const dir = config.projectDir(id);
@@ -37,11 +38,11 @@ afterAll(async () => {
 const get = (path: string) => fetch(`${base}/api/projects/${id}/refs${path}`, { headers: { Authorization: `Bearer ${token}` } });
 
 it("loads local venue first, then persists enriched metadata into the reference list", async () => {
-  let list = await (await get("")).json();
+  let list = await (await get("")).json() as { entries: unknown[] };
   expect(list.entries[0]).toMatchObject({ metadata: { venue: "GraphConf" }, metadataNeedsRefresh: true });
   const details = await (await get("/alpha/metadata?file=refs.bib")).json();
   expect(details).toMatchObject({ raw: bib, metadata: { citationCount: 21, citationSource: "Semantic Scholar", venue: "GraphConf", conferenceRanking: { rank: "B", edition: "ICORE2026" } } });
-  list = await (await get("")).json();
+  list = await (await get("")).json() as { entries: unknown[] };
   expect(list.entries[0]).toMatchObject({ metadata: { citationCount: 21 }, metadataNeedsRefresh: false });
 });
 it("requires authentication and rejects unknown references and wrong bibliography files", async () => {

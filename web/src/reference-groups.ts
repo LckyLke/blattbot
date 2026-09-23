@@ -1,11 +1,51 @@
-import type { RefEntry } from "./api";
+import type { RefEntry } from "./api.js";
+
+export const REFERENCE_SORTS = [
+  ["original", "Bibliography order"],
+  ["citations-desc", "Most citations"],
+  ["citations-asc", "Fewest citations"],
+  ["year-desc", "Newest first"],
+  ["year-asc", "Oldest first"],
+  ["title", "Title A–Z"],
+  ["author", "Author A–Z"],
+  ["usage", "Most used here"],
+] as const;
+export type ReferenceSort = typeof REFERENCE_SORTS[number][0];
+
+/** Missing values sort last in both directions; ties retain bibliography order. */
+export function sortReferences(entries: RefEntry[], mode: ReferenceSort): RefEntry[] {
+  if (mode === "original") return entries;
+  const value = (entry: RefEntry): string | number | undefined => {
+    switch (mode) {
+      case "citations-desc": case "citations-asc": {
+        const count = entry.metadata?.citationCount;
+        return typeof count === "number" && Number.isFinite(count) && count >= 0 ? count : undefined;
+      }
+      case "year-desc": case "year-asc": {
+        const year = entry.year?.replace(/[{}]/g, "").trim();
+        return year && /^\d{4}$/.test(year) ? Number(year) : undefined;
+      }
+      case "title": return entry.title?.replace(/[{}]/g, "").trim() || undefined;
+      case "author": return referenceAuthors(entry.author)[0]?.label;
+      case "usage": return entry.usage.reduce((total, site) => total + site.count, 0);
+    }
+  };
+  const descending = mode.endsWith("-desc") || mode === "usage";
+  return entries.map((entry, index) => ({ entry, index, value: value(entry) })).sort((a, b) => {
+    if (a.value === undefined) return b.value === undefined ? a.index - b.index : 1;
+    if (b.value === undefined) return -1;
+    const order = typeof a.value === "number" && typeof b.value === "number"
+      ? a.value - b.value : String(a.value).localeCompare(String(b.value), undefined, { sensitivity: "base", numeric: true });
+    return (descending ? -order : order) || a.index - b.index;
+  }).map(item => item.entry);
+}
 
 export const REFERENCE_GROUPINGS = [
   ["none", "No grouping"],
   ["authors", "Shared authors"],
   ["year", "Publication year"],
   ["venue", "Conference / journal"],
-  ["rank", "Conference ranking (CORE)"],
+  ["rank", "CORE ranking"],
   ["usage", "Cited / unused"],
   ["type", "Publication type"],
   ["file", "Bibliography file"],

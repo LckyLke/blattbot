@@ -36,6 +36,8 @@ export const createJobSchema = z.object({
   keys: z.array(z.string().min(1).max(1000)).min(1).max(2000).optional(),
   context: z.array(z.string().max(4000)).max(30).default([]),
 });
+/** Only library indexing remains exposed through Research UI and model tools. */
+export const createLibraryJobSchema = createJobSchema.extend({ kind: z.literal("library-index") });
 export const listResearchJobs = (id: string) =>
   readStore<ResearchJob[]>(id, "jobs", []);
 type Runner = (
@@ -100,7 +102,7 @@ export class ResearchJobs {
     for (const p of listProjects()) {
       for (const job of listResearchJobs(p.id)) {
         for (const item of job.items) if (item.rateLimited) this.cooldownUntil = Math.max(this.cooldownUntil, item.retryAt ?? 0);
-        if (job.automatic && job.state === "paused" && /restart|Server stopped/.test(job.message ?? "")) this.control(p.id, job.id, "resume");
+        if (job.kind === "library-index" && job.automatic && job.state === "paused" && /restart|Server stopped/.test(job.message ?? "")) this.control(p.id, job.id, "resume");
       }
     }
     if (autoIndex) this.scanLibraries();

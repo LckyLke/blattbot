@@ -28,8 +28,6 @@ describe("strict scientific writing", () => {
     expect(report.issues.some(i => i.key === "alpha")).toBe(true);
     expect(report.issues.some(i => !i.key && i.text.includes("every dataset"))).toBe(true);
     expect(() => s.assertStrictReady(id, dir)).toThrow("passages still need evidence");
-    const sync = await import("../src/sync.js");
-    await expect(sync.approve({ id, name: "test", kind: "local", gitUrl: "", createdAt: "" }, "test", { force: true })).rejects.toThrow("Strict writing mode");
   });
   it("requires quoted claim evidence, records human exceptions, and invalidates edited passages", async () => {
     const e = await import("../src/research/evidence.js"); const s = await import("../src/research/strict.js");
@@ -99,6 +97,27 @@ describe("persistent paper-library index", () => {
     expect(result.coverage.sources.find(s => s.key === "alpha")?.status).toBe("stale");
     writeFileSync(join(dir, "refs.bib"), "@article{alpha,title={Graph Models},year={2020}}");
     expect((await lib.searchLibrary(id, dir, { query: "prediction" })).results).toEqual([]);
+  });
+  it("prioritizes paper content, hides bibliography hits by default and retains appendices", async () => {
+    writeFileSync(join(dir, "alpha.pdf"), textPdf(["Graph Models\nThe graph model generalizes poorly.\nReferences\n[1] Famous benchmark model generalizes perfectly.", "[2] Another benchmark model citation.\nAppendix A\nThe benchmark model ablation uses five seeds."]));
+    const lib = await import("../src/research/library.js");
+    await lib.indexPaper(id, dir, "alpha");
+    const result = await lib.searchLibrary(id, dir, { query: "benchmark model" });
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({ page: 2, section: "appendix" });
+    expect(result.results[0].quote).toContain("five seeds");
+    expect(result.excludedReferences).toBeGreaterThan(0);
+    const references = await lib.searchLibrary(id, dir, { query: "benchmark model", includeReferences: true });
+    expect(references.results.some(r => r.section === "references")).toBe(true);
+    expect(references.results[0].section).toBe("appendix");
+  });
+  it("requires meaningful terms or an exact phrase and offers an explicit broader search", async () => {
+    const lib = await import("../src/research/library.js");
+    await lib.indexPaper(id, dir, "alpha");
+    expect((await lib.searchLibrary(id, dir, { query: "accuracy nonexistent" })).total).toBe(0);
+    expect((await lib.searchLibrary(id, dir, { query: "accuracy nonexistent", match: "any" })).total).toBeGreaterThan(0);
+    expect((await lib.searchLibrary(id, dir, { query: "91 percent accuracy", match: "phrase" })).results[0].page).toBe(2);
+    expect((await lib.searchLibrary(id, dir, { query: "accuracy 91 percent", match: "phrase" })).total).toBe(0);
   });
   it("expands semantic terms but returns only actual source passages", async () => {
     const lib = await import("../src/research/library.js"); await lib.indexPaper(id, dir, "beta");

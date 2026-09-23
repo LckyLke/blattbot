@@ -62,31 +62,26 @@ describe("research HTTP workspace", () => {
     const res = await call("");
     expect(res.status).toBe(200);
     const data = (await res.json()) as any;
-    expect(data.evidence).toHaveLength(1);
-    expect(data.bibliography.entries).toBe(1);
-    expect(data.memory.revision).toBe(0);
+    expect(data.library.sources).toHaveLength(1);
+    expect(data.jobs).toBeDefined();
+    expect(data.evidence).toBeUndefined();
+    expect(data.memory).toBeUndefined();
   });
-  it("persists user-approved memory, rejects invalid schemas and stale saves", async () => {
-    const { memory } = (await (await call("")).json()) as any;
-    const res = await call(
-      "/memory",
-      {
-        fields: {
-          ...memory.fields,
-          question: "Why do graph models generalize?",
-        },
-        revision: 0,
-      },
-      "PUT",
-    );
-    expect(res.status).toBe(200);
-    expect(
-      (await call("/memory", { fields: memory.fields, revision: 0 }, "PUT"))
-        .status,
-    ).toBe(422);
-    expect((await call("/memory", { fields: {} }, "PUT")).status).toBe(400);
-    const { memory: saved } = (await (await call("")).json()) as any;
-    expect(saved.fields.question).toContain("generalize");
+  it("removes retired Research routes and limits public jobs to library indexing", async () => {
+    for (const path of ["/memory", "/policy", "/evidence/verify", "/matrix/analyze", "/outline", "/review", "/search", "/screen", "/zotero", "/evaluation/review"]) {
+      expect((await call(path, {})).status).toBe(404);
+    }
+    expect((await call("/jobs", { kind: "evidence" })).status).toBe(400);
+    expect((await call("/jobs", { kind: "matrix" })).status).toBe(400);
+  });
+  it("saves and archives reading notes with optimistic revisions", async () => {
+    const created = await call("/notes", { key: "alpha", text: "My reading note", page: 1 });
+    expect(created.status).toBe(200);
+    const note = await created.json() as { id: string; revision: number };
+    expect((await (await call("/notes?key=alpha")).json() as unknown[])).toHaveLength(1);
+    expect((await call("/notes", { ...note, key: "alpha", revision: 0, text: "Old note" })).status).toBe(422);
+    expect((await call("/notes/archive", { ...note, archived: true })).status).toBe(200);
+    expect((await (await call("/notes?key=alpha")).json() as unknown[])).toHaveLength(0);
   });
   it("exposes source pages and bounds graph queries without invoking a model", async () => {
     const source = (await (await call("/source/alpha/1")).json()) as any;
@@ -101,24 +96,11 @@ describe("research HTTP workspace", () => {
       (await call("/graph/query", { query: "missing", limit: 9000 })).status,
     ).toBe(400);
     const writing = await call("/writing-prompt");
-    expect(writing.status).toBe(200);
-    expect(((await writing.json()) as { prompt: string }).prompt).toContain("normal editable Proof diff");
+    expect(writing.status).toBe(404);
   });
   it("never returns Zotero secrets and denies reading them as attached context", async () => {
-    expect(
-      (
-        await call(
-          "/zotero",
-          {
-            mode: "web",
-            libraryType: "users",
-            libraryId: "123",
-            apiKey: "private-zotero-secret",
-          },
-          "PUT",
-        )
-      ).status,
-    ).toBe(200);
+    const { configureZotero } = await import("../src/research/zotero.js");
+    configureZotero(id, { mode: "web", libraryType: "users", libraryId: "123", apiKey: "private-zotero-secret" });
     const text = await (await call("")).text();
     expect(text).not.toContain("private-zotero-secret");
     const read = (await (

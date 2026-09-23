@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
 import { api } from "../api";
 import type { CitationGraph as Graph, GraphNode } from "../research";
 import CitationGraphCanvas, { type GraphCamera } from "./CitationGraphCanvas";
-import { graphNeighborhood, searchGraph } from "./graph-model";
+import { graphNeighborhood, searchGraph, paperSearchScore } from "./graph-model";
 import "./citation-graph.css";
 import PaperSignals from "./PaperSignals";
 import GraphSplitPane from "./GraphSplitPane";
@@ -20,6 +20,9 @@ interface Props {
   busy: boolean;
   stamp: number;
   onJump: (file: string, line: number) => void;
+  initialKey?: string;
+  onOpenLibrary?: (key: string) => void;
+  onRead?: (key: string) => void;
 }
 interface QueryResult {
   results?: (GraphNode | { node: GraphNode; citedBy?: GraphNode[] })[];
@@ -35,6 +38,9 @@ export default function CitationGraph({
   busy,
   stamp,
   onJump,
+  initialKey,
+  onOpenLibrary,
+  onRead,
 }: Props) {
   const [graph, setGraph] = useState<Graph>();
   const [error, setError] = useState("");
@@ -138,6 +144,11 @@ export default function CitationGraph({
         setLastQuery(body);
       }
     });
+  useEffect(() => {
+    if (!initialKey || !graph) return;
+    const source = graph.nodes.find(n => n.keys.includes(initialKey));
+    if (source) setSelected(source.id);
+  }, [initialKey, !!graph]);
   const [fullscreen, setFullscreen] = useState(false);
   const [mode, setMode] = useState<GraphLayout>("network");
   const [layoutRevision, setLayoutRevision] = useState(0);
@@ -259,6 +270,7 @@ export default function CitationGraph({
         .filter((n) => visible.has(n.id))
         .sort(
           (a, b) =>
+            (filter.trim() ? paperSearchScore(b, filter) - paperSearchScore(a, filter) : 0) ||
             (sort === "relevance"
               ? (b.relevance?.score ?? -1) - (a.relevance?.score ?? -1)
               : sort === "impact"
@@ -370,12 +382,12 @@ export default function CitationGraph({
     >
       <header className="cg-heading">
         <div>
-          <span className="cg-eyebrow">RESEARCH EXPLORER</span>
+          <span className="cg-eyebrow">EXPLORE YOUR SOURCES</span>
           <h3>Citation graph</h3>
           <p>
             {projects.length} project papers <span>·</span>{" "}
             {graph ? graph.nodes.length - projects.length : 0} external{" "}
-            <span>·</span> {graph?.edges.length ?? 0} citations
+            <span>·</span> {graph?.edges.length ?? 0} loaded connections
           </p>
         </div>
         <button
@@ -406,7 +418,7 @@ export default function CitationGraph({
         <div className="research-graph-empty">
           <h3>Your sources connect here</h3>
           <p>
-            Add papers in References or Discover. The graph builds
+            Add papers in References. The graph builds
             automatically.
           </p>
         </div>
@@ -497,11 +509,12 @@ export default function CitationGraph({
                 value={mode}
                 onChange={(e) => setMode(e.target.value as typeof mode)}
               >
-                <option value="network">ForceAtlas2 · Network</option>
-                <option value="clusters">ForceAtlas2 · Clusters</option>
-                <option value="radial">Concentric · Hubs</option>
-                <option value="timeline">Timeline · Year</option>
+                <option value="network">Network</option>
+                <option value="clusters">Clusters</option>
+                <option value="radial">Hubs</option>
+                <option value="timeline">Timeline</option>
               </select>
+              <details className="cg-view-options"><summary>View options</summary><div>
               <input
                 type="number"
                 min="1000"
@@ -526,6 +539,7 @@ export default function CitationGraph({
               >
                 Export JSON ↓
               </button>
+              </div></details>
             </div>
           </div>
           <GraphSplitPane>
@@ -570,8 +584,8 @@ export default function CitationGraph({
                     : mode === "radial"
                       ? " · Most connected papers at the center"
                       : mode === "clusters"
-                        ? " · ForceAtlas2 with stronger cluster separation"
-                        : " · ForceAtlas2 network"}
+                        ? " · Grouped by connections"
+                        : " · Citation network"}
                 </span>
                 <div>
                   <button
@@ -658,6 +672,10 @@ export default function CitationGraph({
                   {node.sourceAvailability && <span className={`cg-availability ${node.sourceAvailability}`}>
                     <i aria-hidden="true" />{node.sourceAvailability === "indexed" ? "Full text indexed" : node.sourceAvailability === "abstract" ? "Abstract indexed" : node.sourceAvailability === "stale" ? "Library index needs updating" : "Not indexed in your library"}
                   </span>}
+                  {node.inProject && <div className="cg-reading-actions">
+                    {onRead && <button className="research-primary" onClick={() => { setFullscreen(false); onRead(node.keys[0]); }}>Read & take notes</button>}
+                    {onOpenLibrary && <button onClick={() => { setFullscreen(false); onOpenLibrary(node.keys[0]); }}>Search this source</button>}
+                  </div>}
                   <button
                     type="button"
                     className="cg-draft-summary"
@@ -747,6 +765,11 @@ export default function CitationGraph({
                     </div>
 
                     <div className="cg-detail-actions">
+                      {node.sourceUrl && /^https?:\/\//i.test(node.sourceUrl) && (
+                        <a href={node.sourceUrl} target="_blank" rel="noreferrer">
+                          Original source ↗
+                        </a>
+                      )}
                       {node.doi && (
                         <a
                           href={`https://doi.org/${encodeURIComponent(node.doi)}`}
@@ -1012,7 +1035,6 @@ export default function CitationGraph({
                       }}
                     >
                       <option value="project">Project papers first</option>
-                      <option value="relevance">Topic match</option>
                       <option value="impact">
                         Field-normalized citation impact
                       </option>
@@ -1020,11 +1042,6 @@ export default function CitationGraph({
                       <option value="recent">Newest first</option>
                     </select>
                   </label>
-                  {sort === "relevance" && !graph.researchQuestion && (
-                    <p className="research-meta">
-                      Set a research question in Memory first.
-                    </p>
-                  )}
                   {sort === "impact" && (
                     <p className="research-meta">
                       {
@@ -1214,11 +1231,38 @@ export default function CitationGraph({
                   {gaps.length === 1 ? "lookup needs" : "lookups need"}{" "}
                   attention
                 </summary>
-                {gaps.map(([key, message]) => (
-                  <p key={key}>
-                    <strong>{key}</strong> · {message}
-                  </p>
-                ))}
+                <p className="research-meta">
+                  Missing citation connections do not make a reference invalid.
+                  Open the original source to read it, or inspect the entry to
+                  check its title and identifiers. Retrying helps after a
+                  correction or an index update.
+                </p>
+                {gaps.map(([key, message]) => {
+                  const source = graph.nodes.find(n => n.keys.includes(key) || n.id === key);
+                  return (
+                    <div key={key} className="cg-lookup-gap">
+                      <strong>{key}</strong>
+                      <p>{message}</p>
+                      {source && (
+                        <div className="cg-detail-actions">
+                          <button type="button" onClick={() => { pick(source); setDetailTab("overview"); }}>
+                            Inspect entry
+                          </button>
+                          {source.sourceUrl && /^https?:\/\//i.test(source.sourceUrl) && (
+                            <a href={source.sourceUrl} target="_blank" rel="noreferrer">
+                              Original source ↗
+                            </a>
+                          )}
+                          {!source.sourceUrl && source.doi && (
+                            <a href={`https://doi.org/${encodeURIComponent(source.doi)}`} target="_blank" rel="noreferrer">
+                              Publisher record ↗
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 <button
                   type="button"
                   disabled={

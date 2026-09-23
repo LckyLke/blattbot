@@ -1,4 +1,4 @@
-import { appUrl } from "./urls";
+import { appUrl } from "./urls.js";
 export interface Project {
   id: string;
   name: string;
@@ -412,8 +412,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
-      const body = await res.json();
-      if (body?.error) message = body.error;
+      const body: unknown = await res.json();
+      if (body && typeof body === "object" && "error" in body && typeof body.error === "string") message = body.error;
     } catch {
       /* not json */
     }

@@ -190,6 +190,46 @@ We build on \cite{alpha}.
       ).results,
     ).toEqual([]);
   });
+  it("resolves arXiv entries by their version-independent DOI before searching", async () => {
+    const { openAlexWork } = await import("../src/research/discovery.js");
+    writeFileSync(join(dir, "refs.bib"), "@misc{xin,title={Geometric Structural Knowledge Graph Foundation Model},eprint={2512.22931v2},archiveprefix={arXiv},year={2025}}");
+    vi.mocked(fetch).mockResolvedValue(json({
+      ...works.W1,
+      display_name: "Geometric Structural Knowledge Graph Foundation Model",
+      doi: "https://doi.org/10.48550/arxiv.2512.22931",
+    }));
+    await openAlexWork(dir, "xin");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(decodeURIComponent(String(vi.mocked(fetch).mock.calls[0][0])))
+      .toBe("https://api.openalex.org/works/https://doi.org/10.48550/arxiv.2512.22931");
+  });
+  it("matches shortened book records without indexed editors using DOI, year and type", async () => {
+    const { openAlexWork } = await import("../src/research/discovery.js");
+    writeFileSync(join(dir, "refs.bib"), "@book{handbook,title={The Description Logic Handbook: Theory, Implementation and Applications},editor={Baader, Franz},year={2007},doi={10.1017/cbo9780511711787}}");
+    const book = { id: "https://openalex.org/W1555563750", display_name: "The Description Logic Handbook", doi: "https://doi.org/10.1017/cbo9780511711787", publication_year: 2007, type: "book", authorships: [] };
+    vi.mocked(fetch).mockResolvedValue(json(book));
+    expect((await openAlexWork(dir, "handbook")).id).toBe(book.id);
+    for (const mismatch of [{ doi: "https://doi.org/10.1234/wrong" }, { publication_year: 2003 }, { type: "book-review" }, { authorships: [{ author: { display_name: "Someone Else" } }] }]) {
+      vi.mocked(fetch).mockResolvedValue(json({ ...book, ...mismatch }));
+      await expect(openAlexWork(dir, "handbook")).rejects.toThrow("reliably");
+    }
+    vi.mocked(fetch).mockResolvedValue(json({ ...book, authorships: [{ author: { display_name: "Franz Baader" } }] }));
+    expect((await openAlexWork(dir, "handbook")).id).toBe(book.id);
+  });
+  it("searches a clean title phrase and distinguishes unindexed standards from invalid references", async () => {
+    const { openAlexWork } = await import("../src/research/discovery.js");
+    const { buildGraph } = await import("../src/research/graph.js");
+    writeFileSync(join(dir, "refs.bib"), "@techreport{rdf,title={{RDF} 1.1 Concepts and Abstract Syntax},year={2014},url={https://www.w3.org/TR/rdf11-concepts/}}");
+    vi.mocked(fetch).mockImplementation(async () => json({ results: [works.W1] }));
+    await expect(openAlexWork(dir, "rdf")).rejects.toThrow("This does not mean the reference is invalid");
+    const query = new URL(String(vi.mocked(fetch).mock.calls[0][0]));
+    expect(query.searchParams.get("search")).toBe('"RDF 1.1 Concepts and Abstract Syntax"');
+    const graph = await buildGraph("p1", dir);
+    expect(graph.nodes[0]).toMatchObject({ sourceUrl: "https://www.w3.org/TR/rdf11-concepts/", resolved: false });
+    expect(graph.edges).toEqual([]);
+    expect(graph.errors.rdf).toContain("resolve this W3C standard reliably");
+    expect(graph.failures?.rdf.kind).toBe("unresolved");
+  });
   it("finds common references, ranks missing works, and paginates without a model", async () => {
     const g = await import("../src/research/graph.js");
     await g.buildGraph("p1", dir);
@@ -296,11 +336,11 @@ We build on \cite{alpha}.
       expect.arrayContaining([
         "query_citation_graph",
         "update_citation_graph",
-        "check_bibliography",
-        "verify_evidence",
-        "project_memory",
+        "search_library",
+        "library_index",
       ]),
     );
+    for (const removed of ["list_evidence", "verify_evidence", "strict_evidence_report", "project_memory", "literature_matrix", "review_manuscript", "explore_citations", "check_publication_status", "research_tasks", "check_bibliography", "search_paper_content"]) expect(names).not.toContain(removed);
     const g = await import("../src/research/graph.js");
     await g.buildGraph("p1", dir);
     const result = await executeTool(
@@ -514,7 +554,7 @@ describe("Zotero read-only import", () => {
           ]);
         if (u.endsWith("/file"))
           return new Response(
-            textPdf(["Graph Models. The imported original PDF."]),
+            new Uint8Array(textPdf(["Graph Models. The imported original PDF."])),
           );
         return json({ version: 7 });
       }),

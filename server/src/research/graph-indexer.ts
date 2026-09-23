@@ -193,7 +193,7 @@ export class GraphIndexer {
           : reason === "rate_limit"
             ? "OpenAlex is limiting requests. The provider’s retry time is respected."
             : reason === "unresolved"
-              ? "Some bibliography entries could not be matched reliably. Check their titles and DOIs; they may be absent from OpenAlex."
+              ? "Citation connections are unavailable for some sources. They may be absent from OpenAlex; this does not mean the references are invalid. See the source links below."
               : metadataPending
                 ? "Connections are saved. Some paper titles still need to be retrieved."
                 : "Some source lookups failed. See the details below.",

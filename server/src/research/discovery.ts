@@ -6,7 +6,7 @@ import {
   type PaperHit,
 } from "../citations.js";
 import { entryDoi } from "../bib.js";
-import { titlesSimilar } from "../papers.js";
+import { arxivIdFromEntry, titlesSimilar } from "../papers.js";
 import { bibHash } from "./evidence.js";
 import { now, readStore, updateStore } from "./store.js";
 import { openAlexHeaders } from "../research-providers.js";
@@ -119,7 +119,20 @@ export async function openAlexWork(
     throw new Error(
       "Duplicate citation key; resolve the bibliography ambiguity first.",
     );
-  const doi = entryDoi(entry.fields);
+  const arxiv = arxivIdFromEntry(entry)?.replace(/v\d+$/i, "");
+  const doi = entryDoi(entry.fields) ?? (arxiv ? `10.48550/arxiv.${arxiv}` : undefined);
+  const matches = (work: any) =>
+    matchesOpenAlexIdentity(work, entry.fields, doi, entry.type);
+  const search = async () => {
+    // Phrase searches avoid highly cited papers merely discussing this title.
+    const title = (entry.fields.title ?? key).replace(/[{}"\\]/g, "").trim();
+    const results = await fetchJson(
+      `https://api.openalex.org/works?search=${encodeURIComponent(`"${title}"`)}&per-page=20`,
+      {},
+      signal,
+    );
+    return results.results?.find(matches);
+  };
   let data;
   try {
     data = doi
@@ -128,41 +141,38 @@ export async function openAlexWork(
           {},
           signal,
         )
-      : (
-          await fetchJson(
-            `https://api.openalex.org/works?search=${encodeURIComponent(entry.fields.title ?? key)}&per-page=5`,
-            {},
-            signal,
-          )
-        ).results?.find((work: any) =>
-          titlesSimilar(work.display_name ?? "", entry.fields.title ?? ""),
-        );
+      : await search();
   } catch (error) {
     if (!doi || !(error instanceof SourceServiceError) || error.status !== 404)
       throw error;
-    const matches = await fetchJson(
-      `https://api.openalex.org/works?search=${encodeURIComponent(entry.fields.title ?? key)}&per-page=5`,
-      {},
-      signal,
-    );
-    data = matches.results?.find((work: any) =>
-      titlesSimilar(work.display_name ?? "", entry.fields.title ?? ""),
+    data = await search();
+  }
+  if (!data?.id || !matches(data)) {
+    const w3c = /^https?:\/\/(?:www\.)?w3\.org\/TR\//i.test(entry.fields.url ?? "");
+    throw new Error(
+      w3c
+        ? "OpenAlex could not resolve this W3C standard reliably. Use its official source page; citation connections are unavailable. This does not mean the reference is invalid."
+        : "OpenAlex could not resolve this bibliography entry reliably. Check its title and identifiers; it may be missing from the index. You can still use the original source.",
     );
   }
-  if (!data?.id || !matchesOpenAlexIdentity(data, entry.fields, doi))
-    throw new Error(
-      "OpenAlex could not resolve this bibliography entry reliably",
-    );
   return data;
 }
 function matchesOpenAlexIdentity(
   work: any,
   fields: Record<string, string>,
   doi?: string,
+  entryType?: string,
 ) {
+  const book = entryType?.toLowerCase() === "book";
+  // A book review or another edition must not replace the cited book.
+  if (book && work.type && work.type !== "book") return false;
+  if (book && fields.year && work.publication_year &&
+      Math.abs(Number(fields.year) - work.publication_year) > 1) return false;
   if (titlesSimilar(work.display_name ?? "", fields.title ?? "")) return true;
   // Some OpenAlex DOI records omit a subtitle (e.g. "Yago"). Accept a
   // matching main title only when DOI, publication year and author agree too.
+  // Book records can omit all editors: exact DOI + main title + year + book
+  // type still identifies the volume. Conflicting indexed authors reject it.
   const normalize = (text: string) =>
     text
       .normalize("NFD")
@@ -177,7 +187,7 @@ function matchesOpenAlexIdentity(
     work.doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "").toLowerCase() ===
       doi?.toLowerCase();
   const year = Number(fields.year);
-  const families = (fields.author ?? "")
+  const families = (fields.author || fields.editor || "")
     .split(/\s+and\s+/)
     .map((name) =>
       normalize(
@@ -200,7 +210,7 @@ function matchesOpenAlexIdentity(
     Number.isFinite(year) &&
     year > 1000 &&
     Math.abs(work.publication_year - year) <= 1 &&
-    authorMatch
+    (authorMatch || (book && work.type === "book" && !work.authorships?.length))
   );
 }
 function openAlexHit(work: any): PaperHit {

@@ -1,3 +1,4 @@
+import { LIBRARY_INDEX_VERSION, paperChunks, passageWindow, searchTerms, words, type PaperChunk } from "./library-text.js";
 /** Persistent, page-aware inverted index of the project's readable paper text. */
 import {
   existsSync,
@@ -29,21 +30,17 @@ import {
   saveStore,
   type ModelCall,
 } from "./store.js";
-interface Chunk {
-  page: number;
-  start: number;
-  text: string;
-  length: number;
-}
 interface IndexedPaper {
+  version: number;
   source: SourceVersion;
   title: string;
   at: string;
   limitations: string[];
-  chunks: Chunk[];
+  chunks: PaperChunk[];
   terms: Record<string, [number, number][]>;
 }
 interface Entry {
+  version?: number;
   source: SourceVersion;
   title: string;
   at: string;
@@ -52,12 +49,6 @@ interface Entry {
   emptyPages: number[];
   limitations: string[];
 }
-const words = (text: string) =>
-  text
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/(\p{L})-\s+(?=\p{Ll})/gu, "$1")
-    .match(/[\p{L}\p{N}]+/gu) ?? [];
 const file = (id: string, key: string) =>
   join(
     dirname(researchPath(id, "library")),
@@ -77,6 +68,7 @@ export function libraryStatus(id: string, dir: string) {
     const item = saved[entry.key];
     const current =
       !!item &&
+      item.version === LIBRARY_INDEX_VERSION &&
       existsSync(file(id, entry.key)) &&
       sourceCurrent(id, dir, item.source) &&
       !(item.source.basis !== "full_text" && (() => {
@@ -118,26 +110,12 @@ export async function indexPaper(id: string, dir: string, key: string) {
   if (content.basis === "none")
     throw new Error(content.limitations.join(" ") || "No readable source");
   const source = sourceVersion(id, dir, content);
-  const chunks: Chunk[] = [];
+  const chunks = paperChunks(content.pages);
   const terms: Record<string, [number, number][]> = Object.create(null);
-  content.pages.forEach((page, p) => {
-    for (let start = 0; start < page.length; ) {
-      let end = Math.min(page.length, start + 1400);
-      if (end < page.length) {
-        const space = page.lastIndexOf(" ", end);
-        if (space > start + 700) end = space;
-      }
-      const text = page.slice(start, end);
-      const tokens = words(text);
-      const idx = chunks.length;
-      chunks.push({ page: p + 1, start, text, length: tokens.length });
-      const counts = new Map<string, number>();
-      for (const term of tokens) counts.set(term, (counts.get(term) ?? 0) + 1);
-      for (const [term, count] of counts)
-        (terms[term] ??= []).push([idx, count]);
-      if (end >= page.length) break;
-      start = Math.max(start + 1, end - 180);
-    }
+  chunks.forEach((chunk, idx) => {
+    const counts = new Map<string, number>();
+    for (const term of words(chunk.text)) counts.set(term, (counts.get(term) ?? 0) + 1);
+    for (const [term, count] of counts) (terms[term] ??= []).push([idx, count]);
   });
   if (!sourceCurrent(id, dir, source))
     throw new Error("Source changed while indexing; retry.");
@@ -146,6 +124,7 @@ export async function indexPaper(id: string, dir: string, key: string) {
   mkdirSync(dirname(path), { recursive: true });
   const at = now();
   const record: IndexedPaper = {
+    version: LIBRARY_INDEX_VERSION,
     source,
     title: content.title,
     at,
@@ -157,6 +136,7 @@ export async function indexPaper(id: string, dir: string, key: string) {
   writeFileSync(temp, JSON.stringify(record), { mode: 0o600 });
   renameSync(temp, path);
   const entry: Entry = {
+    version: LIBRARY_INDEX_VERSION,
     source,
     title: content.title,
     at,
@@ -173,6 +153,8 @@ export async function indexPaper(id: string, dir: string, key: string) {
 export const librarySearchSchema = z.object({
   query: z.string().trim().min(1).max(1000),
   semantic: z.boolean().default(false),
+  includeReferences: z.boolean().default(false),
+  match: z.enum(["all", "any", "phrase"]).default("all"),
   keys: z.array(z.string()).max(500).optional(),
   limit: z.number().int().min(1).max(100).default(30),
   offset: z.number().int().min(0).default(0),
@@ -197,8 +179,19 @@ export async function searchLibrary(
         ),
       );
   const status = libraryStatus(id, dir);
-  const queryTerms = [...new Set(words([args.query, ...expanded].join(" ")))];
-  const originalTerms = new Set(words(args.query));
+  const queryTerms = [...new Set(searchTerms([args.query, ...expanded].join(" ")))];
+  const originalTerms = new Set(searchTerms(args.query));
+  const matchChunk = (c: PaperChunk) => {
+    const tokens = new Set(words(c.text));
+    const matchedTerms = queryTerms.filter(term => tokens.has(term));
+    const matchedOriginal = [...originalTerms].filter(term => tokens.has(term));
+    const phrase = words(args.query).join(" ");
+    const exactPhrase = phrase.length > 0 && (` ${words(c.text).join(" ")} `).includes(` ${phrase} `);
+    const allOriginal = originalTerms.size > 0 && matchedOriginal.length === originalTerms.size;
+    const expandedMatch = expanded.some(term => { const terms = searchTerms(term); return terms.length > 0 && terms.every(t => tokens.has(t)); });
+    const matches = matchedTerms.length > 0 && (args.match === "phrase" ? exactPhrase : args.match === "any" || allOriginal || (args.semantic && expandedMatch));
+    return { matchedTerms, matchedOriginal, exactPhrase, matches };
+  };
   const papers = status.sources
     .filter(
       (s) =>
@@ -210,16 +203,17 @@ export async function searchLibrary(
       data: JSON.parse(readFileSync(file(id, s.key), "utf8")) as IndexedPaper,
     }));
   for (const paper of papers) Object.setPrototypeOf(paper.data.terms, null);
-  const count = papers.reduce((n, p) => n + p.data.chunks.length, 0);
+  const eligible = (c: PaperChunk) => args.includeReferences || c.section !== "references";
+  const count = papers.reduce((n, p) => n + p.data.chunks.filter(eligible).length, 0);
   const average =
     papers.reduce(
-      (n, p) => n + p.data.chunks.reduce((m, c) => m + c.length, 0),
+      (n, p) => n + p.data.chunks.filter(eligible).reduce((m, c) => m + c.length, 0),
       0,
     ) / Math.max(1, count);
   const df = new Map(
     queryTerms.map((term) => [
       term,
-      papers.reduce((n, p) => n + (p.data.terms[term]?.length ?? 0), 0),
+      papers.reduce((n, p) => n + (p.data.terms[term]?.filter(([i]) => eligible(p.data.chunks[i])).length ?? 0), 0),
     ]),
   );
   const results: {
@@ -230,12 +224,16 @@ export async function searchLibrary(
     quote: string;
     score: number;
     basis: string;
+    section: PaperChunk["section"];
+    matchedTerms: string[];
     source: SourceVersion;
   }[] = [];
+  let excludedReferences = 0;
   for (const { key, data } of papers) {
     const scores = new Map<number, number>();
     for (const term of queryTerms)
       for (const [index, frequency] of data.terms[term] ?? []) {
+        if (!eligible(data.chunks[index])) continue;
         const idf = Math.log(
           1 + (count - df.get(term)! + 0.5) / (df.get(term)! + 0.5),
         );
@@ -250,20 +248,30 @@ export async function searchLibrary(
           (scores.get(index) ?? 0) + score * (originalTerms.has(term) ? 2 : 1),
         );
       }
+    for (const c of data.chunks) {
+      if (c.section === "references" && matchChunk(c).matches) excludedReferences++;
+    }
     for (const [index, score] of scores) {
       const c = data.chunks[index];
+      const { matchedTerms, matchedOriginal, exactPhrase, matches } = matchChunk(c);
+      if (!matches) continue;
+      const window = passageWindow(c.text, matchedTerms);
       results.push({
         key,
         title: data.title,
         page: c.page,
-        offset: c.start,
-        quote: c.text,
-        score,
+        offset: c.start + window.start,
+        quote: window.text,
+        score: score * (1 + matchedOriginal.length / Math.max(1, originalTerms.size))
+          * (exactPhrase ? 1.8 : 1) * (c.section === "references" ? 0.15 : 1),
         basis: data.source.basis,
+        section: c.section,
+        matchedTerms,
         source: data.source,
       });
     }
   }
+
   results.sort(
     (a, b) =>
       b.score - a.score ||
@@ -272,13 +280,14 @@ export async function searchLibrary(
       a.offset - b.offset,
   );
   // Overlapping chunks are one passage, not separate evidence votes.
-  const seen = new Map<string, number[]>();
+  const seen = new Map<string, [number, number][]>();
   const distinct = results.filter((r) => {
-    const key = `${r.key}:${r.page}`;
+    const key = `${r.key}:${r.page}:${r.section}`;
     const offsets = seen.get(key) ?? [];
-    if (offsets.some((offset) => Math.abs(offset - r.offset) < 1250))
+    const end = r.offset + r.quote.length;
+    if (offsets.some(([start, stop]) => Math.min(end, stop) - Math.max(r.offset, start) > Math.min(r.quote.length, stop - start) / 2))
       return false;
-    offsets.push(r.offset);
+    offsets.push([r.offset, end]);
     seen.set(key, offsets);
     return true;
   });
@@ -292,6 +301,8 @@ export async function searchLibrary(
         ? args.offset + args.limit
         : undefined,
     coverage: status,
-    note: "Full extracted text is indexed with page locations. Ranking measures term relevance, not support or contradiction. Semantic mode expands terms; inspect the quoted context. Unindexed, stale, abstract-only and unreadable pages remain coverage gaps.",
+    sourceCount: new Set(distinct.map(r => r.key)).size,
+    excludedReferences: args.includeReferences ? 0 : excludedReferences,
+    note: "Passages are verbatim extracts. Detected bibliography sections are excluded by default; section detection can miss unusual layouts. Matches indicate relevance, not support for a claim.",
   };
 }

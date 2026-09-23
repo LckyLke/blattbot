@@ -25,7 +25,20 @@ function providers(s2: unknown, oa: unknown, s2Status = 200) {
 }
 
 describe("reference metadata", () => {
-  it("shows bibliography venue without network access and preserves actual zero citations", async () => {
+  it("cross-checks an indexed zero and attributes a positive fallback count to its actual source", async () => {
+    providers({ title: "Graph Models", citationCount: 0 }, { display_name: "Graph Models", cited_by_count: 7, id: "https://openalex.org/W1" });
+    const { getReferenceMetadata } = await import("../src/reference-metadata.js");
+    expect(await getReferenceMetadata("p", entry("booktitle={GraphConf}"))).toMatchObject({ citationCount: 7, citationSource: "OpenAlex", citationUrl: "https://openalex.org/W1" });
+  });
+  it("keeps zero scoped to the preferred index if both indexes report zero, and retries sooner", async () => {
+    providers({ title: "Graph Models", citationCount: 0 }, { display_name: "Graph Models", cited_by_count: 0 });
+    const { getReferenceMetadata } = await import("../src/reference-metadata.js");
+    const result = await getReferenceMetadata("p", entry("booktitle={GraphConf}"));
+    expect(result).toMatchObject({ citationCount: 0, citationSource: "Semantic Scholar" });
+    const { readPaperStore } = await import("../src/papers.js");
+    expect(readPaperStore("p").alpha.referenceMetadata!.retryAt - Date.now()).toBeLessThanOrEqual(15 * 60_000);
+  });
+  it("shows bibliography venue without network access and preserves an indexed zero when the fallback has no record", async () => {
     const fetcher = providers({ title: "Graph Models", citationCount: 0, publicationVenue: { name: "Another conference", type: "conference" } }, null);
     const { cachedReferenceMetadata, getReferenceMetadata } = await import("../src/reference-metadata.js");
     const bib = entry("booktitle={The {Graph} Conference}");
@@ -33,10 +46,10 @@ describe("reference metadata", () => {
     expect(fetcher).not.toHaveBeenCalled();
     const result = await getReferenceMetadata("p", bib);
     expect(result).toMatchObject({ citationCount: 0, citationSource: "Semantic Scholar", venue: "The Graph Conference" });
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(3);
     expect(String(fetcher.mock.calls[0][0])).toContain("publicationVenue");
     expect(await getReferenceMetadata("p", bib)).toEqual(result);
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
   it("falls back on rate limits and takes the published venue instead of an arXiv location", async () => {

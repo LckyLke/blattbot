@@ -7,8 +7,7 @@ import { fetchJson, openAlexWork } from "./discovery.js";
 import { digest, now, readStore, updateStore } from "./store.js";
 import { sourceFailure, type SourceFailure } from "./source-failure.js";
 
-import { readMemory } from "./memory.js";
-import { topicRelevance, type TopicRelevance } from "./relevance.js";
+import { type TopicRelevance } from "./relevance.js";
 import { collectCitationLocations, type CitationLocation } from "../usage.js";
 import { libraryStatus } from "./library.js";
 
@@ -37,6 +36,7 @@ export interface GraphNode extends WorkDetails {
   year?: number;
   doi?: string;
   ref?: string;
+  sourceUrl?: string;
   inProject: boolean;
   resolved: boolean;
   referencesLoaded: boolean;
@@ -225,9 +225,9 @@ export function readGraph(id: string, dir: string): CitationGraph {
           ? Number(entry.fields.year)
           : undefined),
       authors:
-        work?.authors ??
-        (entry?.fields.author
-          ? entry.fields.author.split(/\s+and\s+/)
+        (work?.authors?.length ? work.authors : undefined) ??
+        (entry?.fields.author || entry?.fields.editor
+          ? (entry.fields.author || entry.fields.editor).split(/\s+and\s+/)
           : undefined),
       venue: work?.venue ?? entry?.fields.journal ?? entry?.fields.booktitle,
       type: work?.type,
@@ -241,6 +241,9 @@ export function readGraph(id: string, dir: string): CitationGraph {
       retrievedAt: work?.retrievedAt,
       doi,
       ref: doi || undefined,
+      sourceUrl: /^https?:\/\//i.test(entry?.fields.url ?? "")
+        ? entry!.fields.url
+        : undefined,
       inProject: keys.length > 0,
       resolved: !!work,
       referencesLoaded: !!work?.references,
@@ -257,11 +260,7 @@ export function readGraph(id: string, dir: string): CitationGraph {
       store.failures?.[key] ?? sourceFailure(message),
     ]),
   );
-  const researchQuestion = readMemory(id).fields.question;
-  const relevance = topicRelevance(nodes, researchQuestion);
-  for (const node of nodes) node.relevance = relevance.get(node.id);
   return {
-    researchQuestion,
     at: store.at,
     nodes,
     edges,

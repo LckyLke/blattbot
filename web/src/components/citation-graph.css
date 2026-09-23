@@ -937,3 +937,18 @@
 .cg-availability.indexed { color: #b4d5bc; }
 .cg-availability.indexed i { background: #a6d4b0; }
 .cg-availability.abstract i { background: #bd9b67; }
+
+.cg-lookup-gap {
+  margin: 12px 0;
+  padding: 12px;
+  border-left: 3px solid #bd9b67;
+  border-radius: 4px;
+  background: #ffffff04;
+  overflow-wrap: anywhere;
+}
+.cg-lookup-gap > p { margin: 6px 0 10px; }
+.cg-lookup-gap .cg-detail-actions { flex-wrap: wrap; }
+.cg-view-options { position: relative; font-size: 12px; }
+.cg-view-options > summary { padding: 8px; cursor: pointer; }
+.cg-view-options > div { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 0; }
+.cg-reading-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }

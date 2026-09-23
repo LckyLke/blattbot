@@ -29,12 +29,12 @@ describe("recoverable harness reads", () => {
     const body = Array.from({ length: 150 }, (_, i) => `Claim ${i}: ${"Scientific content ".repeat(70)}\\cite{${i % 2 ? "alpha" : "beta"}}.\n\n`).join("");
     writeFileSync(join(dir, "main.tex"), body);
     writeFileSync(join(dir, "refs.bib"), "@article{alpha,title={Alpha}}\n@article{beta,title={Beta}}");
-    const { executeResearchTool } = await import("../src/research/tools.js");
+    const { evidencePage, strictReportPage } = await import("../src/research/report-pages.js");
     const { saveResearchPolicy } = await import("../src/research/strict.js");
     saveResearchPolicy("p1", true);
     const ctx = { project: { id: "p1" }, dir, contextDirs: [], signal: new AbortController().signal, emit: vi.fn() } as any;
     const run = async (name: string, args = {}) => {
-      const raw = await executeResearchTool(ctx, name, args);
+      const raw = JSON.stringify(name === "list_evidence" ? evidencePage("p1", dir, args) : strictReportPage("p1", dir, args));
       expect(raw.length).toBeLessThan(40000);
       const result = JSON.parse(raw); expect(result.error).toBeUndefined(); return result;
     };

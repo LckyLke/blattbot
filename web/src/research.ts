@@ -174,6 +174,7 @@ export interface ResearchData {
   zoteroImports: Record<string, ZoteroImport>;
 }
 export interface SourcePage {
+  totalPages: number;
   key: string;
   page: number;
   title: string;
@@ -196,6 +197,7 @@ export interface GraphNode {
   year?: number;
   doi?: string;
   ref?: string;
+  sourceUrl?: string;
   inProject: boolean;
   resolved: boolean;
   referencesLoaded: boolean;

@@ -3,7 +3,8 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
+    // Tests import browser helpers; the production build keeps Node-only libs.
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,

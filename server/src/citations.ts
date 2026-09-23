@@ -271,7 +271,7 @@ export async function searchPapers(queryText: string, limit = 5): Promise<PaperH
 /** Fetch a BibTeX entry for a DOI via content negotiation, with a Crossref fallback. */
 export async function fetchBibtex(doi: string): Promise<string> {
   const clean = doi.replace(/^https?:\/\/(dx\.)?doi\.org\//, "").trim();
-  const attempts = [
+  const attempts: { url: string; headers: Record<string, string> }[] = [
     { url: `https://doi.org/${encodeURIComponent(clean).replace(/%2F/g, "/")}`, headers: { Accept: "application/x-bibtex" } },
     { url: `https://api.crossref.org/works/${encodeURIComponent(clean).replace(/%2F/g, "/")}/transform/application/x-bibtex`, headers: {} },
   ];

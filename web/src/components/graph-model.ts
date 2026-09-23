@@ -5,6 +5,15 @@ export const normalizePaperSearch = (value: string) =>
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
+/** Rank explicit titles and identifiers ahead of incidental metadata matches. */
+export function paperSearchScore(node: GraphNode, query: string) {
+  const q = normalizePaperSearch(query).trim();
+  if (!q) return 0;
+  const ids = [...node.keys, node.id, node.doi ?? ""].map(normalizePaperSearch);
+  const title = normalizePaperSearch(node.title);
+  return (ids.includes(q) ? 100 : 0) + (title === q ? 90 : title.startsWith(q) ? 60 : title.includes(q) ? 40 : 0)
+    + q.split(/\s+/).filter(t => title.includes(t)).length * 5;
+}
 export function searchGraph(nodes: GraphNode[], query: string) {
   const terms = normalizePaperSearch(query).trim().split(/\s+/).filter(Boolean);
   return nodes.filter((node) => {

@@ -1,4 +1,3 @@
-import { strictPrompt, readResearchPolicy, strictReport } from "./research/strict.js";
 /**
  * Agent turns: mode/scope/prompt assembly, model resolution, and dispatch to
  * the configured backend (Codex by default, Claude, or an OpenAI-compatible
@@ -13,7 +12,6 @@ import { loadSettings, type Settings } from "./settings.js";
 import { contextDirectories, formatContextManifest } from "./context.js";
 import { repositoryManifest } from "./repositories.js";
 import { citationPassages, unreadCitationChanges } from "./sourcecoverage.js";
-import { memoryPrompt } from "./research/memory.js";
 import { abortQuestion } from "./questions.js";
 import { claudeBackend, runOneShot as runOneShotClaude } from "./backends/claude.js";
 import { openaiBackend, runOneShotOpenai } from "./backends/openai.js";
@@ -225,7 +223,7 @@ You must not modify any files in this mode; file-editing tools are disabled. If 
     readOnly: true,
     prompt: `Mode: Check code — audit the manuscript against attached Git snapshots without editing or executing code.
 - First inspect the manuscript and enumerate claims in the requested scope. If no focus is given, prioritize the central method, training/configuration, data splits and evaluation claims.
-- Use inspect_repository to list attached repositories and pin reads to their recorded commits. If none are attached, explain how to add one under External context or Research → Checks.
+- Use inspect_repository to list attached repositories and pin reads to their recorded commits. If none are attached, explain how to add one under External context.
 - Discover entry points, search relevant symbols and counterevidence, and trace callers, active configuration, implementation and evaluation. A README statement or matching function name is not sufficient. Check whether the cited code path actually implements the described experiment. Seek differences in defaults, reductions, masks, units, datasets, preprocessing and metric aggregation.
 - For each assessable claim, use verify_code_claim with its exact manuscript quotation and relevant source ranges. Classify implementation, empirical and theoretical claims honestly. Read source ranges before submitting them. Reuse only current saved assessments from list_code_evidence.
 - Report which claims were assessed and which remain unchecked, evidence locations and commits, conflicts, and specific missing artifacts or follow-up checks. Never present a sampled review as exhaustive. Do not infer successful experiments from source or test definitions. Code assessments do not establish theoretical guarantees.
@@ -319,8 +317,6 @@ export function buildSystemAppend(
   contextDirs: string[] = contextDirectories(project),
 ): string {
   let append = SYSTEM_APPEND;
-  append += memoryPrompt(project.id);
-  append += strictPrompt(project.id);
   if (modeInfo.prompt) append += `\n\n${modeInfo.prompt}`;
   // Per-project style/instructions — directly after the mode block, clearly
   // attributed. Re-capped here in case projects.json was edited by hand.
@@ -434,10 +430,6 @@ export async function runTurn(
         try {
           if (!beforeCitations) throw new Error("initial citation snapshot unavailable");
           const unread = unreadCitationChanges(beforeCitations, citationPassages(dir), ctx.paperReads!);
-          if (readResearchPolicy(project.id).strict) {
-            const report = strictReport(project.id, dir);
-            if (report.open) onEvent({ type: "notice", tone: "warn", text: `Strict writing mode: ${report.open} passages remain open. Review their evidence and uncited assertions in Research before approval.` });
-          }
           if (unread.length) onEvent({ type: "notice", tone: "warn", text:
             `Source reading incomplete: new or changed citation passages refer to ${unread.join(", ")}, but these papers were not opened with read_paper in this turn. Their content has not been established by this turn's source-reading tools. Read the relevant papers or provide the missing PDFs/passages before relying on these claims.` });
         } catch {

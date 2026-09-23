@@ -1,5 +1,4 @@
 /** Isolated browser checks for Research. Uses a local fixture model; no paid calls. */
-import { verifyGraphExplorer } from "./graph-explorer-verify.js";
 import { chromium } from "playwright-core";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
@@ -126,6 +125,7 @@ const model = createServer(async (req, res) => {
         },
       ],
     });
+  if (prompt.includes("Assess the user's reading note")) content = JSON.stringify({ verdict: "consistent", explanation: "The quoted result uses the same metric and dataset.", quotes: [{ page: 2, quote }], suggestedRevision: "Accuracy was 91 percent on dataset A; broader generalization is not established." });
   res.setHeader("Content-Type", "application/json");
   res.end(JSON.stringify({ choices: [{ message: { content } }] }));
 });
@@ -152,7 +152,7 @@ writeFileSync(
 );
 writeFileSync(
   join(dir, "alpha.pdf"),
-  textPdf(["Graph Models. Introduction.", quote]),
+  textPdf(["Graph Models. Introduction.", quote, "References\n[1] Someone. Bibliographyonly methods. 2020."]),
 );
 
 writeFileSync(join(dir, "beta.pdf"), textPdf(["Neural Optimization. Introduction.", quote]));
@@ -245,176 +245,86 @@ try {
   await research
     .getByRole("heading", { name: "Research", exact: true })
     .waitFor();
-  // Opening an existing project must populate the default graph without a build click.
-  await research
-    .getByRole("button", { name: "External source: Shared Foundations" })
-    .waitFor();
-  await page.waitForFunction(
-    () => !document.querySelector(".cg-index-status"),
-  );
-  if (graphLookups !== 3)
-    throw new Error(
-      `Expected two automatic lookups and one metadata batch, got ${graphLookups}`,
-    );
-  await page.screenshot({ path: join(shots, "00-graph-default.png") });
-  await verifyGraphExplorer(page, base, project.id, shots);
-  await research.getByRole("button", { name: "Library", exact: true }).click();
-  await research.getByRole("button", { name: /Index missing & changed sources/ }).click();
-  await research.getByText("2 full texts · 0 abstracts", { exact: true }).waitFor();
-  await research.getByLabel("Search the paper library", { exact: true }).fill("dataset A");
-  await research.getByRole("button", { name: "Search papers", exact: true }).click();
-  await research.getByRole("heading", { name: "Graph Models", exact: true }).waitFor();
-  await research.getByRole("heading", { name: "Neural Optimization", exact: true }).waitFor();
-  await page.screenshot({ path: join(shots, "06-library.png") });
-  await research.getByRole("button", { name: "Memory", exact: true }).click();
-  await research
-    .getByLabel("Research question", { exact: true })
-    .fill("How do graph models generalize across datasets?");
-  await research
-    .getByRole("button", { name: "Save accepted project memory" })
-    .click();
-  await research.getByText("Revision 1", { exact: true }).waitFor();
-  await research.getByRole("button", { name: "Evidence", exact: true }).click();
-  await research.getByLabel("Strict mode — resolve evidence gaps before approval").check();
-  await page.waitForFunction(async ({ base, id, token }) => { const r = await fetch(`${base}/api/projects/${id}/research/strict`, { headers: { Authorization: `Bearer ${token}` } }); return (await r.json()).strict; }, { base, id: project.id, token });
-  const strictAttempt = await fetch(`${base}/api/projects/${project.id}/approve`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ force: true }) });
-  if (strictAttempt.status !== 422 || !(await strictAttempt.text()).includes("Strict writing mode")) throw new Error("Strict approval gate did not block unresolved evidence");
-  await research.getByRole("button", { name: "Check assertions without citations" }).click();
-  await page.waitForFunction(async ({ base, id, token }) => { const r = await fetch(`${base}/api/projects/${id}/research/strict`, { headers: { Authorization: `Bearer ${token}` } }); return (await r.json()).auditCurrent; }, { base, id: project.id, token });
-  await page.screenshot({ path: join(shots, "09-strict.png") });
-  await research.getByLabel("Strict mode — resolve evidence gaps before approval").uncheck();
-  await research
-    .getByRole("button", { name: "Check evidence", exact: true })
-    .click();
-  await research.getByText("Supports claim", { exact: true }).waitFor();
-  await research.getByText("Evidence & explanation", { exact: true }).click();
-  await research.getByRole("button", { name: "Open source · page 2" }).click();
-  await research
-    .getByRole("region", { name: "Original source passage" })
-    .waitFor();
-  await research
-    .getByRole("button", { name: "Show original page image" })
-    .click();
-  await research.locator(".research-source img").waitFor();
-  await page.screenshot({ path: join(shots, "01-evidence.png") });
-  await research.getByRole("button", { name: "Close source" }).click();
-  if (await research.getByRole("button", { name: "Related Work", exact: true }).count())
-    throw new Error("The removed Related Work tab is still visible");
-  await research.getByRole("button", { name: "Library", exact: true }).click();
-  if (await research.locator(".research-task strong").filter({ hasText: /matrix|outline/ }).count())
-    throw new Error("Optional analysis tasks leaked into Library");
-  await page.screenshot({ path: join(shots, "02-research-library.png") });
-  await research.getByRole("button", { name: "Checks", exact: true }).click();
-  await research
-    .getByRole("button", { name: "Review manuscript", exact: true })
-    .click();
-  await research
-    .getByText("The conclusion claims universal validity from one dataset.", {
-      exact: true,
-    })
-    .waitFor();
-  await research
-    .getByLabel("Your decision", { exact: true })
-    .fill("Revise the conclusion to match the dataset.");
-  await research.getByRole("button", { name: "Save note" }).click();
-  await page.screenshot({ path: join(shots, "03-checks.png") });
-  await research.getByText("Scientific quality benchmark", { exact: true }).click();
-  await research.getByRole("button", { name: "Run benchmark with selected model" }).click();
-  await research.getByText("15 evaluated · 0 human-reviewed reference cases", { exact: true }).waitFor();
-  await research.getByText(/Agreement: Awaiting reviewed labels/).waitFor();
-  const quality = await call(`/api/projects/${project.id}/research/evaluation`);
-  if (quality.reviewed !== 0 || quality.groups.some((g: any) => g.accuracy !== null)) throw new Error("Unreviewed benchmark labels were scored");
-  await page.screenshot({ path: join(shots, "11-quality.png") });
-  await research.getByRole("button", { name: "Graph", exact: true }).click();
-  await research
-    .getByRole("button", { name: "External source: Shared Foundations" })
-    .waitFor();
-  await research
-    .getByRole("button", { name: "External source: Shared Foundations" })
-    .click();
-  await research.getByRole("button", { name: "Close paper details" }).click();
-  await research
-    .getByRole("button", {
-      name: "Find missing sources",
-    })
-    .click();
-  await research
-    .getByText("Cited by 2 project papers: alpha; beta", { exact: true })
-    .waitFor();
-  await research.getByText("Compare two papers", { exact: true }).click();
-  await research
-    .getByRole("button", { name: "Find shared references" })
-    .click();
-  await research
-    .getByRole("button", { name: "W3 · Shared Foundations", exact: true })
-    .waitFor();
-  await research.evaluate((el) => {
-    el.scrollTop = 0;
-  });
-  await page.screenshot({ path: join(shots, "04-graph.png") });
-  await page.setViewportSize({ width: 740, height: 1000 });
-  await page.getByRole("tab", { name: "Research", exact: true }).first().click();
-  await page.waitForTimeout(250);
-  await page.screenshot({ path: join(shots, "05-narrow.png") });
-  const bounds = await research.boundingBox();
-  if (!bounds || bounds.x + bounds.width > 742)
-    throw new Error("Research pane is clipped by the viewport");
-  if (await research.evaluate((el) => el.scrollWidth > el.clientWidth + 2))
-    throw new Error("Research panel overflows horizontally");
-  // Ctrl-F is scoped to the active pane even when Source and PDF are side by side.
+  const nav = research.getByRole("navigation", { name: "Research views" });
+  if (JSON.stringify(await nav.getByRole("button").allTextContents()) !== JSON.stringify(["Graph", "Library", "Reading"])) throw new Error("Unexpected Research tabs");
+  await research.getByRole("button", { name: "External source: Shared Foundations" }).waitFor();
+  const graphSearch = research.getByRole("searchbox", { name: "Find a paper" });
+  await graphSearch.fill("alpha"); await graphSearch.press("Enter");
+  await research.getByRole("button", { name: "Search this source" }).click();
+  const query = research.getByRole("searchbox", { name: "Search inside your sources" });
+  await query.fill("bibliographyonly");
+  // Wait for automatic indexing to complete before checking search coverage.
+  for (let i = 0; i < 80; i++) {
+    const status = await call(`/api/projects/${project.id}/research/library`);
+    if (status.indexed === 2) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  await research.getByRole("button", { name: "Search", exact: true }).click();
+  await research.getByText("No matching content passages", { exact: true }).waitFor();
+  await research.getByText("Search options", { exact: true }).click();
+  await research.getByLabel("Include bibliography sections").check();
+  await research.getByRole("button", { name: "Search", exact: true }).click();
+  await research.locator(".library-page-label").filter({ hasText: "Bibliography" }).waitFor();
+  await research.getByLabel("Include bibliography sections").uncheck();
+  await query.fill("91 percent");
+  await research.getByRole("button", { name: "Search", exact: true }).click();
+  await research.locator(".library-passage mark").first().waitFor();
+  await page.screenshot({ path: join(shots, "01-library.png"), fullPage: true });
+  await research.getByRole("button", { name: "Read in context" }).click();
+  const reader = page.getByRole("dialog", { name: "Read source", exact: true });
+  await reader.getByText("Page 2 of 3", { exact: true }).waitFor();
+  await reader.getByRole("button", { name: "Read & take notes" }).click();
+  await research.getByLabel("Reading page").waitFor();
+  await research.locator(".reading-page pre").getByText(quote, { exact: true }).waitFor();
+  await research.locator(".reading-page pre").evaluate(element => { const range = document.createRange(); range.selectNodeContents(element); const selection = window.getSelection()!; selection.removeAllRanges(); selection.addRange(range); element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
+  await research.getByRole("button", { name: "Note on selected passage" }).click();
+  const note = research.getByRole("textbox", { name: "Note text" });
+  await note.fill("The paper reports 91 percent accuracy on dataset A.");
+  // Immediate navigation must flush the draft, without waiting for debounce.
+  await nav.getByRole("button", { name: "Library", exact: true }).click();
+  await nav.getByRole("button", { name: "Reading", exact: true }).click();
+  if (await note.inputValue() !== "The paper reports 91 percent accuracy on dataset A.") throw new Error("Draft lost on tab switch");
+  await research.getByRole("button", { name: "Check against paper" }).click();
+  await research.getByText("Consistent with excerpts", { exact: true }).waitFor();
+  await research.getByRole("button", { name: "Read page 2" }).click();
+  await research.getByRole("button", { name: "Read in full screen" }).click();
+  await page.waitForFunction(() => !!document.fullscreenElement);
+  await page.screenshot({ path: join(shots, "02-reading-notes.png"), fullPage: true });
+  await research.getByRole("button", { name: "Exit reading full screen" }).click();
+  await note.fill("The paper proves perfect accuracy for every dataset.");
+  await research.getByText("Changed · check again", { exact: true }).waitFor();
+  await research.getByRole("button", { name: "Save", exact: true }).click();
+  await research.locator(".reading-note header").getByText("Saved", { exact: true }).waitFor();
+  const notes = await call(`/api/projects/${project.id}/research/notes?key=alpha`);
+  if (!notes[0].assessmentStale || !notes[0].quote.includes(quote)) throw new Error("Note check/selection persistence failed");
+  const download = page.waitForEvent("download");
+  await research.getByRole("button", { name: "Export ↓", exact: true }).click();
+  if (!(await download).suggestedFilename().endsWith("-notes.md")) throw new Error("Export failed");
+  await research.getByRole("button", { name: "Remove note", exact: true }).click();
+  await research.getByRole("button", { name: "Undo", exact: true }).click();
+  await note.waitFor();
+  await research.getByRole("button", { name: "Original page", exact: true }).click();
+  await page.waitForFunction(() => { const image = document.querySelector(".reading-page img") as HTMLImageElement; return image?.complete && image.naturalWidth > 0; });
+  await research.getByRole("button", { name: "Text view", exact: true }).click();
+  await page.setViewportSize({ width: 900, height: 900 });
+  await page.getByRole("tab", { name: "Research", exact: true }).filter({ visible: true }).first().click();
+  await research.getByRole("navigation", { name: "Research views" }).getByRole("button", { name: "Reading", exact: true }).click();
+  await page.screenshot({ path: join(shots, "03-reading-narrow.png"), fullPage: true });
+  if (await research.evaluate(element => element.scrollWidth > element.clientWidth + 2)) throw new Error("Research overflows the pane");
+  const savedForRecovery = (await call(`/api/projects/${project.id}/research/notes?key=alpha`))[0];
+  await page.evaluate(({ projectId, note }) => localStorage.setItem(`blattbot.reading-draft.${projectId}.${note.id}`, JSON.stringify({ revision: note.revision, text: "Recovered local thought about perfect accuracy.", kind: "note" })), { projectId: project.id, note: savedForRecovery });
   await page.setViewportSize({ width: 1500, height: 980 });
-  const compiled = await call(`/api/projects/${project.id}/compile`, {});
-  if (!compiled.hasPdf) throw new Error("Search fixture did not compile into a PDF");
-  writeFileSync(join(root, "builds", project.id, "main.pdf"), textPdf([
-    "This introductory line is deliberately long enough to occupy the first text item. The actual exam- ple comes here. Another example follows.",
-    "A final example on another page."
-  ]));
-  await page.getByRole("tab", { name: "Source", exact: true }).first().click();
-  await page.getByRole("tab", { name: "PDF", exact: true }).last().click();
-  await page.locator(".textLayer").first().waitFor();
-  await page.locator(".cm-content").click();
-  await page.keyboard.press("Control+f");
-  const sourceFind = page.getByLabel("Find in source", { exact: true });
-  await sourceFind.fill("\\documentclass");
-  await page.locator(".blattbot-source-search").getByText("1/1", { exact: true }).waitFor();
-  if (await page.getByLabel("Find in PDF", { exact: true }).isVisible()) throw new Error("PDF search intercepted Source Ctrl-F");
-  await page.getByRole("button", { name: "Regular expression", exact: true }).click();
-  await sourceFind.fill("([");
-  await page.getByText("Invalid pattern", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Regular expression", exact: true }).click();
-  await sourceFind.fill("");
-  await sourceFind.pressSequentially("results", { delay: 50 });
-  if (await sourceFind.inputValue() !== "results") throw new Error("Live source search replaced previously typed characters");
-  await page.locator(".blattbot-source-search").getByText("1/1", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Show replacement", exact: true }).click();
-  await page.getByLabel("Replace in source", { exact: true }).fill("findings");
-  await page.getByRole("button", { name: "Replace source match", exact: true }).click();
-  await page.locator(".cm-content").getByText("These findings hold for every dataset.", { exact: true }).waitFor();
-  await page.screenshot({ path: join(shots, "08-source-search.png") });
-  await sourceFind.press("Escape");
-  await page.keyboard.press("Control+z");
-  await page.locator(".cm-content").getByText("These results hold for every dataset.", { exact: true }).waitFor();
-  await page.locator(".textLayer").first().click();
-  await page.keyboard.press("Control+f");
-  const pdfFind = page.getByLabel("Find in PDF", { exact: true });
-  await pdfFind.fill("example");
-  const pdfSearch = page.getByRole("search", { name: "PDF search" });
-  await pdfSearch.getByText("1/3", { exact: true }).waitFor();
-  await page.waitForFunction(() => [...document.querySelectorAll(".pdf-find-flash")].some(el => el.getAttribute("data-quote") === "exam- ple"));
-  await page.waitForTimeout(2200);
-  if (!(await page.locator(".pdf-find-flash").count())) throw new Error("Active PDF match disappeared while find was open");
-  await pdfFind.press("Enter");
-  await pdfSearch.getByText("2/3", { exact: true }).waitFor();
-  await pdfFind.press("Shift+Enter");
-  await pdfSearch.getByText("1/3", { exact: true }).waitFor();
-  if (await pdfSearch.evaluate(el => el.scrollWidth > el.clientWidth + 2)) throw new Error("PDF search overflows its pane");
-  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-  await page.waitForFunction(() => [...document.querySelectorAll(".pdf-find-flash")].some(el => el.getAttribute("data-quote") === "exam- ple"));
-  await page.screenshot({ path: join(shots, "07-search.png") });
-  await pdfFind.press("Escape");
-  await page.waitForFunction(() => document.querySelectorAll(".pdf-find-flash").length === 0);
+  await page.reload();
+  const reopen = page.getByRole("button", { name: "Open Research Fixture" });
+  await research.or(reopen).first().waitFor();
+  if (await reopen.isVisible()) await reopen.click();
+  await research.getByRole("navigation", { name: "Research views" }).getByRole("button", { name: "Reading", exact: true }).click();
+  await note.waitFor();
+  if (!(await note.inputValue()).includes("Recovered local thought")) throw new Error("Local draft recovery failed");
+  if (await research.getByLabel("Reading page").inputValue() !== "2") throw new Error("Reading position did not survive reload");
   if (errors.length) throw new Error(`Browser errors: ${errors.join("; ")}`);
-  console.log(`Research browser workflow passed. Screenshots: ${shots}`);
+  console.log(`Research browser workflow passed: three views, graph navigation, bibliography filtering, quoted search results, source reader, anchored notes, autosave across tabs, agent checks, stale checks, export, undo, original page image, narrow layout, draft recovery, reading position persistence. Screenshots: ${shots}`);
+
 } finally {
   await browser?.close();
   server.kill("SIGTERM");

@@ -44,3 +44,30 @@ describe("reference grouping", () => {
     expect(groups.map(g => g.label)).toEqual(["ICORE 2026 · A*", "CORE 2023 · A", "ICORE 2026 · A", "ICORE 2026 · B", "No conference rating"]);
   });
 });
+
+describe("reference sorting", () => {
+  it("sorts counts numerically with unknown last in either direction and zero kept separate", async () => {
+    const { sortReferences } = await import("../../web/src/reference-groups.js");
+    const papers = [paper("unknown", null), paper("ten", null, { metadata: { citationCount: 10 } }), paper("zero", null, { metadata: { citationCount: 0 } }), paper("two", null, { metadata: { citationCount: 2 } })];
+    expect(sortReferences(papers, "citations-desc").map(e => e.key)).toEqual(["ten", "two", "zero", "unknown"]);
+    expect(sortReferences(papers, "citations-asc").map(e => e.key)).toEqual(["zero", "two", "ten", "unknown"]);
+    expect(papers[0].key).toBe("unknown");
+  });
+  it("orders years, text and local usage without changing equal-key order", async () => {
+    const { sortReferences } = await import("../../web/src/reference-groups.js");
+    const papers = [paper("z", "Zoe Last", { year: null }), paper("b", "Smith, Ada", { year: "{2024}", usage: [{file:"main.tex",count:3,lines:[1,2,3]}] }), paper("a", "Adam First", { year: "2025" })];
+    expect(sortReferences(papers, "year-desc").map(e => e.key)).toEqual(["a", "b", "z"]);
+    expect(sortReferences(papers, "year-asc").map(e => e.key)).toEqual(["b", "a", "z"]);
+    expect(sortReferences(papers, "title").map(e => e.key)).toEqual(["a", "b", "z"]);
+    expect(sortReferences(papers, "author").map(e => e.key)).toEqual(["b", "a", "z"]);
+    expect(sortReferences(papers, "usage").map(e => e.key)).toEqual(["b", "z", "a"]);
+    expect(sortReferences(papers, "original")).toEqual(papers);
+  });
+  it("retains group membership while sorting papers within groups", async () => {
+    const { sortReferences } = await import("../../web/src/reference-groups.js");
+    const papers = [paper("low", "Ada Smith", {metadata:{citationCount:2}}), paper("high", "Smith, Ada", {metadata:{citationCount:80}}), paper("solo", "Dana Solo")];
+    const grouped = groupReferences(sortReferences(papers, "citations-desc"), "authors");
+    expect(grouped[0].entries.map(e=>e.key)).toEqual(["high", "low"]);
+    expect(grouped[1].label).toBe("No shared authors");
+  });
+});
