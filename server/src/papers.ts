@@ -37,6 +37,7 @@ import { discoverPaperSources } from "./paper-discovery.js";
 export type SummarySource = "s2-tldr" | "agent" | "abstract";
 
 export interface PaperRecord {
+  referenceMetadata?: { version?: number; fingerprint: string; value: import("./reference-metadata.js").ReferenceMetadata; retryAt: number };
   summary?: string;
   source?: SummarySource;
   updatedAt: string;
@@ -95,9 +96,12 @@ export function paperPdfPath(projectId: string, citeKey: string, store = readPap
 // ---- Semantic Scholar resolution ------------------------------------------
 
 const S2_BASE = "https://api.semanticscholar.org/graph/v1";
-const S2_FIELDS = "title,tldr,abstract,url,openAccessPdf,externalIds,year";
+const S2_FIELDS = "title,tldr,abstract,url,openAccessPdf,externalIds,year,citationCount,venue,publicationVenue";
 
 export interface S2Paper {
+  citationCount?: number | null;
+  venue?: string | null;
+  publicationVenue?: { name?: string; type?: string } | null;
   title?: string;
   tldr?: { text?: string } | null;
   abstract?: string | null;
@@ -181,6 +185,10 @@ export async function resolveS2Paper(entry: Pick<BibEntry, "fields">): Promise<S
 const OPENALEX_BASE = "https://api.openalex.org/works";
 
 export interface OpenAlexPaper {
+  citationCount?: number;
+  url?: string;
+  venue?: string;
+  venueType?: string;
   title?: string;
   abstract?: string;
   oaUrl?: string;
@@ -200,6 +208,11 @@ function reconstructAbstract(index: unknown): string | undefined {
 }
 
 function openAlexPaperFromWork(work: any): OpenAlexPaper {
+  const publication = [
+    ...(work?.locations ?? []).filter((location: any) => location.version === "publishedVersion"),
+    work?.primary_location,
+    ...(work?.locations ?? []),
+  ].find(location => ["conference", "journal"].includes(location?.source?.type))?.source;
   const landingUrls = [...new Set<string>([work?.best_oa_location, ...(work?.locations ?? []).filter((location: any) => location.is_oa)]
     .map(location => location?.landing_page_url).filter((url): url is string => typeof url === "string" && /^https?:\/\//i.test(url)))].slice(0, 3);
   const urls = [...new Set<string>([
@@ -208,6 +221,10 @@ function openAlexPaperFromWork(work: any): OpenAlexPaper {
     work?.open_access?.oa_url,
   ].filter((url): url is string => typeof url === "string" && /^https?:\/\//i.test(url)))];
   return {
+    citationCount: work?.cited_by_count,
+    url: work?.id,
+    venue: publication?.display_name,
+    venueType: publication?.type,
     title: work?.display_name ?? undefined,
     abstract: reconstructAbstract(work?.abstract_inverted_index),
     oaUrl: urls[0],

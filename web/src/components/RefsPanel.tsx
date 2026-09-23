@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type CitationCheckResult, type ImportBibResult, type RefEntry, type RefsResponse } from "../api";
 import { relTime } from "./Chat";
+import ReferenceDetails from "./ReferenceDetails";
+import { groupReferences, REFERENCE_GROUPINGS, type ReferenceGrouping } from "../reference-groups";
+
+function savedGrouping(projectId: string): ReferenceGrouping {
+  try {
+    const saved = localStorage.getItem(`blattbot:refs-grouping:${projectId}`);
+    return REFERENCE_GROUPINGS.find(([value]) => value === saved)?.[0] ?? "none";
+  } catch { return "none"; }
+}
 
 interface Props {
   projectId: string;
@@ -107,6 +116,17 @@ export default function RefsPanel({
   const [data, setData] = useState<RefsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [grouping, setGrouping] = useState<ReferenceGrouping>(() => savedGrouping(projectId));
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setGrouping(savedGrouping(projectId));
+    setCollapsedGroups(new Set());
+  }, [projectId]);
+  function changeGrouping(value: ReferenceGrouping) {
+    setGrouping(value);
+    setCollapsedGroups(new Set());
+    try { localStorage.setItem(`blattbot:refs-grouping:${projectId}`, value); } catch { /* Storage may be unavailable. */ }
+  }
   const [unusedOnly, setUnusedOnly] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [showUndefined, setShowUndefined] = useState(false);
@@ -152,16 +172,37 @@ export default function RefsPanel({
     setVerifyAllError(null);
   }, [projectId]);
 
+  const loadVersion = useRef(0);
+  useEffect(() => () => { loadVersion.current++; }, [projectId]);
   const load = useCallback(() => {
+    const version = ++loadVersion.current;
+    const current = () => projectIdRef.current === projectId && loadVersion.current === version;
     api
       .refs(projectId)
       .then((r) => {
-        if (projectIdRef.current !== projectId) return;
+        if (!current()) return;
         setData(r);
         setLoadError(null);
+        // Enrich progressively: opening References never waits for remote indexes.
+        const pending = r.entries.filter(e => e.metadataNeedsRefresh);
+        const enrich = async () => {
+          while (current()) {
+            const entry = pending.shift();
+            if (!entry) return;
+            try {
+              const result = await api.refMetadata(projectId, entry.key, entry.file);
+              if (!current() || result.raw !== entry.raw) continue;
+              setData(data => data && ({ ...data, entries: data.entries.map(e =>
+                e.key === entry.key && e.file === entry.file && e.raw === result.raw
+                  ? { ...e, metadata: result.metadata, metadataNeedsRefresh: false } : e) }));
+            } catch { /* Optional metadata must not prevent reading references. */ }
+          }
+        };
+        void enrich();
+        void enrich();
       })
       .catch((err) => {
-        if (projectIdRef.current !== projectId) return;
+        if (!current()) return;
         setLoadError(err.message);
       });
   }, [projectId]);
@@ -185,11 +226,19 @@ export default function RefsPanel({
     return (
       e.key.toLowerCase().includes(q) ||
       (e.title ?? "").toLowerCase().includes(q) ||
-      (e.author ?? "").toLowerCase().includes(q)
+      (e.author ?? "").toLowerCase().includes(q) ||
+      (e.metadata?.venue ?? "").toLowerCase().includes(q) ||
+      (e.year ?? "").toLowerCase().includes(q)
     );
   });
 
   const entryId = (e: RefEntry) => `${e.file}:${e.key}`;
+  const grouped = useMemo(() => groupReferences(entries, grouping), [entries, grouping]);
+  const visibleIds = new Set(visible.map(entryId));
+  const groups = grouped.map(group => ({ ...group, total: group.entries.length,
+    entries: group.entries.filter(entry => visibleIds.has(entryId(entry))),
+  })).filter(group => group.entries.length > 0);
+  const allCollapsed = groups.length > 0 && groups.every(group => collapsedGroups.has(group.id));
 
   // ---- Reveal a cite key (clicked in the PDF) ---------------------------
   const [flashKey, setFlashKey] = useState<string | null>(null);
@@ -216,6 +265,7 @@ export default function RefsPanel({
     setFilter("");
     setUnusedOnly(false);
     setGapsOnly(false);
+    setCollapsedGroups(new Set());
   }, [reveal]);
 
   // …and lands as soon as that row exists — the entries may still be loading,
@@ -590,10 +640,31 @@ export default function RefsPanel({
       <div className="shrink-0 border-b border-rule px-4 py-2">
         <input
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          aria-label="Filter references"
+          onChange={(e) => { setFilter(e.target.value); setCollapsedGroups(new Set()); }}
           placeholder={`Filter ${entries.length} entr${entries.length === 1 ? "y" : "ies"}…`}
           className="w-full rounded border border-rule bg-ink-2 px-3 py-1.5 text-[13px] text-paper placeholder:text-graphite/60"
         />
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-graphite">
+          <label className="flex min-w-0 items-center gap-2">
+            Group by
+            <select
+              aria-label="Group references by"
+              value={grouping}
+              onChange={event => changeGrouping(event.target.value as ReferenceGrouping)}
+              className="min-w-0 rounded border border-rule bg-ink-2 px-2 py-1 text-paper-dim focus:border-leaf"
+            >
+              {REFERENCE_GROUPINGS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          {grouping !== "none" && groups.length > 0 && <button
+            onClick={() => setCollapsedGroups(allCollapsed ? new Set() : new Set(groups.map(group => group.id)))}
+            className="ml-auto hover:text-paper-dim"
+          >{allCollapsed ? "Expand all" : "Collapse all"}</button>}
+        </div>
+        {grouping === "authors" && <p className="mt-1.5 text-[10.5px] leading-snug text-graphite">
+          Papers connected by matching author names, including coauthors. Each paper appears once.
+        </p>}
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {undefinedKeys.length > 0 && (
             <button
@@ -798,7 +869,30 @@ export default function RefsPanel({
       </div>
 
       <ul className="min-h-0 flex-1 overflow-y-auto px-4 py-2">
-        {visible.map((e) => {
+        {groups.map(group => <Fragment key={group.id}>
+          {grouping !== "none" && <li className="mt-2 border-b border-rule pb-1 first:mt-0">
+            <h3>
+              <button
+                type="button"
+                aria-expanded={!collapsedGroups.has(group.id)}
+                title={group.detail}
+                onClick={() => setCollapsedGroups(previous => {
+                  const next = new Set(previous);
+                  if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
+                  return next;
+                })}
+                className="flex w-full items-baseline gap-2 rounded py-1 text-left text-[11.5px] text-paper-dim hover:text-paper"
+              >
+                <span aria-hidden="true" className="shrink-0 text-graphite">{collapsedGroups.has(group.id) ? "▸" : "▾"}</span>
+                <span className="min-w-0 break-words">{group.label}</span>
+                <span className="ml-auto shrink-0 font-mono text-[10px] text-graphite">
+                  {group.entries.length}{group.entries.length !== group.total ? ` / ${group.total}` : ""}
+                  <span className="sr-only"> references</span>
+                </span>
+              </button>
+            </h3>
+          </li>}
+          {(grouping === "none" || !collapsedGroups.has(group.id)) && group.entries.map((e) => {
           const id = entryId(e);
           const total = usageTotal(e);
           const busyTldr = tldrBusy.has(id);
@@ -900,6 +994,7 @@ export default function RefsPanel({
                 <p className="mt-1 font-serif text-[13.5px] leading-snug text-paper">{e.title}</p>
               )}
               {e.author && <p className="mt-0.5 truncate text-[11.5px] text-graphite">{e.author}</p>}
+              <ReferenceDetails metadata={e.metadata} />
 
               <div className="mt-1.5 flex items-center gap-2">
                 {e.link && (
@@ -1067,7 +1162,8 @@ export default function RefsPanel({
               )}
             </li>
           );
-        })}
+          })}
+        </Fragment>)}
         {visible.length === 0 && (
           <li className="py-8 text-center font-serif text-sm text-graphite">
             {loadError

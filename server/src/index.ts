@@ -52,6 +52,7 @@ import {
   verifyCitationSupport,
 } from "./papers.js";
 import type { BibEntry } from "./bib.js";
+import { cachedReferenceMetadata, getReferenceMetadata } from "./reference-metadata.js";
 import {
   AGENT_MODES,
   AGENT_TOOL_INFO,
@@ -1404,6 +1405,7 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/refs", async (req, reply)
       summary: rec?.summary,
       summarySource: rec?.source,
       hasPdf: Boolean(paperPdfPath(project.id, entry.key, store)),
+      ...cachedReferenceMetadata(project.id, entry, store),
     };
   });
   return {
@@ -1413,6 +1415,14 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/refs", async (req, reply)
     audit: readAudit(project.id),
     claimAudit: readClaimAudit(project.id),
   };
+});
+
+app.get<{ Params: { id: string; key: string }; Querystring: { file?: string } }>("/api/projects/:id/refs/:key/metadata", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "unknown project" });
+  const match = readAllBibEntries(projectDir(project.id)).find(({ file, entry }) => entry.key === req.params.key && (!req.query.file || file === req.query.file));
+  if (!match) return reply.code(404).send({ error: "unknown reference" });
+  return { raw: match.entry.raw, metadata: await getReferenceMetadata(project.id, match.entry) };
 });
 
 // Deterministic citation audit: every entry checked against Crossref/OpenAlex

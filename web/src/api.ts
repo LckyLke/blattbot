@@ -247,7 +247,20 @@ export interface RefUsage {
   lines: number[];
 }
 
+export interface ReferenceMetadata {
+  conferenceRanking?: { rank: string; edition: string; title: string; acronym: string; url: string; checkedAt: string };
+  citationCount?: number;
+  citationSource?: "Semantic Scholar" | "OpenAlex";
+  citationUrl?: string;
+  citationUpdatedAt?: string;
+  venue?: string;
+  venueType?: "conference" | "journal" | "venue";
+  venueSource?: "Semantic Scholar" | "OpenAlex" | "BibTeX";
+}
+
 export interface RefEntry extends BibEntry {
+  metadata?: ReferenceMetadata;
+  metadataNeedsRefresh?: boolean;
   /** Best web link: doi.org → url field → arXiv abstract page. */
   link: string | null;
   usage: RefUsage[];
@@ -636,6 +649,8 @@ export const api = {
     ),
   bib: (id: string) => request<{ entries: BibEntry[] }>(`/api/projects/${id}/bib`),
   refs: (id: string) => request<RefsResponse>(`/api/projects/${id}/refs`),
+  refMetadata: (id: string, key: string, file: string) =>
+    request<{ raw: string; metadata: ReferenceMetadata }>(`/api/projects/${id}/refs/${encodeURIComponent(key)}/metadata?file=${encodeURIComponent(file)}`),
   auditRefs: (id: string) =>
     request<CitationAudit>(`/api/projects/${id}/refs/audit`, { method: "POST" }),
   /** Project-wide claim check: every cited entry against its first \cite site. Slow — reads each paper. */
