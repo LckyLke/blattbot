@@ -92,7 +92,7 @@ export function RepositoryManager({ projectId, compact = false }: { projectId: s
         <button className={button} disabled={!!busy} onClick={() => void mutate("/repositories/remove", { repositoryId: repo.id }, `Removing ${repo.name}…`)}>Remove</button>
       </div>
     </div>)}
-    {!compact && <p className="text-xs text-graphite">Snapshots stay pinned until you refresh. Submodule contents and Git LFS datasets/models are excluded. Code is read as evidence; attaching it does not run it.</p>}
+    {!compact && <p className="text-xs text-graphite">Snapshots stay pinned until you refresh. Ask in chat what the attached branch introduced compared with a base branch, such as main, to inspect its commits and changes. Submodule contents and Git LFS datasets/models are excluded. Code is read as evidence; attaching it does not run it.</p>}
   </div>;
 }
 
