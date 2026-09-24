@@ -226,7 +226,32 @@ export const RESULT_HEAD_TOOLS = new Set([
   "mcp__blattbot__search_papers",
   "mcp__blattbot__list_citations",
   "mcp__blattbot__read_paper",
+  "mcp__blattbot__inspect_repository",
 ]);
+
+/** Repository results are JSON; show the outcome rather than opaque IDs. */
+function repositoryResultSummary(result: string): string {
+  try {
+    const value = JSON.parse(result);
+    if (!value || typeof value !== "object") return result;
+    const more = value.nextOffset != null ? `; more at offset ${value.nextOffset}` : "";
+    if (typeof value.error === "string") return value.error;
+    if (Array.isArray(value.repositories)) return `${value.repositories.length} attached repositories`;
+    if (Array.isArray(value.results)) {
+      const failed = value.results.filter((entry: any) => entry?.error).length;
+      return `${value.results.length} of ${value.total} file excerpts${failed ? `; ${failed} failed` : ""}${more}`;
+    }
+    if (typeof value.path === "string" && typeof value.totalLines === "number") {
+      if (typeof value.patch === "string") return `${value.path}: patch from line ${(value.offset ?? 0) + 1} of ${value.totalLines}${more}`;
+      if (value.totalLines === 0) return `${value.path}: empty file`;
+      return `${value.path}: lines ${value.startLine}–${value.endLine} of ${value.totalLines}${value.nextLine != null ? `; continue at line ${value.nextLine}` : ""}`;
+    }
+    if (Array.isArray(value.files)) return `${value.files.length} of ${value.total} ${value.mergeBase ? "changed" : "tracked"} files${more}`;
+    if (Array.isArray(value.matches)) return `${value.matches.length} of ${value.total} matches${more}`;
+    if (Array.isArray(value.commits)) return `${value.commits.length} branch-only commits${more}`;
+  } catch { /* Plain-text errors are already meaningful; retain them below. */ }
+  return result;
+}
 
 /**
  * A short, single-line summary of a read-only tool's result text: the first
@@ -237,7 +262,7 @@ export const RESULT_HEAD_TOOLS = new Set([
 export function resultHead(toolName: string, result: unknown): string | undefined {
   if (!RESULT_HEAD_TOOLS.has(toolName)) return undefined;
   if (typeof result !== "string") return undefined;
-  const trimmed = result.trim();
+  const trimmed = (toolName === "mcp__blattbot__inspect_repository" ? repositoryResultSummary(result) : result).trim();
   if (!trimmed) return undefined;
   const lines = trimmed.split("\n").filter((l) => l.trim()).length;
   let head = trimmed.replace(/\s+/g, " ");

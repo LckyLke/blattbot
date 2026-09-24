@@ -41,11 +41,16 @@ const model = createServer(async (req, res) => {
     const calls = [
       { name: "inspect_repository", arguments: { action: "list" } },
       { name: "read_file", arguments: { path: "main.tex" } },
-      { name: "inspect_repository", arguments: { action: "search", repositoryId: repository.id, commit: repository.commit, query: "sum" } },
-      { name: "inspect_repository", arguments: { action: "read", repositoryId: repository.id, commit: repository.commit, path: "loss.py", startLine: 1, endLine: 2 } },
+      { name: "inspect_repository", arguments: { action: "files", repositoryId: repository.id, commit: repository.commit, limit: 220 } },
+      { name: "inspect_repository", arguments: { action: "search", repositoryId: repository.id, commit: repository.commit, query: "return x\\.sum", searchMode: "regex", contextLines: 1 } },
+      { name: "inspect_repository", arguments: { action: "read", repositoryId: repository.id, commit: repository.commit, path: "loss.py", startLine: 1, endLine: 220, limit: 220 } },
+      { name: "inspect_repository", arguments: { action: "read_many", repositoryId: repository.id, commit: repository.commit, reads: [{ path: "loss.py" }, { path: "missing.py" }] } },
       { name: "verify_code_claim", arguments: { file: "main.tex", quote, claimKind: "implementation", evidence: [{ repositoryId: repository.id, commit: repository.commit, path: "loss.py", startLine: 1, endLine: 2, role: "counterevidence" }] } },
     ];
     const step = toolResults.length;
+    if (step === 3) assert(String(toolResults.at(-1).content).includes("For files, request at most 200 items per page"));
+    if (step === 5) assert(JSON.parse(toolResults.at(-1).content).content.includes("return x.sum()"), "The 220-line read must succeed without retrying");
+    if (step === 6) assert(JSON.parse(toolResults.at(-1).content).results[1].error.includes("not found"));
     if (step > 0) assert(!String(toolResults.at(-1).content).startsWith("Error:"), toolResults.at(-1).content);
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const emit = (chunk: unknown) => res.write(`data: ${JSON.stringify(chunk)}\n\n`);
@@ -102,10 +107,7 @@ try {
   await page.addInitScript(() => { localStorage.setItem("blattbot.paneLeft.v2", "chat"); localStorage.setItem("blattbot.paneRight.v2", "research"); });
   await page.goto(base, { waitUntil: "networkidle" });
   await page.getByRole("button", { name: "Open Code Verification Fixture" }).click();
-  const research = page.locator(".research-panel:not(.cg-portal-root)").filter({ visible: true });
-  await research.getByRole("button", { name: "Checks", exact: true }).click();
-  const checks = research.locator("section").filter({ has: page.getByRole("heading", { name: "Verify claims against code" }) });
-  assert(await checks.getByRole("button", { name: "Check manuscript against code" }).isDisabled());
+  const checks = page; // Repository attachments now live under External context in the sidebar.
   await checks.getByRole("button", { name: "Add repository", exact: true }).click();
   await checks.getByRole("button", { name: "Local folder", exact: true }).click();
   await checks.getByRole("button", { name: "Browse folders…", exact: true }).click();
@@ -134,22 +136,26 @@ try {
   await checks.getByRole("button", { name: "Refresh revision" }).waitFor();
   [repository] = await api(`/api/projects/${project.id}/research/repositories`);
   assert.equal(repository.commit, git(source, "rev-parse", "HEAD"));
-  await checks.getByLabel("What should the agent check?").fill("Check the loss reduction against loss.py and save the evidence.");
-  await checks.getByRole("button", { name: "Check manuscript against code" }).click();
-  await checks.getByText("Contradiction found", { exact: true }).waitFor({ timeout: 30_000 });
-  assert(judgeCalled); assert.deepEqual(toolNames, ["inspect_repository", "read_file", "inspect_repository", "inspect_repository", "verify_code_claim"]);
-  await checks.locator("summary").filter({ hasText: "Contradiction found" }).click();
-  await checks.getByText("loss.py:2", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Check code", exact: true }).click();
+  await page.getByPlaceholder("Ask BlattBot to edit, rewrite, or cite…").fill("Check the loss reduction against loss.py and save the evidence.");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByText("Saved a code assessment:", { exact: false }).waitFor({ timeout: 30_000 });
+  assert(judgeCalled); assert.deepEqual(toolNames, ["inspect_repository", "read_file", "inspect_repository", "inspect_repository", "inspect_repository", "inspect_repository", "verify_code_claim"]);
+  await page.getByText("inspect_repository failed: limit: For files, request at most 200 items per page and follow nextOffset.", { exact: true }).waitFor();
+  await page.getByText("loss.py: lines 1–2 of 2", { exact: true }).waitFor();
+  await page.getByText("2 of 2 file excerpts; 1 failed", { exact: true }).waitFor();
+
   assert.equal(git(manuscriptDir, "status", "--porcelain"), "");
-  const downloadReady = page.waitForEvent("download");
-  await checks.getByRole("button", { name: "Export evidence" }).click();
-  const download = await downloadReady;
-  const exported = JSON.parse(readFileSync((await download.path())!, "utf8"));
-  assert.equal(exported.assessments[0].inputs[0].commit, repository.commit);
+  const assessments = await api(`/api/projects/${project.id}/research/code-evidence`);
+  assert.equal(assessments[0].verdict, "contradicted");
+  assert.equal(assessments[0].inputs[0].commit, repository.commit);
   await page.screenshot({ path: join(shots, "01-code-evidence.png"), fullPage: true });
   writeFileSync(join(source, "loss.py"), "def loss(x):\n    return x.mean()\n"); git(source, "add", "."); git(source, "commit", "-m", "Change reduction");
   await checks.getByRole("button", { name: "Refresh revision" }).click();
-  await checks.getByText("Changed · check again", { exact: true }).waitFor();
+  await page.waitForFunction(async ({ projectId, token }) => {
+    const response = await fetch(`/api/projects/${projectId}/research/code-evidence`, { headers: { Authorization: `Bearer ${token}` } });
+    return (await response.json()).every((assessment: any) => assessment.stale);
+  }, { projectId: project.id, token });
   const oldRead = await api(`/api/projects/${project.id}/research/repositories/inspect`, { action: "read", repositoryId: repository.id, commit: repository.commit, path: "loss.py" });
   assert(oldRead.content.includes("x.sum()"));
   await page.setViewportSize({ width: 1100, height: 850 });

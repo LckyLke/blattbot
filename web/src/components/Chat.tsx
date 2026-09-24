@@ -1222,7 +1222,7 @@ function ToolChip({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
       {item.resultHead && (
         <div
           title={item.resultHead}
-          className="mt-0.5 max-w-[420px] truncate self-start pl-4 font-mono text-[10.5px] text-graphite/80"
+          className={`mt-0.5 max-w-[420px] self-start pl-4 font-mono text-[10.5px] ${item.status === "error" ? "whitespace-normal break-words text-pencil" : "truncate text-graphite/80"}`}
         >
           {item.resultHead}
         </div>

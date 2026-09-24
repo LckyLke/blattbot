@@ -30,7 +30,7 @@ const key = z.string().min(1);
 export const RESEARCH_TOOLS = [
   define(
     "inspect_repository",
-    "Explore an attached immutable Git snapshot. list returns repository IDs and full commits; files lists ALL tracked paths (including hidden files) with prefix filtering and pagination; search performs repository-wide literal case-insensitive search; read returns exact line ranges and blob identity. To inspect what the attached branch introduced, compare with baseRef (the intended base branch, tag or commit, e.g. main) fetches history and returns pinned baseCommit, mergeBase and changed files. Reuse baseCommit for compare pagination, history (branch-only commits, newest first), and diff (patch for an exact changed-file path). Files/patches compare mergeBase to commit, excluding base-only changes. Fetching comparison history does not refresh the attached tip. Pass repositoryId and full recorded commit for every action except list. Follow nextOffset/nextLine; offset/limit paginate files, commits, or patch lines, depending on action. Read source at commit or mergeBase for context. Symlinks, submodule contents, binary files and LFS payloads are not followed. Trace implementation, callers, configuration and evaluation, and actively search for counterevidence before assessing a manuscript claim. No code is executed.",
+    "Explore an attached immutable Git snapshot. list returns repository IDs and full commits; files lists ALL tracked paths (including hidden files), with path prefix and optional query substring for finding filenames. search finds text or symbols: searchMode=literal (default) or regex (POSIX extended), caseSensitive, wholeWord, optional path prefix and contextLines (0–10) for surrounding source. read returns exact source ranges and blob identity: use one-based inclusive startLine/endLine (default 200 lines); larger ranges automatically page at 400 lines/40,000 characters. offset/limit are ignored for read. read_many reads up to 20 related excerpts from reads:[{path,startLine?,endLine?}], with per-file errors and nextLine; nextOffset continues the request list. To inspect what the attached branch introduced, compare with baseRef (the intended base branch, tag or commit, e.g. main) fetches history and returns pinned baseCommit, mergeBase and changed files. Reuse baseCommit for compare pagination, history (branch-only commits, newest first), and diff (patch for an exact changed-file path). Files/patches compare mergeBase to commit, excluding base-only changes. Fetching comparison history does not refresh the attached tip. Pass repositoryId and full recorded commit for every action except list. Follow nextOffset/nextLine; offset/limit paginate files, search matches, batch requests, commits, or patch lines (at most 200 per page; large responses may return fewer). Always follow nextOffset/nextLine until the relevant range is covered. Read source at commit or mergeBase for context. Symlinks, submodule contents, binary files and LFS payloads are not followed. Trace implementation, callers, configuration and evaluation, and actively search for counterevidence before assessing a manuscript claim. No code is executed.",
     repositoryQuerySchema.shape,
     (ctx, args) => queryRepository(ctx.project.id, args, ctx.signal),
   ),
@@ -143,7 +143,17 @@ export async function executeResearchTool(
 ): Promise<string> {
   const tool = RESEARCH_TOOLS.find((tool) => tool.name === name);
   if (!tool) throw new Error("unknown research tool");
-  const result = await tool.run(ctx, tool.schema.parse(args ?? {}));
+  let result: unknown;
+  try {
+    result = await tool.run(ctx, tool.schema.parse(args ?? {}));
+  } catch (error) {
+    // Tool errors are read by both the model and the chat's result summary.
+    // Keep validation errors actionable instead of exposing a raw Zod dump.
+    if (error instanceof z.ZodError) {
+      throw new Error(error.issues.map(issue => `${issue.path.join(".") || "arguments"}: ${issue.message}`).join("; "));
+    }
+    throw error;
+  }
   const text =
     typeof result === "string" ? result : JSON.stringify(result, null, 2);
   if ((result as any)?.error || (result as any)?.verdict === "unclear")

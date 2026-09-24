@@ -19,7 +19,9 @@ async function turn(p) {
   if (scenario === "exit") process.exit(7);
   if (scenario === "hang") { setInterval(() => {}, 1000); return; }
   if (scenario === "error") { note("turn/completed", { turn: { id: "turn-1", status: "failed", error: { message: "mock provider failure" } } }); return; }
-  if (scenario === "question") {
+  if (scenario === "repository-error") {
+    await call("inspect_repository", { action: "files", limit: 220 });
+  } else if (scenario === "question") {
     await call("ask_user", { questions: [{ question: "Which style?", header: "Style", options: [
       { label: "Concise", description: "Keep it short" }, { label: "Detailed", description: "Include context" },
     ] }] });

@@ -42,6 +42,13 @@ afterEach(() => {
 });
 
 describe("Codex background harness", () => {
+  it("emits actionable repository errors for the chat instead of a bare failed indicator", async () => {
+    vi.stubEnv("BLATTBOT_TEST_CODEX_SCENARIO", "repository-error");
+    const { codexBackend } = await import("../src/backends/codex.js");
+    await codexBackend.runTurn(ctx);
+    expect(events.find(e => e.type === "tool_result")).toMatchObject({ isError: true,
+      resultHead: "inspect_repository failed: limit: For files, request at most 200 items per page and follow nextOffset." });
+  });
   it("waits for child process closure and supports repeated shutdown", async () => {
     const { CodexClient } = await import("../src/backends/codex-client.js");
     const client = new CodexClient();

@@ -1,6 +1,7 @@
 import { appUrl } from "../urls";
 import { findPdfMatches } from "../pdf-search";
 import PdfSectionNav from "./PdfSectionNav";
+import { resolvePdfDestination, type PdfDestination } from "../pdf-destination";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { GlobalWorkerOptions, TextLayer, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -148,7 +149,8 @@ function bestRun(q: string[], src: string[]): { len: number; start: number } {
 
 /** A citation link's box on a page, in CSS pixels from the page's top-left. */
 interface CiteSpot {
-  key: string;
+  key: string | null;
+  dest: unknown;
   left: number;
   top: number;
   width: number;
@@ -225,6 +227,12 @@ export default function PdfPanel({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const savedScroll = useRef(0);
+  const [destination, setDestination] = useState<(PdfDestination & { nonce: number }) | null>(null);
+  const navigationRequest = useRef(0);
+  useEffect(() => {
+    navigationRequest.current++; setDestination(null);
+    return () => { navigationRequest.current++; };
+  }, [doc]);
   const prevProject = useRef(projectId);
 
   // "remote" shows the last "Verify on Overleaf" build — Overleaf's own
@@ -647,6 +655,19 @@ export default function PdfPanel({
     [onOpenRef],
   );
 
+  const navigateReference = useCallback(async (dest: unknown) => {
+    if (!doc) return;
+    const request = ++navigationRequest.current;
+    const target = await resolvePdfDestination(doc, dest);
+    if (request !== navigationRequest.current) return;
+    clearTimeout(citeTimer.current);
+    setCiteCard(null);
+    setChip(null);
+    if (!target) { showToast("This reference's destination could not be found in the PDF."); return; }
+    setFindHl(null);
+    setDestination({ ...target, nonce: request });
+  }, [doc, showToast]);
+
   const pageWidth = Math.max(180, (containerWidth - 40) * zoom);
 
   return (
@@ -881,6 +902,7 @@ export default function PdfPanel({
             index={bibIndex}
             onHold={holdCiteCard}
             onRelease={() => handleCiteHover(null, null)}
+            onOpenRef={() => handleCiteClick(citeCard.key)}
           />
         )}
 
@@ -897,6 +919,10 @@ export default function PdfPanel({
           <div
             ref={scrollRef}
             data-pdf-scroll
+            onWheel={() => setDestination(null)}
+            onTouchStart={() => setDestination(null)}
+            onPointerDown={() => setDestination(null)}
+            onKeyDown={() => setDestination(null)}
             onScroll={() => {
               setChip(null);
               // The card is anchored to a viewport position — scrolling would
@@ -918,7 +944,8 @@ export default function PdfPanel({
                   highlight={findHl && findHl.page === i + 1 ? findHl : undefined}
                   citeDests={citeDests}
                   onCiteHover={handleCiteHover}
-                  onCiteClick={handleCiteClick}
+                  onNavigate={navigateReference}
+                  destination={destination?.page === i + 1 ? destination : undefined}
                 />
               ))}
           </div>
@@ -946,7 +973,8 @@ function PdfPage({
   highlight,
   citeDests,
   onCiteHover,
-  onCiteClick,
+  onNavigate,
+  destination,
 }: {
   doc: PDFDocumentProxy;
   pageNo: number;
@@ -957,7 +985,8 @@ function PdfPage({
   /** The document's cite.* destination names, for links that inline theirs. */
   citeDests: Map<string, string> | null;
   onCiteHover: (key: string | null, rect: DOMRect | null) => void;
-  onCiteClick: (key: string) => void;
+  onNavigate: (destination: unknown) => void;
+  destination?: PdfDestination & { nonce: number };
 }) {
   const holderRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -967,6 +996,28 @@ function PdfPage({
   const itemsRef = useRef<{ divs: HTMLElement[]; strs: string[] }>({ divs: [], strs: [] });
   const [near, setNear] = useState(false);
   const [aspect, setAspect] = useState(Math.SQRT2); // height/width; A4 until measured
+  // Navigation also activates a distant, lazily rendered page. Reapply after
+  // its actual dimensions arrive; manual interaction clears the destination.
+  useLayoutEffect(() => {
+    if (!destination) return;
+    setNear(true);
+    const page = holderRef.current;
+    const container = page?.closest<HTMLElement>("[data-pdf-scroll]");
+    if (!page || !container) return;
+    const jump = () => {
+      const pageRect = page.getBoundingClientRect(), bounds = container.getBoundingClientRect();
+      container.scrollTo({
+        top: container.scrollTop + pageRect.top - bounds.top + destination.offset * width - 48,
+        left: Math.max(0, container.scrollLeft + pageRect.left - bounds.left + destination.left * width - 12),
+        behavior: "instant",
+      });
+    };
+    jump();
+    // Nearby pages can finish rendering and change their placeholder heights.
+    const observer = new ResizeObserver(jump);
+    container.querySelectorAll("[data-pdf-page]").forEach(element => observer.observe(element));
+    return () => observer.disconnect();
+  }, [destination, width, aspect]);
   /** This page's citation links, laid out for the current width. */
   const [citeSpots, setCiteSpots] = useState<CiteSpot[]>([]);
   /** A highlight waiting for the (lazily rendered) text layer. */
@@ -1124,7 +1175,7 @@ function PdfPage({
     };
   }, [doc, pageNo, near, width, applyHighlight]);
 
-  // Citation hotspots: this page's cite.* link annotations, converted from PDF
+  // Internal links (equations, sections, figures, citations), converted from PDF
   // user space to CSS pixels on the rendered page. Same laziness as the canvas,
   // and laid out again whenever the width (zoom, resize) changes.
   useEffect(() => {
@@ -1141,13 +1192,14 @@ function PdfPage({
         for (const a of annotations) {
           if (a.subtype !== "Link" || !Array.isArray(a.rect)) continue;
           const key = citeKeyFromDest(a.dest, citeDests);
-          if (!key) continue;
+          if (typeof a.dest !== "string" && !Array.isArray(a.dest)) continue;
           // Both corners through the viewport transform — that keeps rotated
           // pages honest; normalize after, since the transform flips the y axis.
           const [x1, y1] = viewport.convertToViewportPoint(a.rect[0], a.rect[1]);
           const [x2, y2] = viewport.convertToViewportPoint(a.rect[2], a.rect[3]);
           spots.push({
             key,
+            dest: a.dest,
             left: Math.min(x1, x2),
             top: Math.min(y1, y2),
             width: Math.abs(x2 - x1),
@@ -1221,13 +1273,14 @@ function PdfPage({
             <button
               key={`${spot.key}-${i}`}
               type="button"
-              aria-label={`Citation ${spot.key} — open in References`}
+              aria-label={spot.key ? `Citation ${spot.key} — jump to bibliography` : `Jump to PDF reference ${typeof spot.dest === "string" ? spot.dest : i + 1}`}
+              title="Jump to reference in PDF"
               style={{ left: spot.left, top: spot.top, width: spot.width, height: spot.height }}
               onMouseEnter={(e) => onCiteHover(spot.key, e.currentTarget.getBoundingClientRect())}
               onMouseLeave={() => onCiteHover(null, null)}
               onFocus={(e) => onCiteHover(spot.key, e.currentTarget.getBoundingClientRect())}
               onBlur={() => onCiteHover(null, null)}
-              onClick={() => onCiteClick(spot.key)}
+              onClick={() => onNavigate(spot.dest)}
               className="pointer-events-auto absolute cursor-pointer rounded-[2px] transition-colors hover:bg-gold/25 focus-visible:bg-gold/25 focus-visible:outline-none"
             />
           ))}
@@ -1252,11 +1305,13 @@ function CiteCard({
   index,
   onHold,
   onRelease,
+  onOpenRef,
 }: {
   card: { key: string; x: number; y: number; above: boolean };
   index: Map<string, BibEntry> | null;
   onHold: () => void;
   onRelease: () => void;
+  onOpenRef: () => void;
 }) {
   const entry = index?.get(card.key);
   const inside = useRef(false);
@@ -1318,9 +1373,9 @@ function CiteCard({
               {entry.key}
               {entry.doi ? ` · ${entry.doi}` : ""}
             </p>
-            <p className="mt-1.5 border-t border-rule/60 pt-1 text-[10.5px] text-graphite">
-              click to open in References
-            </p>
+            <button type="button" onClick={onOpenRef} className="mt-1.5 border-t border-rule/60 pt-1 text-[10.5px] text-paper-dim hover:text-leaf">
+              Open in References
+            </button>
           </>
         ) : (
           <>

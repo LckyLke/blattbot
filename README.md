@@ -111,13 +111,17 @@ All three backends have the same `inspect_repository` tool:
 {"action":"list"}
 {"action":"files","repositoryId":"<id>","commit":"<full SHA>","path":"src/","limit":80}
 {"action":"search","repositoryId":"<id>","commit":"<full SHA>","query":"reduction"}
+{"action":"search","repositoryId":"<id>","commit":"<full SHA>","query":"^def (loss|train)","searchMode":"regex","path":"src/","caseSensitive":true,"contextLines":3}
 {"action":"read","repositoryId":"<id>","commit":"<full SHA>","path":"src/loss.py","startLine":30,"endLine":80}
+{"action":"read_many","repositoryId":"<id>","commit":"<full SHA>","reads":[{"path":"src/loss.py"},{"path":"src/train.py","startLine":20,"endLine":120}]}
 {"action":"compare","repositoryId":"<id>","commit":"<full SHA>","baseRef":"main"}
 {"action":"history","repositoryId":"<id>","commit":"<full SHA>","baseCommit":"<base SHA returned by compare>"}
 {"action":"diff","repositoryId":"<id>","commit":"<full SHA>","baseCommit":"<base SHA returned by compare>","path":"src/loss.py"}
 ```
 
-File listings include hidden configuration and support pagination. Search covers tracked text across the snapshot using case-insensitive literal matching. Follow `nextOffset` and `nextLine`; search hits are leads, and the agent must read surrounding code before using them as evidence. `verify_code_claim` takes an exact manuscript quotation and selected Git line ranges with roles such as implementation, caller, configuration, evaluation, test or counterevidence. `list_code_evidence` retrieves saved assessments.
+File listings include hidden configuration, accept a `path` prefix and optional `query` filename substring, and support pagination. Search supports literal text (default) or POSIX extended regex, case-sensitive and whole-identifier matching, path prefixes, and up to ten context lines around each match. `read` uses one-based inclusive `startLine`/`endLine`; `offset` and `limit` are ignored. Large reads automatically page at 400 lines/40,000 characters, preserving exact source text and returning `nextLine`. `read_many` reads up to 20 related excerpts, reporting individual errors without losing successful reads. Its `nextOffset` continues the request list; each excerpt's `nextLine` continues that file. Search context and batch results also page by response size. Follow `nextOffset` and `nextLine`; search hits are leads, and the agent must read surrounding code before using them as evidence. Repository tool failures show concise explanations in chat, and successful reads show source ranges and continuation points.
+
+`verify_code_claim` takes an exact manuscript quotation and selected Git line ranges with roles such as implementation, caller, configuration, evaluation, test or counterevidence. These evidence excerpts retain strict size limits: an assessment never silently substitutes a partial requested range. `list_code_evidence` retrieves saved assessments.
 
 Assessments distinguish **implementation agrees**, **contradiction found**, **insufficient evidence**, and **execution required**. They retain manuscript hashes, full commit and blob identities, inspected excerpts, validated quotations and line numbers, the configured assessor backend/model, limitations and follow-up checks. Changing the manuscript or refreshing to a different commit marks affected assessments stale; previously fetched commits remain readable until the repository is removed. New versions of a claim's evidence retain earlier snapshot assessments.
 
@@ -127,7 +131,9 @@ Ask **“What did this branch introduce compared with main?”** to inspect bran
 
 Snapshots initially fetch shallow history and include committed files only; requesting a branch comparison fetches complete history, which can take longer on large repositories. Submodules, symlink targets and Git LFS payloads are not fetched or followed. Reads reject binary files and files over 2 MiB; excerpts are limited to 400 lines/40,000 characters, and one assessment accepts up to 12 excerpts/90,000 characters. Git fetches time out after two minutes; source searches and comparisons have bounded time and output and report failure instead of presenting partial results as complete. Refreshes are explicit. Removing an attachment deletes its managed Git objects, preserves saved evidence as stale, and leaves the original repository untouched.
 
-Run `npm run test:code-ui --workspace=server` after building the web app to exercise attachment, a full agent/tool/assessment loop, evidence export, refresh invalidation and removal in a real browser using a fixture model. Set `BLATTBOT_BROWSER_EXECUTABLE` if Chromium is outside the usual locations. These fixtures test software behavior, not real-model scientific accuracy.
+Run `npm run test:code-ui --workspace=server` after building the web app to exercise attachment, a full agent/tool/assessment loop, visible tool errors, batch reads, saved evidence, refresh invalidation and removal in a real browser using a fixture model. Set `BLATTBOT_BROWSER_EXECUTABLE` if Chromium is outside the usual locations. These fixtures test software behavior, not real-model scientific accuracy.
+
+PDF equation, section, figure and citation links navigate to their embedded destinations inside the preview. Citation hover cards retain an **Open in References** action. This requires link annotations in the PDF (normally provided by LaTeX's `hyperref` package). Run `npm run test:pdf-links-ui --workspace=server` after building the web app to check reference navigation, keyboard access, zoom and resizing.
 
 ### Library indexing
 

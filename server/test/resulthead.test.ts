@@ -68,6 +68,20 @@ describe("resultHead", () => {
     expect(resultHead("Grep", undefined)).toBeUndefined();
     expect(resultHead("Grep", { weird: true })).toBeUndefined();
   });
+
+  it("shows repository errors and useful source summaries instead of opaque JSON IDs", async () => {
+    const { resultHead } = await import("../src/backends/types.js");
+    const name = "mcp__blattbot__inspect_repository";
+    const failure = "inspect_repository failed: limit: For files, request at most 200 items per page and follow nextOffset.";
+    expect(resultHead(name, failure)).toBe(failure);
+    expect(resultHead(name, JSON.stringify({ path: "engine.py", startLine: 1, endLine: 220, totalLines: 274, nextLine: 221 })))
+      .toBe("engine.py: lines 1–220 of 274; continue at line 221");
+    expect(resultHead(name, JSON.stringify({ files: [{ path: "a" }], total: 3, nextOffset: 1 }))).toBe("1 of 3 tracked files; more at offset 1");
+    expect(resultHead(name, JSON.stringify({ results: [{ path: "a", content: "ok" }, { path: "b", error: "not found" }], total: 2 })))
+      .toBe("2 of 2 file excerpts; 1 failed");
+    expect(resultHead(name, JSON.stringify({ error: "Read fewer files." }))).toBe("Read fewer files.");
+    expect(resultHead(name, JSON.stringify({ path: "empty.py", startLine: 1, endLine: 0, totalLines: 0 }))).toBe("empty.py: empty file");
+  });
 });
 
 describe("claude toolResultText", () => {
@@ -88,6 +102,15 @@ describe("claude toolResultText", () => {
 });
 
 describe("resultHead persistence", () => {
+  it("retains a repository failure explanation when the chat is reopened", async () => {
+    const chats = await import("../src/chats.js");
+    const { resultHead } = await import("../src/backends/types.js");
+    const chat = chats.createChat("p1");
+    const head = resultHead("mcp__blattbot__inspect_repository", "inspect_repository failed: File not found in this snapshot.");
+    chats.appendEvent("p1", chat.id, { type: "tool_result", id: "repo-read", isError: true, resultHead: head });
+    expect(chats.readTranscript("p1", chat.id)[0]).toMatchObject({ isError: true, resultHead: head });
+    expect(head).toContain("File not found");
+  });
   it("round-trips through the chat transcript like fileDiff does", async () => {
     const chats = await import("../src/chats.js");
     const chat = chats.createChat("p1");

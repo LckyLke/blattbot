@@ -45,6 +45,7 @@
     "test:ui": "tsx scripts/ui-verify.ts",
     "test:research-ui": "tsx scripts/research-ui-verify.ts",
     "test:code-ui": "tsx scripts/code-repositories-ui-verify.ts",
+    "test:pdf-links-ui": "tsx scripts/pdf-links-ui-verify.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"
   },
