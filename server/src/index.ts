@@ -23,6 +23,8 @@ import {
   type ProjectSettings,
 } from "./config.js";
 import * as git from "./git.js";
+import { randomUUID } from "node:crypto";
+import { projectFingerprint } from "./project-fingerprint.js";
 import { compileProject, compileRev, detectEngine, revPdfPath, type CompileResult } from "./compile.js";
 import { findMainTex, listFiles, scanLabels } from "./latex.js";
 import { locateInSources } from "./locate.js";
@@ -265,12 +267,14 @@ if (webDist) {
 }
 
 const lastCompile = new Map<string, CompileResult>();
+const compileVersions = new WeakMap<CompileResult, string>();
 /** Latest "Verify on Overleaf" build per project: the saved remote PDF's path. */
 const lastRemoteCompile = new Map<string, string>();
 
 function compilePublic(r: CompileResult) {
+  if (!compileVersions.has(r)) compileVersions.set(r, randomUUID());
   const { pdfPath, ...rest } = r;
-  return { ...rest, hasPdf: Boolean(pdfPath) };
+  return { ...rest, hasPdf: Boolean(pdfPath), pdfVersion: compileVersions.get(r)! };
 }
 
 app.get("/api/health", async () => {
@@ -1803,6 +1807,7 @@ app.post<{
     void (async () => {
       try {
         broadcast(project.id, { type: "turn_start" });
+        const beforeTurn = await projectFingerprint(projectDir(project.id));
         // Pick up collaborator edits before the agent touches anything.
         try {
           const result = await sync.syncIn(project);
@@ -1840,16 +1845,17 @@ app.post<{
         );
         // No live-diff timer may fire past this point; the broadcast below is authoritative.
         await turnSink.close();
+        const changed = beforeTurn !== await projectFingerprint(projectDir(project.id));
         let turnDiff = "";
         try {
           turnDiff = await git.workingDiff(projectDir(project.id));
-          broadcast(project.id, { type: "diff", diff: turnDiff });
+          broadcast(project.id, { type: "diff", diff: turnDiff, changed });
         } catch (err: any) {
           broadcast(project.id, { type: "error", message: `diff failed: ${err.message}` });
         }
         // Refresh the PDF preview — but only when the turn actually changed
         // something; a purely conversational message needs no recompile.
-        if (turnDiff.trim()) {
+        if (changed) {
           broadcast(project.id, { type: "compile_start" });
           const result = await compileProject(project.id, projectDir(project.id), project.mainTex);
           lastCompile.set(project.id, result);

@@ -1,5 +1,5 @@
 /** Real PDF annotation fixture: named and explicit destinations, including a distant page. */
-export function referencePdf(): Buffer {
+export function referencePdf(equationPage: 3 | 4 = 4): Buffer {
   const text = (y: number, value: string) => `BT /F1 16 Tf 40 ${y} Td (${value.replace(/([()\\])/g, "\\$1")}) Tj ET`;
   const streams = [
     text(740, "Methodology") + text(700, "Equation (6)") + text(650, "Section 2") + text(600, "Citation [1]") + text(550, "Broken reference") + text(300, "Same-page destination"),
@@ -7,13 +7,14 @@ export function referencePdf(): Buffer {
     text(400, "E = mc2 (6)") + text(350, "Return to methodology"),
     text(500, "Bibliography: Example reference [1]"),
   ];
+  if (equationPage === 3) [streams[2], streams[3]] = [streams[3], streams[2]];
   const objects = [
-    "<< /Type /Catalog /Pages 2 0 R /Names << /Dests << /Names [(cite.example) [12 0 R /XYZ 40 500 null] (equation.6) [10 0 R /XYZ 40 400 null] (section.method) [4 0 R /XYZ 40 700 null]] >> >> >>",
+    `<< /Type /Catalog /Pages 2 0 R /Names << /Dests << /Names [(cite.example) [12 0 R /XYZ 40 500 null] (equation.6) [${equationPage === 3 ? 8 : 10} 0 R /XYZ 40 400 null] (section.method) [4 0 R /XYZ 40 700 null]] >> >> >>`,
     "<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R 10 0 R 12 0 R] /Count 5 >>",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
   ];
   streams.forEach((stream, i) => {
-    const annotations = i === 0 ? "/Annots [14 0 R 15 0 R 16 0 R 17 0 R]" : i === 3 ? "/Annots [18 0 R]" : "";
+    const annotations = i === 0 ? "/Annots [14 0 R 15 0 R 16 0 R 17 0 R]" : i === equationPage - 1 ? "/Annots [18 0 R]" : "";
     objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${5 + 2 * i} 0 R ${annotations} >>`);
     objects.push(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
   });

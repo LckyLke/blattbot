@@ -282,12 +282,23 @@ function AppShell() {
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState<"idle" | "thinking" | "streaming" | "tool">("idle");
   const [diff, setDiff] = useState<string>("");
+  const diffRef = useRef(diff);
+  diffRef.current = diff;
   // Approve was blocked: Overleaf changed these files while they also carry
   // local edits. The Proof view offers per-file discard or a forced overwrite.
   const [approveConflicts, setApproveConflicts] = useState<SyncConflict[] | null>(null);
   const [compile, setCompile] = useState<CompileInfo | null>(null);
   const [compiling, setCompiling] = useState(false);
   const [pdfStamp, setPdfStamp] = useState(0);
+  const pdfVersionRef = useRef<string | null>(null);
+  const acceptCompile = useCallback((info: CompileInfo) => {
+    setCompile(info);
+    const version = info.pdfVersion ?? JSON.stringify(info);
+    if (info.hasPdf && version !== pdfVersionRef.current) {
+      pdfVersionRef.current = version;
+      setPdfStamp(s => s + 1);
+    }
+  }, []);
   // "Verify on Overleaf": bumps per successful remote build (0 = none yet),
   // and which build the PDF pane currently shows.
   const [remoteStamp, setRemoteStamp] = useState(0);
@@ -391,16 +402,17 @@ function AppShell() {
 
   const refreshDetail = useCallback(async (id: string) => {
     try {
+      const versionAtRequest = pdfVersionRef.current;
       const d = await api.project(id);
+      if (selectedRef.current?.id !== id) return;
       setDetail(d);
-      if (d.lastCompile) {
-        setCompile(d.lastCompile);
-        if (d.lastCompile.hasPdf) setPdfStamp((s) => s + 1);
+      if (d.lastCompile && versionAtRequest === pdfVersionRef.current) {
+        acceptCompile(d.lastCompile);
       }
     } catch {
       setDetail(null);
     }
-  }, []);
+  }, [acceptCompile]);
 
   const pushChat = useCallback((item: ChatItem) => {
     setChat((prev) => appendChatItem(prev, item));
@@ -546,9 +558,7 @@ function AppShell() {
           turnEndSeq.current++;
           setBusy(false);
           setActivity("idle");
-          dirtySinceCompile.current = true;
-          setSourceStamp((s) => s + 1);
-          // The server compiles after every turn anyway — drop pending mid-turn ones.
+          // The server decides whether this turn changed files and needs a build.
           clearTimeout(liveCompileTimer.current);
           if (selectedId) void refreshChats(selectedId);
           setChat((prev) => {
@@ -579,10 +589,13 @@ function AppShell() {
           });
           if (selectedId) void refreshDetail(selectedId);
           break;
-        case "diff":
+        case "diff": {
+          const changed = ev.changed ?? ((ev.diff ?? "") !== diffRef.current);
+          diffRef.current = ev.diff ?? "";
           setDiff(ev.diff ?? "");
-          if (ev.diff?.trim()) {
+          if (changed) {
             dirtySinceCompile.current = true;
+            setSourceStamp(s => s + 1);
             // No pane is switched automatically — the Proof tab's pending dot
             // signals changes, and a visible PDF refreshes itself instead.
             if (ev.live) {
@@ -598,6 +611,7 @@ function AppShell() {
             }
           }
           break;
+        }
         case "compile_start":
           setCompiling(true);
           break;
@@ -605,8 +619,7 @@ function AppShell() {
           const { type, ...info } = ev;
           setCompiling(false);
           dirtySinceCompile.current = false;
-          setCompile(info as CompileInfo);
-          if ((info as CompileInfo).hasPdf) setPdfStamp((s) => s + 1);
+          acceptCompile(info as CompileInfo);
           break;
         }
         case "sync_warning":
@@ -669,7 +682,7 @@ function AppShell() {
           break;
       }
     },
-    [pushChat, refreshDetail, refreshChats, selectedId],
+    [pushChat, refreshDetail, refreshChats, selectedId, acceptCompile],
   );
 
   const handleEventRef = useRef(handleEvent);
@@ -684,6 +697,7 @@ function AppShell() {
     setDiff("");
     setApproveConflicts(null);
     setCompile(null);
+    pdfVersionRef.current = null;
     setCompiling(false);
     setRemoteStamp(0);
     setPdfSource("local");
@@ -1584,6 +1598,8 @@ function AppShell() {
       case "pdf":
         return (
           <PdfPanel
+            key={`${selectedId}:${pdfSource}`}
+            visible={panes.left === "pdf" || panes.right === "pdf"}
             projectId={selectedId!}
             compile={compile}
             stamp={pdfStamp}

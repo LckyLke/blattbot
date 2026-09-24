@@ -221,6 +221,8 @@ export interface ProjectDetail extends Project {
 }
 
 export interface CompileInfo {
+  /** Stable across detail refreshes; changes only for a new compile result. */
+  pdfVersion?: string;
   ok: boolean;
   engine: string;
   mainTex: string;

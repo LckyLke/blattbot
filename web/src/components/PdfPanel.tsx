@@ -2,6 +2,7 @@ import { appUrl } from "../urls";
 import { findPdfMatches } from "../pdf-search";
 import PdfSectionNav from "./PdfSectionNav";
 import { resolvePdfDestination, type PdfDestination } from "../pdf-destination";
+import { readPdfPosition, usePdfPosition } from "../pdf-position";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { GlobalWorkerOptions, TextLayer, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -11,6 +12,7 @@ import { api, type BibEntry, type CompileInfo } from "../api";
 GlobalWorkerOptions.workerSrc = workerUrl;
 
 interface Props {
+  visible: boolean;
   projectId: string;
   compile: CompileInfo | null;
   stamp: number;
@@ -191,6 +193,7 @@ interface FindHighlight {
 }
 
 export default function PdfPanel({
+  visible,
   projectId,
   compile,
   stamp,
@@ -206,7 +209,8 @@ export default function PdfPanel({
 }: Props) {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(1);
+  const positionKey = `${projectId}:${source}`;
+  const [zoom, setZoom] = useState(() => readPdfPosition(positionKey)?.zoom ?? 1);
   const [containerWidth, setContainerWidth] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   /** Brief inline notice ("no matching source found") — no alert(). */
@@ -226,14 +230,16 @@ export default function PdfPanel({
   }, [compiling]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
-  const savedScroll = useRef(0);
   const [destination, setDestination] = useState<(PdfDestination & { nonce: number }) | null>(null);
+  const pageWidth = Math.max(180, (containerWidth - 40) * zoom);
+  const readingPosition = usePdfPosition(positionKey, scrollRef, doc, pageWidth, visible, zoom, Boolean(destination));
+  const prepareReplacement = useRef(readingPosition.prepareReplacement);
+  prepareReplacement.current = readingPosition.prepareReplacement;
   const navigationRequest = useRef(0);
   useEffect(() => {
-    navigationRequest.current++; setDestination(null);
+    navigationRequest.current++;
     return () => { navigationRequest.current++; };
   }, [doc]);
-  const prevProject = useRef(projectId);
 
   // "remote" shows the last "Verify on Overleaf" build — Overleaf's own
   // compiler output for the project as it currently is on Overleaf.
@@ -245,18 +251,18 @@ export default function PdfPanel({
 
   useEffect(() => {
     if (!hasPdf) return;
-    // Recompiles of the same project keep the reading position; switching projects resets it.
-    savedScroll.current = prevProject.current === projectId ? (scrollRef.current?.scrollTop ?? 0) : 0;
-    prevProject.current = projectId;
-
     let cancelled = false;
     const task = getDocument({ url: pdfUrl });
     task.promise.then(
-      (d) => {
+      async (d) => {
         if (cancelled) {
           void d.loadingTask.destroy();
           return;
         }
+        // Capture where the user is now, including scrolling during compilation/loading.
+        await prepareReplacement.current(d, () => cancelled);
+        if (cancelled) { void d.loadingTask.destroy(); return; }
+        setDestination(null);
         setDoc(d);
         setLoadError(null);
       },
@@ -277,18 +283,16 @@ export default function PdfPanel({
     };
   }, [doc]);
 
-  useLayoutEffect(() => {
-    if (doc && scrollRef.current) scrollRef.current.scrollTop = savedScroll.current;
-  }, [doc]);
-
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setContainerWidth(el.clientWidth));
+    // display:none is not a new page width: retain the last visible layout.
+    const measure = () => { if (el.clientWidth > 0) setContainerWidth(el.clientWidth); };
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
-    setContainerWidth(el.clientWidth);
+    measure();
     return () => ro.disconnect();
-  }, [doc]);
+  }, [doc, visible]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -306,6 +310,7 @@ export default function PdfPanel({
   const lastFindNonce = useRef(find?.nonce ?? 0);
   useEffect(() => {
     if (!find || find.nonce === lastFindNonce.current) return;
+    readingPosition.release();
     lastFindNonce.current = find.nonce;
     const d = doc;
     if (!d) {
@@ -668,10 +673,8 @@ export default function PdfPanel({
     setDestination({ ...target, nonce: request });
   }, [doc, showToast]);
 
-  const pageWidth = Math.max(180, (containerWidth - 40) * zoom);
-
   return (
-    <div className="flex h-full flex-col" tabIndex={-1} onPointerDownCapture={e => { document.documentElement.dataset.findScope = "pdf"; if (!(e.target as Element).closest("input,button,select,textarea,a")) e.currentTarget.focus({ preventScroll: true }); }} onFocusCapture={() => { document.documentElement.dataset.findScope = "pdf"; }}>
+    <div className="flex h-full flex-col" tabIndex={-1} onKeyDownCapture={() => readingPosition.release()} onPointerDownCapture={e => { readingPosition.release(); document.documentElement.dataset.findScope = "pdf"; if (!(e.target as Element).closest("input,button,select,textarea,a")) e.currentTarget.focus({ preventScroll: true }); }} onFocusCapture={() => { document.documentElement.dataset.findScope = "pdf"; }}>
       {remoteStamp > 0 && (
         <div
           role="tablist"
@@ -919,11 +922,13 @@ export default function PdfPanel({
           <div
             ref={scrollRef}
             data-pdf-scroll
-            onWheel={() => setDestination(null)}
-            onTouchStart={() => setDestination(null)}
+            data-pdf-document={doc?.loadingTask.docId}
+            onWheel={() => { readingPosition.release(); setDestination(null); }}
+            onTouchStart={() => { readingPosition.release(); setDestination(null); }}
             onPointerDown={() => setDestination(null)}
             onKeyDown={() => setDestination(null)}
             onScroll={() => {
+              readingPosition.remember();
               setChip(null);
               // The card is anchored to a viewport position — scrolling would
               // leave it pointing at whatever moved under it.
@@ -931,6 +936,7 @@ export default function PdfPanel({
               setCiteCard(null);
             }}
             className="h-full overflow-auto bg-[#3a3f4d] py-5"
+            style={{ overflowAnchor: "none" }}
           >
             {loadError && <p className="px-6 py-8 text-center text-sm text-pencil">{loadError}</p>}
             {doc &&
@@ -945,7 +951,7 @@ export default function PdfPanel({
                   citeDests={citeDests}
                   onCiteHover={handleCiteHover}
                   onNavigate={navigateReference}
-                  destination={destination?.page === i + 1 ? destination : undefined}
+                  destination={visible && destination?.page === i + 1 ? destination : undefined}
                 />
               ))}
           </div>
@@ -956,7 +962,7 @@ export default function PdfPanel({
                 ? "Compiling the document…"
                 : compile
                   ? "No PDF yet — fix the errors above and recompile."
-                  : "No compile yet. Press Recompile, or ask BlattBot for an edit — it compiles automatically after each turn."}
+                  : "No compile yet. Press Recompile, or ask BlattBot for an edit — it compiles automatically when files change."}
             </p>
           </div>
         )}
