@@ -1,5 +1,6 @@
 import { appUrl } from "../urls";
 import { RepositoryManager } from "./CodeRepositories";
+import SidebarIcon from "./SidebarIcon";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api, type DirListing, type Project, type ProjectContext } from "../api";
 
@@ -137,11 +138,13 @@ export default function Sidebar({
   }
 
   function renderDir(node: DirNode, depth: number): ReactNode {
-    const pad = { paddingLeft: `${10 + depth * 12}px` };
+    const pad = { paddingLeft: `${8 + depth * 12}px` };
     return (
       <div key={node.path || "root"}>
         {node.path && (
           <button
+            aria-expanded={!collapsed.has(node.path)}
+            title={node.path}
             onClick={() =>
               setCollapsed((prev) => {
                 const next = new Set(prev);
@@ -151,10 +154,11 @@ export default function Sidebar({
               })
             }
             style={pad}
-            className="flex w-full items-center gap-1 py-1 pr-2 text-left text-[11.5px] text-paper-dim hover:text-paper"
+            className="flex h-8 w-full items-center gap-1.5 rounded-lg pr-2 text-left text-[12px] text-paper-dim transition-colors hover:bg-white/5 hover:text-paper"
           >
-            <span className="text-[9px] text-graphite">{collapsed.has(node.path) ? "▸" : "▾"}</span>
-            <span className="truncate">{node.name}/</span>
+            <SidebarIcon name="chevron" className={`h-3 w-3 text-graphite transition-transform ${collapsed.has(node.path) ? "" : "rotate-90"}`} />
+            <SidebarIcon name="folder" className="text-graphite" />
+            <span className="truncate">{node.name}</span>
           </button>
         )}
         {(!node.path || !collapsed.has(node.path)) && (
@@ -163,21 +167,25 @@ export default function Sidebar({
             {node.files.map((f) => (
               <label
                 key={f.path}
-                style={{ paddingLeft: `${10 + (node.path ? depth + 1 : depth) * 12}px` }}
-                className={`flex w-full cursor-pointer items-baseline gap-1.5 py-1 pr-2 font-mono text-[11.5px] transition-colors ${
-                  scopeSet.has(f.path) ? "bg-leaf/10 text-paper" : "text-paper-dim hover:bg-ink-3/50"
+                title={f.path}
+                style={{ paddingLeft: `${8 + (node.path ? depth + 1 : depth) * 12}px` }}
+                className={`group flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg pr-2 text-[11.5px] transition-colors ${
+                  scopeSet.has(f.path) ? "bg-leaf/10 text-paper" : "text-paper-dim hover:bg-white/5"
                 }`}
               >
-                <input
-                  type="checkbox"
-                  checked={scopeSet.has(f.path)}
-                  onChange={() => toggleFile(f.path)}
-                  aria-label={`Scope ${f.path}`}
-                  className="translate-y-[1px] accent-leaf"
-                />
-                <span className="truncate">{f.name}</span>
+                <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                  <input
+                    type="checkbox"
+                    checked={scopeSet.has(f.path)}
+                    onChange={() => toggleFile(f.path)}
+                    aria-label={`Scope ${f.path}`}
+                    className="peer h-3.5 w-3.5 appearance-none rounded border border-graphite/40 bg-transparent transition-colors checked:border-leaf checked:bg-leaf group-hover:border-graphite"
+                  />
+                  <svg viewBox="0 0 16 16" className="pointer-events-none absolute inset-0 h-3.5 w-3.5 text-ink opacity-0 peer-checked:opacity-100" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2"><path d="m4 8 3 3 5-6" /></svg>
+                </span>
+                <span className="min-w-0 truncate">{f.name}</span>
                 {f.path === project.mainTex && (
-                  <span className="rounded-sm border border-gold/40 px-1 text-[8.5px] uppercase tracking-wide text-gold">
+                  <span className="ml-auto shrink-0 rounded bg-gold/10 px-1.5 py-0.5 text-[9px] text-gold/90">
                     main
                   </span>
                 )}
@@ -190,65 +198,73 @@ export default function Sidebar({
   }
 
   return (
-    <nav className="flex w-60 shrink-0 flex-col border-r border-rule bg-ink-2">
-      <div className="border-b border-rule px-3 pb-3 pt-3">
+    <nav aria-label="Project sidebar" className="flex w-60 shrink-0 flex-col border-r border-rule/60 bg-ink-2">
+      <div className="px-3 pb-2 pt-3">
         <button
           onClick={onDashboard}
           aria-label="Back to dashboard"
-          className="rounded px-1 py-0.5 text-[12px] text-graphite transition-colors hover:text-leaf"
+          className="mb-3 flex h-7 items-center gap-1 rounded-lg px-1 text-[11px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
         >
-          ‹ Dashboard
+          <SidebarIcon name="back" className="h-3.5 w-3.5" /> Dashboard
         </button>
-        <h2 className="mt-1.5 truncate px-1 font-serif text-[15px] text-paper" title={project.name}>
-          {project.name}
-        </h2>
-        {projects.length > 1 && (
-          <select
-            value={project.id}
-            onChange={(e) => onSelect(e.target.value)}
-            aria-label="Switch project"
-            className="mt-2 w-full rounded border border-rule bg-ink px-1.5 py-1 text-[11.5px] text-paper-dim"
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-        )}
-        <div className="mt-1.5 flex items-center gap-1">
-          <button
-            onClick={onOpenProjectSettings}
-            aria-label="Open project settings"
-            title="Writing style, model override, and default mode for this project"
-            className="rounded px-1 py-0.5 text-[11px] text-graphite transition-colors hover:text-leaf"
-          >
-            ⚙ project settings
-          </button>
-          {onSync && (
+        <div className="rounded-xl border border-rule/70 bg-white/[0.02] p-2">
+          <div className="relative flex min-w-0 items-center gap-2.5 rounded-lg px-1 py-1.5 focus-within:ring-1 focus-within:ring-leaf">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-leaf/10 text-leaf"><SidebarIcon name="file" /></span>
+            <div className="min-w-0 flex-1">
+              <span className="text-[10px] text-graphite">Project</span>
+              <h2 className="line-clamp-2 text-[12px] font-medium leading-[1.45] text-paper" title={project.name}>{project.name}</h2>
+            </div>
+            {projects.length > 1 && <SidebarIcon name="chevron" className="h-3 w-3 rotate-90 text-graphite" />}
+            {projects.length > 1 && (
+              <select
+                value={project.id}
+                onChange={(e) => onSelect(e.target.value)}
+                aria-label="Switch project"
+                title={project.name}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              >
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <div className="mt-1.5 flex items-center gap-1">
             <button
-              onClick={onSync}
-              disabled={syncing}
-              aria-label="Sync from remote"
-              title="Pull incoming changes from Overleaf (or the git remote) now"
-              className="ml-auto rounded px-1 py-0.5 text-[11px] text-graphite transition-colors hover:text-leaf disabled:opacity-60"
+              onClick={onOpenProjectSettings}
+              aria-label="Open project settings"
+              title="Writing style, model override, and default mode for this project"
+              className="flex h-7 items-center gap-1.5 rounded-lg px-1.5 text-[10.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
             >
-              <span className={syncing ? "working-dot" : undefined}>↻</span> {syncing ? "syncing" : "sync"}
+              <SidebarIcon name="settings" className="h-3.5 w-3.5" /> Project settings
             </button>
-          )}
+            {onSync && (
+              <button
+                onClick={onSync}
+                disabled={syncing}
+                aria-label="Sync from remote"
+                title="Pull incoming changes from Overleaf (or the git remote) now"
+                className="ml-auto flex h-7 items-center gap-1 rounded-lg px-1.5 text-[10.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim disabled:opacity-60"
+              >
+                <SidebarIcon name="sync" className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} /> {syncing ? "Syncing" : "Sync"}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="flex items-baseline gap-2 px-4 pb-1 pt-3">
-        <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-graphite">
-          Context
+      <div className="flex items-baseline gap-2 px-5 pb-2 pt-4">
+        <span className="text-[11px] font-medium text-paper-dim">
+          Files
         </span>
-        <span className="ml-auto font-mono text-[10.5px] text-graphite/80">
-          {scope.length === 0 ? "whole project" : `${scope.length} file${scope.length > 1 ? "s" : ""}`}
+        <span className="ml-auto text-[10px] text-graphite" title="Select files to limit the agent's scope. No selection includes the whole project.">
+          {scope.length === 0 ? "Whole project" : `${scope.length} file${scope.length > 1 ? "s" : ""}`}
         </span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2 pt-0.5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         {files.length === 0 ? (
           <p className="px-4 py-2 text-xs text-graphite">No files.</p>
         ) : (
@@ -257,20 +273,20 @@ export default function Sidebar({
       </div>
 
       {scope.length > 0 && (
-        <div className="border-t border-rule px-3 py-1.5">
+        <div className="px-3 pb-2">
           <button
             onClick={() => onScopeChange([])}
-            className="w-full rounded px-1.5 py-1 text-left text-[11px] text-graphite transition-colors hover:text-paper-dim"
+            className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[11px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
           >
-            × clear scope — edit whole project
+            <SidebarIcon name="close" className="h-3 w-3" /> Clear file selection
           </button>
         </div>
       )}
 
       {/* External read-only context: reference material the agent may read but never edits. */}
-      <div className="max-h-[40%] shrink-0 overflow-y-auto border-t border-rule pb-1.5">
-        <div className="flex items-baseline gap-2 px-4 pb-1 pt-2.5">
-          <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-graphite">
+      <div className="mx-3 mb-2 max-h-[42%] shrink-0 overflow-y-auto rounded-xl border border-rule/70 bg-white/[0.02] pb-2">
+        <div className="flex items-center gap-2 px-3 pb-1 pt-2">
+          <span className="text-[11px] font-medium text-paper-dim">
             External context
           </span>
           {ctxCount > 0 && <span className="font-mono text-[10.5px] text-graphite/80">{ctxCount}</span>}
@@ -278,9 +294,10 @@ export default function Sidebar({
             onClick={() => setCtxOpen((s) => !s)}
             aria-label={ctxOpen ? "Close the external-context form" : "Add external context"}
             aria-expanded={ctxOpen}
-            className="ml-auto rounded border border-rule px-1.5 text-[11px] leading-[1.4] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+            title={ctxOpen ? "Close" : "Add files or folders"}
+            className="ml-auto flex h-7 w-7 items-center justify-center rounded-lg text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
           >
-            {ctxOpen ? "×" : "+"}
+            <SidebarIcon name={ctxOpen ? "close" : "plus"} className="h-3.5 w-3.5" />
           </button>
         </div>
 
@@ -386,16 +403,16 @@ export default function Sidebar({
         )}
 
         {ctx && ctxCount === 0 && !ctxOpen && (
-          <p className="px-4 pb-1 text-[10.5px] leading-snug text-graphite/70">
-            Attach code, data, or papers the agent may read but never edit.
+          <p className="px-3 pb-1 pt-1 text-[10px] leading-relaxed text-graphite/70">
+            Reference material · read-only
           </p>
         )}
 
         <ul>
           {ctx?.links.map((l) => (
-            <li key={l.path} className="group flex items-center gap-1.5 py-0.5 pl-4 pr-2">
-              <span className="text-[10px] text-graphite" title={l.kind === "dir" ? "linked folder" : "linked file"}>
-                {l.kind === "dir" ? "▣" : "▤"}
+            <li key={l.path} className="group mx-2 flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5">
+              <span className="text-graphite" title={l.kind === "dir" ? "linked folder" : "linked file"}>
+                <SidebarIcon name={l.kind === "dir" ? "folder" : "file"} className="h-3.5 w-3.5" />
               </span>
               <span
                 className={`min-w-0 flex-1 truncate font-mono text-[10.5px] ${l.exists ? "text-paper-dim" : "text-pencil line-through"}`}
@@ -406,16 +423,16 @@ export default function Sidebar({
               <button
                 onClick={() => ctxAction(() => api.removeContextLink(project.id, l.path))}
                 aria-label={`Unlink ${l.path}`}
-                className="hidden rounded px-1 text-[11px] text-graphite hover:text-pencil group-hover:block"
+                className="rounded-md p-1 text-graphite/50 transition-colors hover:bg-white/5 hover:text-pencil focus-visible:text-paper group-hover:text-graphite"
               >
-                ×
+                <SidebarIcon name="close" className="h-3 w-3" />
               </button>
             </li>
           ))}
           {ctx?.uploads.map((u) => (
-            <li key={u.name} className="group flex items-center gap-1.5 py-0.5 pl-4 pr-2">
-              <span className="text-[10px] text-graphite" title="uploaded file">
-                ▥
+            <li key={u.name} className="group mx-2 flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5">
+              <span className="text-graphite" title="uploaded file">
+                <SidebarIcon name="file" className="h-3.5 w-3.5" />
               </span>
               <a
                 href={appUrl(`/api/projects/${project.id}/context/upload/${encodeURIComponent(u.name)}`)}
@@ -429,22 +446,22 @@ export default function Sidebar({
               <button
                 onClick={() => ctxAction(() => api.deleteContextUpload(project.id, u.name))}
                 aria-label={`Delete ${u.name}`}
-                className="hidden rounded px-1 text-[11px] text-graphite hover:text-pencil group-hover:block"
+                className="rounded-md p-1 text-graphite/50 transition-colors hover:bg-white/5 hover:text-pencil focus-visible:text-paper group-hover:text-graphite"
               >
-                ×
+                <SidebarIcon name="close" className="h-3 w-3" />
               </button>
             </li>
           ))}
         </ul>
       </div>
 
-      <div className="border-t border-rule px-2 py-1.5">
+      <div className="px-3 pb-3 pt-1">
         <button
           onClick={onOpenSettings}
           aria-label="Open settings"
-          className="w-full rounded px-2.5 py-1.5 text-left text-[12px] text-graphite transition-colors hover:bg-ink-3/60 hover:text-paper-dim"
+          className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[11.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
         >
-          ⚙ Settings
+          <SidebarIcon name="settings" /> Settings
         </button>
         {update && (
           <a

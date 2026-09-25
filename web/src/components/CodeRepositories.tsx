@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import LocalRepositoryPicker from "./LocalRepositoryPicker";
+import SidebarIcon from "./SidebarIcon";
 
 interface Repository {
   id: string; source: string; name: string; ref: string; commit: string;
@@ -52,10 +53,13 @@ export function RepositoryManager({ projectId, compact = false }: { projectId: s
     } catch (e) { if (active.current === projectId) setError(e instanceof Error ? e.message : String(e)); }
     finally { if (active.current === projectId) setBusy(""); }
   }
-  return <div className={compact ? "mx-3 my-2 space-y-2 text-xs" : "space-y-3"}>
+  const quietButton = "flex h-7 items-center gap-1.5 rounded-md px-1.5 text-[10.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim disabled:opacity-40";
+  return <div className={compact ? "mx-2 my-1 space-y-2 text-xs" : "space-y-3"}>
     <div className="flex items-center justify-between gap-2">
-      <span className="font-medium text-paper-dim">Git repositories {repos.length > 0 && `(${repos.length})`}</span>
-      <button className={button} aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Close" : "Add repository"}</button>
+      <span className={compact ? "pl-1 text-[10.5px] text-graphite" : "font-medium text-paper-dim"}>Git repositories {repos.length > 0 && <span className={compact ? "ml-1 text-graphite/70" : ""}>{repos.length}</span>}</span>
+      <button className={compact ? quietButton : button} aria-label={open ? "Close" : "Add repository"} aria-expanded={open} onClick={() => setOpen(!open)}>
+        {compact && <SidebarIcon name={open ? "close" : "plus"} className="h-3 w-3" />}{open ? "Close" : compact ? "Add" : "Add repository"}
+      </button>
     </div>
     {open && <form className="space-y-2" onSubmit={e => { e.preventDefault(); void mutate("/repositories", { source, ref: ref || "HEAD" }, "Fetching repository…"); }}>
       <div className="flex gap-2" role="group" aria-label="Repository source">
@@ -83,13 +87,22 @@ export function RepositoryManager({ projectId, compact = false }: { projectId: s
       }} />}
     {busy && <p role="status" className="text-leaf">{busy}</p>}
     {error && <p role="alert" className="text-red-400">{error}</p>}
-    {repos.map(repo => <div key={repo.id} className="rounded border border-rule p-2">
-      <div className="break-words font-medium text-paper">{repo.name}</div>
-      <div className="break-all text-[11px] text-graphite" title={repo.source}>{repo.ref} · <code title={repo.commit}>{repo.commit.slice(0, 12)}</code></div>
+    {repos.map(repo => <div key={repo.id} className={compact ? "rounded-lg bg-ink/60 p-2.5" : "rounded border border-rule p-2"}>
+      <div className="flex items-center gap-2">
+        {compact && <SidebarIcon name="branch" className="h-3.5 w-3.5 text-leaf/80" />}
+        <span className="min-w-0 truncate font-medium text-paper" title={repo.name}>{repo.name}</span>
+      </div>
+      <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[10.5px] text-graphite" title={repo.source}>
+        <span className="truncate" title={repo.ref}>{repo.ref}</span><span className="opacity-50">·</span><code className="shrink-0 text-[9.5px]" title={repo.commit}>{repo.commit.slice(0, compact ? 8 : 12)}</code>
+      </div>
       {!compact && <p className="break-all text-xs text-graphite">{repo.source}<br />Checked {new Date(repo.checkedAt).toLocaleString()}{repo.localChangesExcluded && " · Local edits excluded"}</p>}
-      <div className="mt-2 flex flex-wrap gap-2">
-        <button className={button} disabled={!!busy} title="Fetch the selected revision again; changed snapshots make old assessments stale" onClick={() => void mutate("/repositories/refresh", { repositoryId: repo.id }, `Refreshing ${repo.name}…`)}>Refresh revision</button>
-        <button className={button} disabled={!!busy} onClick={() => void mutate("/repositories/remove", { repositoryId: repo.id }, `Removing ${repo.name}…`)}>Remove</button>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button className={compact ? quietButton : button} aria-label="Refresh revision" disabled={!!busy} title="Fetch the selected revision again; changed snapshots make old assessments stale" onClick={() => void mutate("/repositories/refresh", { repositoryId: repo.id }, `Refreshing ${repo.name}…`)}>
+          {compact && <SidebarIcon name="sync" className="h-3 w-3" />}{compact ? "Refresh" : "Refresh revision"}
+        </button>
+        <button className={compact ? `${quietButton} ml-auto hover:text-pencil` : button} aria-label="Remove" title={`Remove ${repo.name}`} disabled={!!busy} onClick={() => void mutate("/repositories/remove", { repositoryId: repo.id }, `Removing ${repo.name}…`)}>
+          {compact ? <SidebarIcon name="close" className="h-3.5 w-3.5" /> : "Remove"}
+        </button>
       </div>
     </div>)}
     {!compact && <p className="text-xs text-graphite">Snapshots stay pinned until you refresh. Ask in chat what the attached branch introduced compared with a base branch, such as main, to inspect its commits and changes. Submodule contents and Git LFS datasets/models are excluded. Code is read as evidence; attaching it does not run it.</p>}

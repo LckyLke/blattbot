@@ -47,6 +47,7 @@
     "test:code-ui": "tsx scripts/code-repositories-ui-verify.ts",
     "test:pdf-links-ui": "tsx scripts/pdf-links-ui-verify.ts",
     "test:chat-effort-ui": "tsx scripts/chat-effort-ui-verify.ts",
+    "test:sidebar-ui": "tsx scripts/sidebar-ui-verify.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"
   },
