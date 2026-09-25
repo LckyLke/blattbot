@@ -1,5 +1,5 @@
 import { concreteModels, shortModel, useModelList } from "../models";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseDiff } from "../diff";
 import {
   CHAT_IMAGE_TYPES,
@@ -292,6 +292,11 @@ const MODES = [
 
 const isModeId = (v: string | null | undefined): v is string => MODES.some((m) => m.id === v);
 
+function resizeComposer(input: HTMLTextAreaElement) {
+  input.style.height = "0px";
+  input.style.height = `${Math.min(200, Math.max(76, input.scrollHeight))}px`;
+}
+
 /**
  * The composer's preselected mode, in strict precedence order:
  * 1. the user's manual pick for THIS project in this browser
@@ -405,6 +410,22 @@ export default function Chat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    if (composerRef.current) resizeComposer(composerRef.current);
+  }, [draft]);
+  useEffect(() => {
+    const input = composerRef.current;
+    if (!input) return;
+    let width = input.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (input.clientWidth !== width) {
+        width = input.clientWidth;
+        resizeComposer(input);
+      }
+    });
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, []);
   // ---- Image attachments: paste, drop, or the paperclip picker.
   const [pending, setPending] = useState<PendingImage[]>([]);
   const [attachError, setAttachError] = useState("");
@@ -720,177 +741,169 @@ export default function Chat({
           // vanishing, and drop is the one entry point with no `accept` filter.
           void addFiles([...(e.dataTransfer.files ?? [])]);
         }}
-        className={`shrink-0 border-t bg-ink-2 px-6 py-3 ${
-          dragging ? "border-t-leaf border-dashed" : "border-rule"
-        }`}
+        aria-label="Chat composer"
+        className="chat-composer shrink-0 bg-ink px-4 pb-3 pt-2 sm:px-6"
       >
-        {dragging && (
-          <p
-            role="status"
-            className="mx-auto mb-2 max-w-2xl rounded border border-dashed border-leaf/70 px-3 py-1 text-center font-mono text-[11px] text-leaf"
-          >
-            {busy ? "BlattBot is working — attachments wait for the next message" : "↓ Drop images to attach"}
-          </p>
-        )}
-        {scope.length > 0 && (
-          <div className="mx-auto mb-2 flex max-w-2xl items-center">
-            <span
-              title={scope.join("\n")}
-              className="flex items-center gap-1.5 rounded-full border border-gold/40 py-0.5 pl-2.5 pr-1.5 font-mono text-[11px] text-gold"
+        <div className={`mx-auto max-w-2xl rounded-2xl border bg-ink-2 p-3 shadow-[0_4px_24px_rgb(0_0_0/0.12)] transition-colors focus-within:border-graphite/60 ${
+          dragging ? "border-dashed border-leaf" : "border-rule/80"
+        }`}>
+          {dragging && (
+            <p
+              role="status"
+              className="mx-auto mb-2 max-w-2xl rounded border border-dashed border-leaf/70 px-3 py-1 text-center font-mono text-[11px] text-leaf"
             >
-              scope: {scopeLabel(scope)}
-              <button
-                type="button"
-                onClick={onClearScope}
-                aria-label="Clear scope"
-                className="rounded-full px-1 leading-none text-gold/70 transition-colors hover:text-paper"
-              >
-                ×
-              </button>
-            </span>
-          </div>
-        )}
-        <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-1">
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => pickMode(m.id)}
-              title={m.hint}
-              className={`rounded-full border px-2.5 py-0.5 text-[11px] transition-colors ${
-                mode === m.id
-                  ? "border-leaf/60 bg-leaf/10 text-paper"
-                  : "border-rule text-graphite hover:border-leaf/40 hover:text-paper-dim"
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-          <span className="ml-2 hidden min-w-0 truncate text-[10.5px] text-graphite/70 sm:inline">
-            {MODES.find((m) => m.id === mode)?.hint}
-          </span>
-          <ModelChip
-            model={model}
-            projectModel={projectModel}
-            onChange={onChangeModel}
-            onSetProject={onSetProjectModel}
-          />
-          {effortSettings && <EffortSelect model={model} settings={effortSettings} onChange={onChangeEffort} />}
-          {projectStats && projectStats.totalTurns > 0 && (
-            <span
-              title={`Project total across ${projectStats.totalTurns} turn${
-                projectStats.totalTurns === 1 ? "" : "s"
-              }`}
-              className="shrink-0 rounded-full border border-rule px-2.5 py-0.5 font-mono text-[11px] text-graphite"
-            >
-              {projectStats.totalCostUsd > 0
-                ? `Σ $${projectStats.totalCostUsd.toFixed(2)}`
-                : `Σ ${projectStats.totalTurns} turn${projectStats.totalTurns === 1 ? "" : "s"}`}
-            </span>
+              {busy ? "BlattBot is working — attachments wait for the next message" : "↓ Drop images to attach"}
+            </p>
           )}
-        </div>
-        {pending.length > 0 && (
-          <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-2.5">
-            {pending.map((p) => (
-              <span key={p.key} className="relative inline-block">
-                <img
-                  src={p.url}
-                  alt={p.name}
-                  className="block h-14 w-14 rounded-lg border border-rule object-cover"
-                />
+          {scope.length > 0 && (
+            <div className="mx-auto mb-2 flex max-w-2xl items-center">
+              <span
+                title={scope.join("\n")}
+                className="flex items-center gap-1.5 rounded-full border border-gold/40 py-0.5 pl-2.5 pr-1.5 font-mono text-[11px] text-gold"
+              >
+                scope: {scopeLabel(scope)}
                 <button
                   type="button"
-                  onClick={() => removePending(p.key)}
-                  disabled={busy}
-                  aria-label={`Remove ${p.name}`}
-                  title={`Remove ${p.name}`}
-                  className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-rule bg-ink-2 text-[11px] leading-none text-graphite transition-colors hover:border-pencil/60 hover:text-pencil disabled:opacity-40"
+                  onClick={onClearScope}
+                  aria-label="Clear scope"
+                  className="rounded-full px-1 leading-none text-gold/70 transition-colors hover:text-paper"
                 >
                   ×
                 </button>
               </span>
-            ))}
-            <span className="font-mono text-[10.5px] text-graphite">
-              {pending.length} of {MAX_CHAT_IMAGES} images
-            </span>
-          </div>
-        )}
-        {shrinking && (
-          <p role="status" className="mx-auto mb-2 max-w-2xl text-[11px] text-graphite">
-            Resizing an image to fit the {MAX_CHAT_IMAGE_LABEL} limit…
-          </p>
-        )}
-        {attachError && (
-          <p role="status" className="mx-auto mb-2 max-w-2xl text-[11px] text-pencil">
-            {attachError}
-          </p>
-        )}
-        <div className="mx-auto flex max-w-2xl items-end gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={CHAT_IMAGE_TYPES.join(",")}
-            multiple
-            className="hidden"
-            onChange={(e) => {
-              void addFiles([...(e.target.files ?? [])]);
-              // Reset so picking the same file twice still fires a change.
-              e.target.value = "";
-            }}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={busy || pending.length >= MAX_CHAT_IMAGES}
-            aria-label="Attach images"
-            title="Attach images — you can also paste or drop them here"
-            className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-lg border border-rule text-graphite transition-colors hover:border-leaf/50 hover:text-paper disabled:opacity-40"
-          >
-            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none"
-              stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5" />
-            </svg>
-          </button>
-          <textarea
-            ref={composerRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onPaste={(e) => {
-              const files = imageFilesFrom(e.clipboardData);
-              if (files.length === 0) return;
-              // A pasted screenshot must not also drop its file name as text.
-              e.preventDefault();
-              void addFiles(files);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+            </div>
+          )}
+          {pending.length > 0 && (
+            <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-2.5">
+              {pending.map((p) => (
+                <span key={p.key} className="relative inline-block">
+                  <img
+                    src={p.url}
+                    alt={p.name}
+                    className="block h-14 w-14 rounded-lg border border-rule object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removePending(p.key)}
+                    disabled={busy}
+                    aria-label={`Remove ${p.name}`}
+                    title={`Remove ${p.name}`}
+                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-rule bg-ink-2 text-[11px] leading-none text-graphite transition-colors hover:border-pencil/60 hover:text-pencil disabled:opacity-40"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              <span className="font-mono text-[10.5px] text-graphite">
+                {pending.length} of {MAX_CHAT_IMAGES} images
+              </span>
+            </div>
+          )}
+          {shrinking && (
+            <p role="status" className="mx-auto mb-2 max-w-2xl text-[11px] text-graphite">
+              Resizing an image to fit the {MAX_CHAT_IMAGE_LABEL} limit…
+            </p>
+          )}
+          {attachError && (
+            <p role="status" className="mx-auto mb-2 max-w-2xl text-[11px] text-pencil">
+              {attachError}
+            </p>
+          )}
+          <div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={CHAT_IMAGE_TYPES.join(",")}
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void addFiles([...(e.target.files ?? [])]);
+                // Reset so picking the same file twice still fires a change.
+                e.target.value = "";
+              }}
+            />
+            <textarea
+              ref={composerRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onPaste={(e) => {
+                const files = imageFilesFrom(e.clipboardData);
+                if (files.length === 0) return;
+                // A pasted screenshot must not also drop its file name as text.
                 e.preventDefault();
-                submit();
-              }
-            }}
-            rows={Math.min(6, Math.max(1, draft.split("\n").length))}
-            placeholder={busy ? "BlattBot is working…" : "Ask BlattBot to edit, rewrite, or cite…"}
-            disabled={busy}
-            className="min-h-[42px] flex-1 resize-none rounded-lg border border-rule bg-ink px-3.5 py-2.5 font-serif text-[16px] text-paper placeholder:text-graphite/70 disabled:opacity-60"
-          />
-          {busy ? (
-            <button
-              type="button"
-              onClick={onInterrupt}
-              className="h-[42px] rounded-lg border border-pencil/60 px-4 text-[13px] text-pencil transition-colors hover:bg-pencil/10"
-            >
-              Stop
-            </button>
-          ) : (
-            <button
-              type="submit"
-              // Attachments alone are enough — an image-only message is valid.
-              disabled={(!draft.trim() && pending.length === 0) || shrinking}
-              title={shrinking ? "Resizing an attached image…" : "Send (Enter)"}
-              className="h-[42px] rounded-lg bg-leaf-deep px-4 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-40"
-            >
-              Send
-            </button>
+                void addFiles(files);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              rows={2}
+              aria-label="Message BlattBot"
+              placeholder={busy ? "BlattBot is working…" : "Ask BlattBot to edit, rewrite, or cite…"}
+              disabled={busy}
+              className="chat-composer-input block min-h-[76px] w-full resize-none border-0 bg-transparent px-1 py-1 text-[14px] leading-6 text-paper placeholder:text-graphite disabled:opacity-60"
+            />
+            <div className="chat-composer-toolbar mt-2">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={busy || pending.length >= MAX_CHAT_IMAGES}
+                  aria-label="Attach images"
+                  title="Attach images — you can also paste or drop them here"
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-graphite transition-colors hover:bg-white/5 hover:text-paper disabled:opacity-40"
+                >
+                  <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none"
+                    stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5" />
+                  </svg>
+                </button>
+                <label className="relative flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-paper-dim transition-colors hover:bg-white/5 focus-within:ring-1 focus-within:ring-leaf" title={MODES.find(m => m.id === mode)?.hint}>
+                  <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4" className="text-leaf"><path d="m12.5 3.5 4 4M3 17l4.5-1 9-9a2.8 2.8 0 0 0-4-4l-9 9L3 17Z" /></svg>
+                  <span>{MODES.find(m => m.id === mode)?.label}</span>
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-graphite"><path d="m4 6 4 4 4-4" /></svg>
+                  <select aria-label="Chat mode" value={mode} onChange={e => pickMode(e.target.value)} className="absolute inset-0 w-full cursor-pointer opacity-0">
+                    {MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                </label>
+              </div>
+              <div className="chat-composer-settings flex min-w-0 items-center justify-end gap-1">
+                <ModelChip model={model} projectModel={projectModel} onChange={onChangeModel} onSetProject={onSetProjectModel} />
+                {effortSettings && <EffortSelect model={model} settings={effortSettings} onChange={onChangeEffort} />}
+              </div>
+                {busy ? (
+                  <button
+                    type="button"
+                    onClick={onInterrupt}
+                    aria-label="Stop"
+                    title="Stop generating"
+                    className="chat-composer-send flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-paper text-ink transition-colors hover:bg-paper-dim"
+                  >
+                    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" fill="currentColor"><rect x="5" y="5" width="10" height="10" rx="1.5" /></svg>
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    // Attachments alone are enough — an image-only message is valid.
+                    disabled={(!draft.trim() && pending.length === 0) || shrinking}
+                    title={shrinking ? "Resizing an attached image…" : "Send (Enter)"}
+                    aria-label="Send"
+                    className="chat-composer-send flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-leaf text-ink transition-colors hover:bg-leaf/85 disabled:bg-white/10 disabled:text-graphite/60"
+                  >
+                    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15V5m-5 5 5-5 5 5" /></svg>
+                  </button>
+                )}
+            </div>
+          </div>
+        </div>
+        <div className="mx-auto mt-2 flex max-w-2xl items-center justify-between gap-2 px-1 text-[10px] text-graphite/70">
+          <span>Enter to send <span className="px-1 opacity-50">·</span> Shift + Enter for a new line</span>
+          {projectStats && projectStats.totalTurns > 0 && (
+            <span className="shrink-0" title={`Project total across ${projectStats.totalTurns} turns`}>
+              {projectStats.totalCostUsd > 0 ? `$${projectStats.totalCostUsd.toFixed(2)} total` : `${projectStats.totalTurns} turns`}
+            </span>
           )}
         </div>
       </form>
@@ -899,7 +912,7 @@ export default function Chat({
 }
 
 /**
- * The current effective model as a mono chip; clicking opens a popover with
+ * The current effective model in the composer toolbar; clicking opens a popover with
  * the curated suggestions plus a free-text field. Selecting saves GLOBALLY
  * (PUT /api/settings) as before; a smaller secondary action writes the typed
  * id as a project-only override instead, and an active override shows a
@@ -939,15 +952,17 @@ function ModelChip({
   }
 
   return (
-    <div className="relative ml-auto shrink-0">
+    <div className="relative min-w-0 max-w-[180px]">
       <button
         type="button"
         aria-label="Agent model"
         title={`Agent model: ${model || "default"}${projectModel ? " (project override)" : ""} — click to change`}
         onClick={() => setOpen((o) => !o)}
-        className="rounded-full border border-rule px-2.5 py-0.5 font-mono text-[11px] text-graphite transition-colors hover:border-leaf/40 hover:text-paper-dim"
+        aria-expanded={open}
+        className="flex h-8 max-w-full items-center gap-1 rounded-lg px-2 text-[11px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
       >
-        {shortModel(model) || defaultLabel}
+        <span className="truncate">{shortModel(model) || defaultLabel}</span>
+        <svg viewBox="0 0 16 16" width="12" height="12" className="shrink-0" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg>
       </button>
       {open && (
         <>

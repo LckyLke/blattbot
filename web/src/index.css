@@ -457,11 +457,25 @@ button:hover > .tex-logo .down,
   border-radius: 2px;
 }
 
-/* The CodeMirror source editor manages its own focus affordances (visible
-   caret, active-line tint) — the global ring would box the whole content. */
+/* These editors provide a caret and their own surrounding focus treatment. */
 [data-editor="codemirror"] .cm-content:focus-visible,
-[data-editor="codemirror"] .cm-editor:focus-visible {
+[data-editor="codemirror"] .cm-editor:focus-visible,
+.chat-composer-input:focus-visible {
   outline: none;
+}
+
+/* Respond to the split pane's width, rather than the browser window. */
+.chat-composer { container-type: inline-size; }
+.chat-composer-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+@container (max-width: 440px) {
+  .chat-composer-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .chat-composer-send { grid-column: 2; grid-row: 1; }
+  .chat-composer-settings { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
 }
 
 /* --- CodeMirror panels (search / goto-line are plain DOM, themed here) --- */

@@ -25,11 +25,12 @@ export default function EffortSelect({ model, settings, onChange }: {
     (backend === "claude" ? CLAUDE_LEVELS : ["low", "medium", "high", "xhigh"]))].filter(level => allowed.includes(level));
   const unavailable = Boolean(current && !levels.includes(current));
   return (
-    <label className="flex shrink-0 items-center gap-1 rounded-full border border-rule px-2.5 py-0.5 text-[11px] text-graphite"
+    <label className="relative flex h-8 shrink-0 cursor-pointer items-center gap-1 rounded-lg px-2 text-[11px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim focus-within:ring-1 focus-within:ring-leaf"
       title={unsupported ? "This model does not support reasoning effort" : "Global reasoning effort — applies from the next turn"}>
-      <span>Effort</span>
+      <span aria-hidden="true">{current ? current.charAt(0).toUpperCase() + current.slice(1) : "Default"} effort</span>
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg>
       <select aria-label="Reasoning effort" value={current} disabled={saving || (unsupported && !current)}
-        className="min-w-0 rounded bg-ink font-mono text-[11px] text-paper-dim outline-none focus-visible:ring-1 focus-visible:ring-leaf disabled:opacity-50"
+        className="absolute inset-0 w-full cursor-pointer opacity-0 disabled:cursor-default"
         onChange={async e => {
           const effort = e.target.value;
           setSaving(true);

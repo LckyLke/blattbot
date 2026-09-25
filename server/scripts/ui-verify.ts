@@ -489,27 +489,11 @@ async function main() {
 
     // The chip shows the project override (alias resolved), not the global default…
     const projChipOverrideOk = (await modelChip.innerText()) === "fable-5-1";
-    // …and the saved default mode preselects the Research pill (no manual pick stored).
-    await page
-      .waitForFunction(
-        () => {
-          const pill = [...document.querySelectorAll("button")].find(
-            (b) => b.textContent === "Research" && b.className.includes("rounded-full"),
-          );
-          return Boolean(pill && pill.className.includes("bg-leaf/10"));
-        },
-        { timeout: 5_000 },
-      )
-      .catch(() => {});
-    const projDefaultModeApplied = await page
-      .getByRole("button", { name: "Research", exact: true })
-      .evaluate((el) => el.className.includes("bg-leaf/10"));
-    // The composer's mode picker offers the read-only Understand mode.
-    const understandPillOk =
-      (await page
-        .getByRole("button", { name: "Understand", exact: true })
-        .filter({ visible: true })
-        .count()) === 1;
+    // The saved default mode preselects Research (no manual pick stored).
+    await page.waitForFunction(() => document.querySelector<HTMLSelectElement>('select[aria-label="Chat mode"]')?.value === "research");
+    const modePicker = page.getByRole("combobox", { name: "Chat mode", exact: true });
+    const projDefaultModeApplied = (await modePicker.inputValue()) === "research";
+    const understandModeOk = (await modePicker.locator('option[value="understand"]').count()) === 1;
     await shot("23g-project-override-chip");
 
     // Clear the override from the chip popover; style + default mode must survive.
@@ -2362,7 +2346,7 @@ async function main() {
         projSettingsSavedOk,
         projChipOverrideOk,
         projDefaultModeApplied,
-        understandPillOk,
+        understandModeOk,
         projClearOk,
         restoreUserOk,
         restoreTitleOk,
@@ -2525,10 +2509,10 @@ async function main() {
       throw new Error("model chip does not show the project override 'fable-5-1'");
     }
     if (!projDefaultModeApplied) {
-      throw new Error("the project's default mode did not preselect the Research pill");
+      throw new Error("the project's default mode did not preselect Research");
     }
-    if (!understandPillOk) {
-      throw new Error("the chat composer's mode picker does not show the Understand pill");
+    if (!understandModeOk) {
+      throw new Error("the chat composer's mode picker does not offer Understand");
     }
     if (!projClearOk) {
       throw new Error("clearing the project override failed (or dropped the style/defaultMode)");

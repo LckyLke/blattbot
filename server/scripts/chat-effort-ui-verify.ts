@@ -61,7 +61,30 @@ try {
   await choose("high"); assert.equal((await savedSettings()).codexEffort, "high");
   await page.reload({ waitUntil: "networkidle" });
   await effort.waitFor(); assert.equal(await effort.inputValue(), "high");
+  const composer = page.getByRole("form", { name: "Chat composer", exact: true });
+  const input = page.getByRole("textbox", { name: "Message BlattBot", exact: true });
+  const mode = page.getByRole("combobox", { name: "Chat mode", exact: true });
+  assert.equal(await mode.locator("option").count(), 6);
+  await mode.selectOption("research");
+  await page.reload({ waitUntil: "networkidle" });
+  assert.equal(await mode.inputValue(), "research");
+  await mode.selectOption("edit");
+  assert(await page.getByRole("button", { name: "Send", exact: true }).isDisabled());
+  await input.fill("Help me tighten the methodology section.");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("Keep the equations and citations intact.");
+  assert((await input.inputValue()).includes("\n"));
+  assert(await page.getByRole("button", { name: "Send", exact: true }).isEnabled());
   await page.screenshot({ path: "/tmp/blattbot-chat-effort.png", fullPage: true });
+  await composer.screenshot({ path: "/tmp/blattbot-composer.png" });
+  await input.fill("A longer paragraph to check wrapping and resizing. ".repeat(30));
+  assert((await input.boundingBox())!.height <= 201);
+  await input.fill("");
+  assert((await input.boundingBox())!.height <= 80);
+  await page.setViewportSize({ width: 1050, height: 850 });
+  assert(await composer.evaluate(el => el.scrollWidth <= el.clientWidth), "Composer must fit a narrow pane");
+  await composer.screenshot({ path: "/tmp/blattbot-composer-narrow.png" });
+  await page.setViewportSize({ width: 1450, height: 1000 });
   // Failed writes leave the persisted choice visible and expose the server error.
   await page.route("**/api/settings", async route => {
     if (route.request().method() === "PUT") await route.fulfill({ status: 500, json: { error: "Fixture save failure" } });

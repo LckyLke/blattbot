@@ -110,7 +110,9 @@ try {
   const checks = page; // Repository attachments now live under External context in the sidebar.
   await checks.getByRole("button", { name: "Add repository", exact: true }).click();
   await checks.getByRole("button", { name: "Local folder", exact: true }).click();
+  const initialFolder = page.waitForResponse(r => r.url().includes("/repositories/local") && r.request().method() === "GET");
   await checks.getByRole("button", { name: "Browse folders…", exact: true }).click();
+  await initialFolder;
   const picker = page.getByRole("dialog", { name: "Choose a local Git repository" });
   await picker.getByLabel("Folder location").fill(root);
   await picker.getByRole("button", { name: "Go", exact: true }).click();
@@ -136,7 +138,7 @@ try {
   await checks.getByRole("button", { name: "Refresh revision" }).waitFor();
   [repository] = await api(`/api/projects/${project.id}/research/repositories`);
   assert.equal(repository.commit, git(source, "rev-parse", "HEAD"));
-  await page.getByRole("button", { name: "Check code", exact: true }).click();
+  await page.getByRole("combobox", { name: "Chat mode", exact: true }).selectOption("code");
   await page.getByPlaceholder("Ask BlattBot to edit, rewrite, or cite…").fill("Check the loss reduction against loss.py and save the evidence.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Saved a code assessment:", { exact: false }).waitFor({ timeout: 30_000 });
