@@ -91,10 +91,10 @@ export default function InlineDiffEdit({ path, lines }: { path: string; lines: D
           if (event.key === "Escape") { event.preventDefault(); cancel(); }
           if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void save(); }
         }}
-        className="block w-full min-w-0 resize-y rounded border border-leaf/60 bg-ink-2 p-2 font-mono text-[12.5px] leading-[1.55] text-paper outline-none focus:ring-1 focus:ring-leaf disabled:opacity-60" />
+        className="block w-full min-w-0 resize-y rounded-lg border border-leaf/60 bg-ink-2 p-2 font-mono text-[12.5px] leading-[1.55] text-paper outline-none focus:ring-1 focus:ring-leaf disabled:opacity-60" />
       <div className="mt-2 flex flex-wrap items-center gap-2 font-sans text-xs">
-        <button onClick={() => void save()} disabled={saving || stale || busy} className="rounded bg-leaf px-3 py-1 text-ink disabled:opacity-50">{saving ? "Saving…" : "Save passage"}</button>
-        <button onClick={cancel} disabled={saving} className="rounded border border-rule px-3 py-1">{stale ? "Close" : "Cancel"}</button>
+        <button onClick={() => void save()} disabled={saving || stale || busy} className="rounded-lg bg-leaf px-3 py-1 text-ink disabled:opacity-50">{saving ? "Saving…" : "Save passage"}</button>
+        <button onClick={cancel} disabled={saving} className="rounded-lg border border-rule px-3 py-1">{stale ? "Close" : "Cancel"}</button>
         <span className="text-graphite">Ctrl/⌘ + Enter to save · Esc to cancel</span>
       </div>
     </div> : <div role="button" tabIndex={busy ? -1 : 0} aria-label={`Edit added passage in ${path} at line ${lines[0].newNo}`}

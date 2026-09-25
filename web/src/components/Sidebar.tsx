@@ -179,13 +179,13 @@ export default function Sidebar({
                     checked={scopeSet.has(f.path)}
                     onChange={() => toggleFile(f.path)}
                     aria-label={`Scope ${f.path}`}
-                    className="peer h-3.5 w-3.5 appearance-none rounded border border-graphite/40 bg-transparent transition-colors checked:border-leaf checked:bg-leaf group-hover:border-graphite"
+                    className="peer h-3.5 w-3.5 appearance-none rounded-lg border border-graphite/40 bg-transparent transition-colors checked:border-leaf checked:bg-leaf group-hover:border-graphite"
                   />
                   <svg viewBox="0 0 16 16" className="pointer-events-none absolute inset-0 h-3.5 w-3.5 text-ink opacity-0 peer-checked:opacity-100" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2"><path d="m4 8 3 3 5-6" /></svg>
                 </span>
                 <span className="min-w-0 truncate">{f.name}</span>
                 {f.path === project.mainTex && (
-                  <span className="ml-auto shrink-0 rounded bg-gold/10 px-1.5 py-0.5 text-[9px] text-gold/90">
+                  <span className="ml-auto shrink-0 rounded-lg bg-gold/10 px-1.5 py-0.5 text-[9px] text-gold/90">
                     main
                   </span>
                 )}
@@ -303,7 +303,7 @@ export default function Sidebar({
 
         <RepositoryManager key={project.id} projectId={project.id} compact />
         {ctxOpen && (
-          <div className="mx-3 mb-1.5 rounded border border-rule bg-ink p-2">
+          <div className="mx-3 mb-1.5 rounded-lg border border-rule bg-ink p-2">
             <label className="block text-[10.5px] text-graphite">
               Link a local path <span className="text-graphite/60">(code, data, notes — read-only)</span>
               <span className="mt-1 flex gap-1">
@@ -311,7 +311,7 @@ export default function Sidebar({
                   value={linkPath}
                   onChange={(e) => setLinkPath(e.target.value)}
                   placeholder="/home/…/my-experiment"
-                  className="min-w-0 flex-1 rounded border border-rule bg-ink-2 px-1.5 py-1 font-mono text-[10.5px] text-paper placeholder:text-graphite/60"
+                  className="min-w-0 flex-1 rounded-lg border border-rule bg-ink-2 px-1.5 py-1 font-mono text-[10.5px] text-paper placeholder:text-graphite/60"
                 />
                 <button
                   disabled={ctxBusy || !linkPath.trim()}
@@ -320,7 +320,7 @@ export default function Sidebar({
                       (ok) => ok && setLinkPath(""),
                     )
                   }
-                  className="rounded border border-rule px-1.5 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                  className="rounded-lg border border-rule px-1.5 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
                 >
                   Link
                 </button>
@@ -329,19 +329,19 @@ export default function Sidebar({
             <button
               onClick={() => (browse ? setBrowse(null) : void openBrowse(linkPath.trim() || undefined))}
               aria-expanded={browse !== null}
-              className="mt-1.5 w-full rounded border border-rule px-1.5 py-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+              className="mt-1.5 w-full rounded-lg border border-rule px-1.5 py-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
             >
               {browse ? "× Close folder browser" : "Browse folders…"}
             </button>
 
             {browse && (
-              <div className="mt-1.5 rounded border border-rule bg-ink-2 p-1">
+              <div className="mt-1.5 rounded-lg border border-rule bg-ink-2 p-1">
                 <div className="flex items-center gap-1">
                   <button
                     disabled={!browse.parent}
                     onClick={() => void openBrowse(browse.parent!)}
                     aria-label="Go to the parent folder"
-                    className="rounded border border-rule px-1 text-[10.5px] leading-[1.5] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-40"
+                    className="rounded-lg border border-rule px-1 text-[10.5px] leading-[1.5] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-40"
                   >
                     ↑
                   </button>
@@ -374,7 +374,7 @@ export default function Sidebar({
                       (ok) => ok && setBrowse(null),
                     )
                   }
-                  className="mt-1 w-full rounded border border-rule px-1.5 py-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                  className="mt-1 w-full rounded-lg border border-rule px-1.5 py-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
                 >
                   Link this folder
                 </button>
@@ -384,7 +384,7 @@ export default function Sidebar({
             <button
               disabled={ctxBusy}
               onClick={() => fileInput.current?.click()}
-              className="mt-1.5 w-full rounded border border-rule px-1.5 py-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+              className="mt-1.5 w-full rounded-lg border border-rule px-1.5 py-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
             >
               Upload files (PDFs, notes, results…)
             </button>

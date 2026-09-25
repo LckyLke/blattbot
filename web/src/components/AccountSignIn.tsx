@@ -96,7 +96,7 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
           value={instance}
           onChange={(e) => setInstance(e.target.value)}
           placeholder="https://www.overleaf.com — or a project link"
-          className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+          className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
         />
       </label>
 
@@ -112,7 +112,7 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
           type="button"
           disabled={disabled}
           onClick={() => grab("firefox")}
-          className="rounded border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+          className="rounded-lg border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
         >
           {grabbing === "firefox" ? "Looking for a session…" : "Sign in from browser session"}
         </button>
@@ -120,7 +120,7 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
           type="button"
           disabled={disabled}
           onClick={() => grab("browser")}
-          className="rounded border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+          className="rounded-lg border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
         >
           {grabbing === "browser" ? "Waiting for login…" : "Log in via browser"}
         </button>
@@ -142,13 +142,13 @@ export default function AccountSignIn({ onSession, busy = false, autoFocus = fal
             onChange={(e) => setCookie(e.target.value)}
             type="password"
             placeholder="overleaf_session2=s%3A… (DevTools → Application → Cookies)"
-            className="min-w-0 flex-1 rounded border border-rule bg-ink px-2.5 py-1.5 font-mono text-xs text-paper placeholder:text-graphite/60"
+            className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-2.5 py-1.5 font-mono text-xs text-paper placeholder:text-graphite/60"
           />
           <button
             type="button"
             disabled={!cookie.trim() || grabbing !== null || busy}
             onClick={usePasted}
-            className="rounded border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+            className="rounded-lg border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
           >
             {grabbing === "paste" ? "Checking…" : "Use this session"}
           </button>

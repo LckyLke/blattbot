@@ -819,7 +819,7 @@ export default function PdfPanel({
             }}
             placeholder="Find in PDF…"
             aria-label="Find in PDF"
-            className="min-w-24 flex-1 rounded border border-rule bg-ink-2 px-2 py-0.5 text-[11.5px] text-paper placeholder:text-graphite/60"
+            className="min-w-24 flex-1 rounded-lg border border-rule bg-ink-2 px-2 py-0.5 text-[11.5px] text-paper placeholder:text-graphite/60"
           />
           <span className="w-14 text-center font-mono text-[10.5px] text-graphite" role="status">
             {searchQuery.trim().length < 1
@@ -832,8 +832,8 @@ export default function PdfPanel({
                   ? "no hits"
                   : `${searchIdx + 1}/${searchHits.length}${searchTruncated ? "+" : ""}`}
           </span>
-          <button type="button" aria-label="PDF match case" aria-pressed={matchCase} onClick={() => setMatchCase(v => !v)} className="rounded border border-rule px-1 aria-pressed:text-leaf">Aa</button>
-          <button type="button" aria-label="PDF whole words" aria-pressed={wholeWord} onClick={() => setWholeWord(v => !v)} className="rounded border border-rule px-1 aria-pressed:text-leaf">Word</button>
+          <button type="button" aria-label="PDF match case" aria-pressed={matchCase} onClick={() => setMatchCase(v => !v)} className="rounded-lg border border-rule px-1 aria-pressed:text-leaf">Aa</button>
+          <button type="button" aria-label="PDF whole words" aria-pressed={wholeWord} onClick={() => setWholeWord(v => !v)} className="rounded-lg border border-rule px-1 aria-pressed:text-leaf">Word</button>
           {searchError && <span role="alert" className="text-pencil">{searchError}</span>}
           <button
             onClick={() => gotoHit(-1)}
@@ -957,7 +957,7 @@ export default function PdfPanel({
           </div>
         ) : (
           <div className="flex h-full items-center justify-center px-8">
-            <p className="max-w-xs text-center font-serif text-sm leading-relaxed text-graphite">
+            <p className="max-w-xs text-center font-sans text-sm leading-relaxed text-graphite">
               {compiling
                 ? "Compiling the document…"
                 : compile
@@ -1373,7 +1373,7 @@ function CiteCard({
               {entry.year && <span className="text-paper-dim"> · {entry.year}</span>}
             </p>
             {entry.title && (
-              <p className="mt-0.5 font-serif text-[12.5px] leading-snug text-paper-dim">{entry.title}</p>
+              <p className="mt-0.5 font-sans text-[12.5px] leading-snug text-paper-dim">{entry.title}</p>
             )}
             <p className="mt-1 break-all font-mono text-[10.5px] text-graphite">
               {entry.key}

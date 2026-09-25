@@ -62,7 +62,7 @@ export default function DiffView({ file }: { file: DiffFile }) {
   return (
     <>
       {file.hunks.map((hunk, hi) => (
-        <div key={hi} className="mt-1 overflow-x-auto rounded border border-rule bg-ink-2/60 first:mt-0">
+        <div key={hi} className="mt-1 overflow-x-auto rounded-lg border border-rule bg-ink-2/60 first:mt-0">
           {hunk.header && (
             <div className="border-b border-rule px-3 py-0.5 font-mono text-[10.5px] italic text-graphite">
               {hunk.header}

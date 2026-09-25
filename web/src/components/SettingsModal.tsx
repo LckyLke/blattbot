@@ -274,10 +274,10 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
-        className="flex max-h-[88vh] w-[720px] max-w-full flex-col rounded-lg border border-rule bg-ink-2 shadow-[0_24px_64px_rgba(0,0,0,0.5)]"
+        className="flex max-h-[88vh] w-[720px] max-w-full flex-col rounded-2xl border border-rule bg-ink-2 shadow-[0_24px_64px_rgba(0,0,0,0.5)]"
       >
-        <header className="booktabs flex flex-wrap items-center gap-2 px-5 pb-3 pt-4 sm:gap-4">
-          <h2 className="font-serif text-[17px] font-semibold text-paper">Settings</h2>
+        <header className="flex flex-wrap items-center gap-2 px-5 pb-3 pt-4 sm:gap-4">
+          <h2 className="font-sans text-[17px] font-semibold text-paper">Settings</h2>
           <nav className="flex flex-wrap gap-1" role="tablist" aria-label="Settings sections">
             {(
               [
@@ -319,7 +319,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
 
           {tab === "accounts" && (
             <div>
-              <p className="mb-3 font-serif text-[13px] leading-relaxed text-graphite">
+              <p className="mb-3 font-sans text-[13px] leading-relaxed text-graphite">
                 Each account is a signed-in Overleaf instance — overleaf.com and self-hosted servers
                 side by side. Sessions are stored locally, survive restarts, and refresh themselves
                 from your browser when they expire; an expired account shows as disconnected until
@@ -338,7 +338,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                       }`}
                     />
                     <span className="min-w-0">
-                      <span className="block truncate font-serif text-[14px] text-paper">{a.host}</span>
+                      <span className="block truncate font-sans text-[14px] text-paper">{a.host}</span>
                       <span className="block truncate font-mono text-[10.5px] text-graphite">
                         {a.email ?? "email unknown"} · {a.projectCount} project
                         {a.projectCount === 1 ? "" : "s"}
@@ -352,7 +352,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                         disabled={accountBusy !== null}
                         onClick={() => reconnect(a, "import")}
                         title="Refresh the session from your browser's cookies"
-                        className="rounded border border-rule px-2 py-1 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                        className="rounded-lg border border-rule px-2 py-1 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
                       >
                         {accountBusy === a.id ? "…" : "Reconnect"}
                       </button>
@@ -360,13 +360,13 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                         disabled={accountBusy !== null}
                         onClick={() => reconnect(a, "browser")}
                         title="Open a browser window to log in again"
-                        className="rounded border border-rule px-2 py-1 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                        className="rounded-lg border border-rule px-2 py-1 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
                       >
                         Log in
                       </button>
                       <button
                         onClick={() => removeAccount(a)}
-                        className="rounded border border-rule px-2 py-1 text-[11px] text-graphite transition-colors hover:border-pencil hover:text-pencil"
+                        className="rounded-lg border border-rule px-2 py-1 text-[11px] text-graphite transition-colors hover:border-pencil hover:text-pencil"
                       >
                         Remove
                       </button>
@@ -374,7 +374,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   </li>
                 ))}
                 {accounts.length === 0 && (
-                  <li className="py-4 text-center font-serif text-sm text-graphite">
+                  <li className="py-4 text-center font-sans text-sm text-graphite">
                     No accounts yet.
                   </li>
                 )}
@@ -386,7 +386,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
               ) : (
                 <button
                   onClick={() => setAddingAccount(true)}
-                  className="mt-4 rounded border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+                  className="mt-4 rounded-lg border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
                 >
                   + Add account
                 </button>
@@ -398,7 +398,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
 
           {tab === "agent" && settings && (
             <div className="max-w-[520px]">
-              <p className="mb-4 font-serif text-[13px] leading-relaxed text-graphite">
+              <p className="mb-4 font-sans text-[13px] leading-relaxed text-graphite">
                 Pick the engine that runs BlattBot's agent turns. Everything below it — prompts,
                 tools, review flow — stays the same.
               </p>
@@ -412,7 +412,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                       onChange={() => setBackend("codex")} className="mt-0.5 accent-[#8fb573]" aria-label="Codex" />
                     <span>
                       <span className="block text-[13px] font-medium text-paper">Codex
-                        <span className="ml-2 rounded border border-leaf/40 px-1.5 py-px text-[9.5px] uppercase tracking-wide text-leaf">default</span>
+                        <span className="ml-2 rounded-lg border border-leaf/40 px-1.5 py-px text-[9.5px] uppercase tracking-wide text-leaf">default</span>
                       </span>
                       <span className="mt-0.5 block text-[11.5px] leading-snug text-graphite">
                         Uses your local Codex login, with conversation memory, citations, and compile verification.
@@ -483,12 +483,12 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                         {checkingCodex ? "Checking Codex…" : codexStatus?.message ?? "Check your local Codex installation."}
                       </p>
                       <button type="button" onClick={() => void checkCodex()} disabled={checkingCodex}
-                        className="shrink-0 rounded border border-rule px-2 py-1 text-[11px] text-paper-dim hover:border-leaf disabled:opacity-50">Check again</button>
+                        className="shrink-0 rounded-lg border border-rule px-2 py-1 text-[11px] text-paper-dim hover:border-leaf disabled:opacity-50">Check again</button>
                     </div>
                     {!codexStatus?.authenticated && (
                       <div className="mt-2 text-[11px] leading-relaxed text-graphite">
                         <p>Install and sign in once in your terminal:</p>
-                        <pre className="mt-1 select-all rounded border border-rule p-2 font-mono text-paper-dim">{"npm install -g @openai/codex\ncodex login"}</pre>
+                        <pre className="mt-1 select-all rounded-lg border border-rule p-2 font-mono text-paper-dim">{"npm install -g @openai/codex\ncodex login"}</pre>
                         <p className="mt-1">BlattBot reuses that login. No API key is needed here.</p>
                       </div>
                     )}
@@ -496,12 +496,12 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   <label className="block text-[11px] text-graphite">Codex model <span className="text-graphite/60">(empty = your Codex default)</span>
                     <input value={codexModel} onChange={(e) => setCodexModel(e.target.value)} list="blattbot-codex-models"
                       placeholder={modelList.defaultModel || codexStatus?.defaultModel || "Use Codex CLI default"}
-                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60" />
+                      className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60" />
                     <datalist id="blattbot-codex-models">{modelList.models.map((m) => <option key={m.id} value={m.id} label={m.label} />)}</datalist>
                   </label>
                   <label className="block text-[11px] text-graphite">Codex reasoning effort
                     <select value={codexEffort} onChange={(e) => setCodexEffort(e.target.value as Settings["codexEffort"])}
-                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper">
+                      className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper">
                       <option value="">Codex default</option>
                       {[...new Set([...(modelList.models.find((m) => m.id === (codexModel || modelList.defaultModel))?.effortLevels ?? ["low", "medium", "high", "xhigh"]), ...(codexEffort ? [codexEffort] : [])])]
                         .map((level) => <option key={level} value={level}>{level}</option>)}
@@ -524,7 +524,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                       onChange={(e) => setModel(e.target.value)}
                       list="blattbot-models"
                       placeholder="claude-sonnet-5"
-                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                      className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                     />
                     <datalist id="blattbot-models">
                       {modelList.models.map((m) => (
@@ -540,7 +540,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                       <select
                         value={effort}
                         onChange={(e) => setEffort(e.target.value as Settings["effort"])}
-                        className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper"
+                        className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper"
                       >
                         <option value="">model default</option>
                         <option value="low">low — quick, routine edits</option>
@@ -559,7 +559,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                         list="blattbot-models"
                         placeholder="automatic: claude-opus-5 behind Fable"
                         title="Empty = automatic: Opus 5 when the model is a Fable-family model, none otherwise. Type “none” to disable."
-                        className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                        className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                       />
                     </label>
                   </div>
@@ -577,7 +577,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                         onChange={(e) => setApiKey(e.target.value)}
                         type="password"
                         placeholder={settings.hasApiKey ? "•••••••• (set)" : "sk-ant-…"}
-                        className="min-w-0 flex-1 rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                        className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                       />
                       {settings.hasApiKey && (
                         <button
@@ -586,7 +586,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                             setClearKey(true);
                             setApiKey("");
                           }}
-                          className={`rounded border px-2.5 text-[11px] transition-colors ${
+                          className={`rounded-lg border px-2.5 text-[11px] transition-colors ${
                             clearKey
                               ? "border-pencil text-pencil"
                               : "border-rule text-graphite hover:border-pencil hover:text-pencil"
@@ -605,7 +605,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                       value={baseUrl}
                       onChange={(e) => setBaseUrl(e.target.value)}
                       placeholder="https://api.anthropic.com"
-                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                      className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                     />
                   </label>
                 </>
@@ -622,7 +622,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                       value={oaiBaseUrl}
                       onChange={(e) => setOaiBaseUrl(e.target.value)}
                       placeholder="http://127.0.0.1:11434/v1"
-                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                      className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                     />
                   </label>
 
@@ -639,7 +639,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                         onChange={(e) => setOaiKey(e.target.value)}
                         type="password"
                         placeholder={settings.hasOpenaiApiKey ? "•••••••• (set)" : "sk-…"}
-                        className="min-w-0 flex-1 rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                        className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                       />
                       {settings.hasOpenaiApiKey && (
                         <button
@@ -648,7 +648,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                             setClearOaiKey(true);
                             setOaiKey("");
                           }}
-                          className={`rounded border px-2.5 text-[11px] transition-colors ${
+                          className={`rounded-lg border px-2.5 text-[11px] transition-colors ${
                             clearOaiKey
                               ? "border-pencil text-pencil"
                               : "border-rule text-graphite hover:border-pencil hover:text-pencil"
@@ -669,7 +669,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                       value={oaiModel}
                       onChange={(e) => setOaiModel(e.target.value)}
                       placeholder="e.g. llama3.3:70b, qwen2.5-coder, gpt-4o-mini"
-                      className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                      className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                     />
                   </label>
                 </>
@@ -682,7 +682,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   onChange={(e) => setPromptAppend(e.target.value)}
                   rows={4}
                   placeholder="e.g. Always write in British English. Prefer \\autoref over \\ref."
-                  className="mt-1 w-full resize-y rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs leading-relaxed text-paper placeholder:text-graphite/60"
+                  className="mt-1 w-full resize-y rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs leading-relaxed text-paper placeholder:text-graphite/60"
                 />
               </label>
 
@@ -701,30 +701,30 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   }}
                   type="password"
                   placeholder={settings.hasS2ApiKey ? "•••••••• (set)" : "get one free at semanticscholar.org/product/api"}
-                  className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                  className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                 />
               </label>
 
               <p className="mt-1 text-[11px] text-graphite">{s2Key.trim() ? "This key has not been saved yet. Use Save & test below to activate it on this server." : "Keys are specific to this server; a key saved on another installation is not used here. A key improves access to metadata and PDF links, but does not unlock paywalled full text."}</p>
-              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("semantic-scholar")} className="mt-2 rounded border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "semantic-scholar" ? "Checking…" : s2Key.trim() ? "Save & test Semantic Scholar key" : "Test Semantic Scholar connection"}</button>
+              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("semantic-scholar")} className="mt-2 rounded-lg border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "semantic-scholar" ? "Checking…" : s2Key.trim() ? "Save & test Semantic Scholar key" : "Test Semantic Scholar connection"}</button>
               {providerResult["semantic-scholar"] && <p role="status" className="mt-2 text-xs text-paper-dim">{providerResult["semantic-scholar"]}</p>}
               <label className="mt-4 block text-[11px] text-graphite">
                 OpenAlex API key <span className="text-graphite/60">{settings.hasOpenAlexApiKey ? "(configured on this server)" : "(optional — larger daily research budget)"}</span>
-                <input type="password" value={openAlexKey} onChange={event => setOpenAlexKey(event.target.value)} placeholder={settings.hasOpenAlexApiKey ? "•••••••• (set)" : "Get a free key at openalex.org/settings/api"} className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper" />
+                <input type="password" value={openAlexKey} onChange={event => setOpenAlexKey(event.target.value)} placeholder={settings.hasOpenAlexApiKey ? "•••••••• (set)" : "Get a free key at openalex.org/settings/api"} className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper" />
               </label>
               <p className="mt-1 text-[11px] text-graphite">Used for citation graphs, discovery and paper metadata. <a href="https://openalex.org/settings/api" target="_blank" rel="noreferrer" className="text-leaf">Get a key ↗</a></p>
-              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("openalex")} className="mt-2 rounded border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "openalex" ? "Checking…" : openAlexKey.trim() ? "Save & test OpenAlex key" : "Test OpenAlex connection"}</button>
+              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("openalex")} className="mt-2 rounded-lg border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "openalex" ? "Checking…" : openAlexKey.trim() ? "Save & test OpenAlex key" : "Test OpenAlex connection"}</button>
               {providerResult.openalex && <p role="status" className="mt-2 text-xs text-paper-dim">{providerResult.openalex}</p>}
               <label className="mt-4 block text-[11px] text-graphite">
                 Brave Search API key <span className="text-graphite/60">{settings.hasBraveSearchApiKey ? "(saved on this server)" : "(optional)"}</span>
-                <input type="password" value={braveKey} onChange={event => { setBraveKey(event.target.value); setProviderResult(previous => ({ ...previous, "brave-search": "" })); }} placeholder={settings.hasBraveSearchApiKey ? "•••••••• (set)" : "Optional key from Brave Search API"} className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper" />
+                <input type="password" value={braveKey} onChange={event => { setBraveKey(event.target.value); setProviderResult(previous => ({ ...previous, "brave-search": "" })); }} placeholder={settings.hasBraveSearchApiKey ? "•••••••• (set)" : "Optional key from Brave Search API"} className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper" />
               </label>
               <p className="mt-1 text-[11px] text-graphite">{braveKey.trim() ? "This key has not been saved yet. " : ""}When indexed PDFs are missing, searches the web for the paper title and checks author, repository and publisher links. Without a key, public web search is attempted but may be blocked. Search-provider charges may apply when using a key.</p>
-              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("brave-search")} className="mt-2 rounded border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "brave-search" ? "Checking…" : braveKey.trim() ? "Save & test Brave Search key" : "Test web search configuration"}</button>
+              <button type="button" disabled={!!providerBusy} onClick={() => void checkProvider("brave-search")} className="mt-2 rounded-lg border border-rule px-3 py-1.5 text-xs text-paper">{providerBusy === "brave-search" ? "Checking…" : braveKey.trim() ? "Save & test Brave Search key" : "Test web search configuration"}</button>
               {providerResult["brave-search"] && <p role="status" className="mt-2 text-xs text-paper-dim">{providerResult["brave-search"]}</p>}
               <label className="mt-4 block text-[11px] text-graphite">
                 Unpaywall contact email (optional)
-                <input type="email" value={unpaywallEmail} onChange={event => setUnpaywallEmail(event.target.value)} placeholder="Your contact email" className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 text-xs text-paper" />
+                <input type="email" value={unpaywallEmail} onChange={event => setUnpaywallEmail(event.target.value)} placeholder="Your contact email" className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 text-xs text-paper" />
               </label>
               <p className="mt-1 text-[11px] text-graphite">Adds another source of open-access PDF links. Unpaywall receives this email with DOI lookups; no API key is needed.</p>
 
@@ -733,7 +733,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                 <select
                   value={engine}
                   onChange={(e) => setEngine(e.target.value as Settings["engine"])}
-                  className="mt-1 block rounded border border-rule bg-ink px-2.5 py-2 text-xs text-paper"
+                  className="mt-1 block rounded-lg border border-rule bg-ink px-2.5 py-2 text-xs text-paper"
                 >
                   <option value="">auto (latexmk → pdflatex → tectonic)</option>
                   <option value="tectonic">tectonic</option>
@@ -751,7 +751,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                 <button
                   onClick={save}
                   disabled={saving}
-                  className="ml-auto rounded bg-leaf-deep px-4 py-2 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+                  className="ml-auto rounded-lg bg-leaf-deep px-4 py-2 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Save settings"}
                 </button>
@@ -761,7 +761,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
 
           {tab === "transparency" && (
             <div>
-              <p className="mb-4 font-serif text-[13px] leading-relaxed text-graphite">
+              <p className="mb-4 font-sans text-[13px] leading-relaxed text-graphite">
                 Everything BlattBot sends and stores, in the open. Settings live in a plain JSON
                 file; session cookies and API keys stay on this machine (mode 0600) and are never
                 sent to the UI.
@@ -786,7 +786,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   <button
                     onClick={() => void generateDisclosure()}
                     disabled={disclosureBusy}
-                    className="rounded border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                    className="rounded-lg border border-rule px-3 py-1.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
                   >
                     {disclosureBusy ? "Generating…" : "Generate AI-use disclosure"}
                   </button>
@@ -853,7 +853,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   <h3 className="mb-1 text-[11px] font-medium uppercase tracking-[0.14em] text-graphite">
                     {info.systemPromptPreset ? "System prompt (BlattBot's append)" : "System prompt"}
                   </h3>
-                  <pre className="mb-4 max-h-56 overflow-auto whitespace-pre-wrap rounded border border-rule bg-ink px-3 py-2 font-mono text-[11px] leading-relaxed text-paper-dim">
+                  <pre className="mb-4 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-rule bg-ink px-3 py-2 font-mono text-[11px] leading-relaxed text-paper-dim">
                     {info.systemPromptAppend}
                     {info.userSystemPromptAppend
                       ? `\n\nAdditional instructions from the user's BlattBot settings:\n${info.userSystemPromptAppend}`
@@ -866,10 +866,10 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                   <ul className="mb-4">
                     {info.modes.map((m) => (
                       <li key={m.id} className="border-b border-rule/40 py-1.5 last:border-0">
-                        <span className="font-serif text-[13.5px] text-paper">{m.label}</span>
+                        <span className="font-sans text-[13.5px] text-paper">{m.label}</span>
                         <span className="ml-2 text-[12px] text-graphite">{m.description}</span>
                         {m.prompt && (
-                          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded border border-rule bg-ink px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-paper-dim/90">
+                          <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg border border-rule bg-ink px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-paper-dim/90">
                             {m.prompt}
                           </pre>
                         )}
@@ -921,7 +921,7 @@ function DisclosureBody({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div>
-      <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded border border-rule bg-ink px-3 py-2 font-serif text-[13px] leading-relaxed text-paper-dim">
+      <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg border border-rule bg-ink px-3 py-2 font-sans text-[13px] leading-relaxed text-paper-dim">
         {text}
       </pre>
       <button
@@ -932,7 +932,7 @@ function DisclosureBody({ text }: { text: string }) {
             setTimeout(() => setCopied(false), 1500);
           });
         }}
-        className="mt-2 rounded border border-rule px-2.5 py-1 text-[11.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+        className="mt-2 rounded-lg border border-rule px-2.5 py-1 text-[11.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
       >
         {copied ? "Copied." : "Copy to clipboard"}
       </button>

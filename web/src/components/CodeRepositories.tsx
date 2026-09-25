@@ -19,8 +19,8 @@ interface Assessment {
   limitations: string[]; nextChecks: string[];
   assessor: { backend: string; configuredModel: string; protocol: string };
 }
-const field = "w-full min-w-0 rounded border border-rule bg-ink-2 px-2 py-1.5 text-xs text-paper";
-const button = "rounded border border-rule px-2 py-1 text-xs text-paper-dim hover:border-leaf disabled:opacity-40";
+const field = "w-full min-w-0 rounded-lg border border-rule bg-ink-2 px-2 py-1.5 text-xs text-paper";
+const button = "rounded-lg border border-rule px-2 py-1 text-xs text-paper-dim hover:border-leaf disabled:opacity-40";
 const changed = () => window.dispatchEvent(new Event("blattbot-repositories-changed"));
 
 export function RepositoryManager({ projectId, compact = false }: { projectId: string; compact?: boolean }) {
@@ -87,7 +87,7 @@ export function RepositoryManager({ projectId, compact = false }: { projectId: s
       }} />}
     {busy && <p role="status" className="text-leaf">{busy}</p>}
     {error && <p role="alert" className="text-red-400">{error}</p>}
-    {repos.map(repo => <div key={repo.id} className={compact ? "rounded-lg bg-ink/60 p-2.5" : "rounded border border-rule p-2"}>
+    {repos.map(repo => <div key={repo.id} className={compact ? "rounded-lg bg-ink/60 p-2.5" : "rounded-lg border border-rule p-2"}>
       <div className="flex items-center gap-2">
         {compact && <SidebarIcon name="branch" className="h-3.5 w-3.5 text-leaf/80" />}
         <span className="min-w-0 truncate font-medium text-paper" title={repo.name}>{repo.name}</span>
@@ -142,7 +142,7 @@ export function CodeChecks({ projectId, stamp, busy, onAudit, onJump }: {
     {error && <p role="alert">{error}</p>}
     <div className="flex items-center justify-between gap-2"><h4>Saved claim assessments · {assessments.length}</h4>{assessments.length > 0 && <button className={button} onClick={download}>Export evidence</button>}</div>
     {!assessments.length && <p className="research-empty">No code claims assessed yet. An unchecked claim has no verdict.</p>}
-    {assessments.map(a => <details key={a.id} className="research-meta rounded border border-rule p-3">
+    {assessments.map(a => <details key={a.id} className="research-meta rounded-lg border border-rule p-3">
       <summary><span className={`research-badge ${a.stale ? "research-stale" : ""}`}>{a.stale ? "Changed · check again" : labels[a.verdict]}</span> {a.claim.quote.slice(0, 130)}{a.claim.quote.length > 130 ? "…" : ""}</summary>
       <button className="research-link" onClick={() => onJump(a.claim.file, a.claim.line)}>{a.claim.file}:{a.claim.line}</button>
       <blockquote>{a.claim.quote}</blockquote>

@@ -42,6 +42,19 @@ afterEach(() => {
 });
 
 describe("Codex background harness", () => {
+  it("reads account limits without making a model request", async () => {
+    const { codexLimits } = await import("../src/agent-limits.js");
+    expect((await codexLimits()).windows).toEqual([{ bucket: "codex", window: "5 hour", remainingPercent: 75, resetsAt: 1800000000 }]);
+    expect(log().some(row => row.method === "turn/start")).toBe(false);
+  });
+  it("records actual tool arguments and outputs for chat inspection", async () => {
+    const { codexBackend } = await import("../src/backends/codex.js");
+    await codexBackend.runTurn(ctx);
+    const input = events.find(e => e.type === "tool_use");
+    expect(JSON.parse(String(input?.input))).toEqual({ path: "main.tex" });
+    expect(events.find(e => e.type === "tool_result" && e.id === input?.id)?.output).toContain("Original manuscript.");
+  });
+
   it("emits actionable repository errors for the chat instead of a bare failed indicator", async () => {
     vi.stubEnv("BLATTBOT_TEST_CODEX_SCENARIO", "repository-error");
     const { codexBackend } = await import("../src/backends/codex.js");

@@ -1,3 +1,4 @@
+import { toolDetail } from "./types.js";
 /**
  * OpenAI-compatible backend: a self-contained tool-calling loop over
  * POST {base}/chat/completions (stream: true, SSE) — llama.cpp, Ollama, vLLM,
@@ -1091,6 +1092,7 @@ export const openaiBackend: AgentBackend = {
           type: "tool_use",
           id: call.id,
           name: eventToolName(name),
+          input: toolDetail(badArgs ? call.function.arguments : args),
           detail: badArgs ? "" : summarizeArgs(name, args, ctx.dir),
         });
         const outcome = badArgs
@@ -1103,6 +1105,7 @@ export const openaiBackend: AgentBackend = {
           type: "tool_result",
           id: call.id,
           isError: outcome.isError,
+          output: toolDetail(outcome.content),
           ...(head !== undefined ? { resultHead: head } : {}),
         });
         messages.push({ role: "tool", tool_call_id: call.id, content: truncateResult(outcome.content) });

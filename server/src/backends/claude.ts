@@ -1,3 +1,4 @@
+import { toolDetail } from "./types.js";
 /**
  * Claude Agent SDK backend — the original BlattBot agent, moved verbatim from
  * agent.ts. Spawns the Claude Code CLI via the Agent SDK (reusing the local
@@ -764,6 +765,7 @@ export const claudeBackend: AgentBackend = {
                 type: "tool_use",
                 id: block.id,
                 name: block.name,
+                input: toolDetail(block.input),
                 detail: summarizeInput(block.name, block.input, dir),
               });
             }
@@ -784,6 +786,7 @@ export const claudeBackend: AgentBackend = {
                 type: "tool_result",
                 id: block.tool_use_id,
                 isError: Boolean(block.is_error),
+                output: toolDetail(toolResultText(block.content)),
                 ...(head !== undefined ? { resultHead: head } : {}),
               });
             }

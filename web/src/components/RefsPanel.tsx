@@ -577,7 +577,7 @@ export default function RefsPanel({
         title={`Claim check: ${VERDICT_LABEL[r.verdict]} — click to ${open ? "hide" : "show"} details`}
         aria-label={`Claim check for ${e.key}: ${VERDICT_LABEL[r.verdict]}`}
         aria-expanded={open}
-        className={`shrink-0 rounded border border-current/30 px-1 font-mono text-[11px] transition-colors ${VERDICT_COLOR[r.verdict]}`}
+        className={`shrink-0 rounded-lg border border-current/30 px-1 font-mono text-[11px] transition-colors ${VERDICT_COLOR[r.verdict]}`}
       >
         {CLAIM_GLYPH[r.verdict]}
       </button>
@@ -624,7 +624,7 @@ export default function RefsPanel({
         onClick={() => void acceptEntry(e)}
         title="The audit is wrong — this reference is correct"
         aria-label={`Accept ${e.key} as correct`}
-        className="shrink-0 rounded border border-rule px-1.5 py-0.5 font-mono text-[10px] text-graphite transition-colors hover:border-leaf hover:text-leaf"
+        className="shrink-0 rounded-lg border border-rule px-1.5 py-0.5 font-mono text-[10px] text-graphite transition-colors hover:border-leaf hover:text-leaf"
       >
         ok
       </button>
@@ -637,7 +637,7 @@ export default function RefsPanel({
             : `Ask the agent to investigate and correct ${e.key}`
         }
         aria-label={`Fix ${e.key} with the agent`}
-        className="shrink-0 rounded border border-gold/50 px-1.5 py-0.5 font-mono text-[10px] text-gold transition-colors hover:border-gold hover:bg-gold/10 disabled:opacity-40"
+        className="shrink-0 rounded-lg border border-gold/50 px-1.5 py-0.5 font-mono text-[10px] text-gold transition-colors hover:border-gold hover:bg-gold/10 disabled:opacity-40"
       >
         fix
       </button>
@@ -652,7 +652,7 @@ export default function RefsPanel({
     <div className="refs-panel flex h-full min-w-0 flex-col">
       <div className="shrink-0 border-b border-rule bg-ink px-4 pb-3 pt-4">
         <div className="mb-3 flex items-center gap-2">
-          <h2 className="font-serif text-[19px] font-medium text-paper">References</h2>
+          <h2 className="font-sans text-[19px] font-medium text-paper">References</h2>
           <span className="rounded-full bg-ink-3 px-2 py-0.5 font-mono text-[10px] text-paper-dim">{entries.length}</span>
           <button
             onClick={() => { setAddOpen(value => !value); setAddError(null); }}
@@ -800,7 +800,7 @@ export default function RefsPanel({
         )}
 
         {showUndefined && undefinedKeys.length > 0 && (
-          <ul className="mt-2 rounded border border-pencil/40 bg-ink-2 px-3 py-2">
+          <ul className="mt-2 rounded-lg border border-pencil/40 bg-ink-2 px-3 py-2">
             {undefinedKeys.map((u) => (
               <li key={u.key} className="flex items-baseline gap-2 py-0.5">
                 <span className="font-mono text-[11px] text-pencil">{u.key}</span>
@@ -811,21 +811,21 @@ export default function RefsPanel({
         )}
 
         {addOpen && (
-          <div className="mt-2 rounded border border-rule bg-ink-2 p-2">
+          <div className="mt-2 rounded-lg border border-rule bg-ink-2 p-2">
             <textarea
               value={addText}
               onChange={(e) => setAddText(e.target.value)}
               rows={6}
               aria-label="New BibTeX entry"
               spellCheck={false}
-              className="w-full resize-y rounded border border-rule bg-ink px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-paper placeholder:text-graphite/60"
+              className="w-full resize-y rounded-lg border border-rule bg-ink px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-paper placeholder:text-graphite/60"
             />
             <div className="mt-1.5 flex items-center gap-2">
               <button
                 onClick={saveNewEntry}
                 disabled={busy || addBusy || !addText.trim()}
                 aria-label="Save new entry"
-                className="rounded border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
+                className="rounded-lg border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
               >
                 {addBusy ? "Saving…" : "Save"}
               </button>
@@ -835,7 +835,7 @@ export default function RefsPanel({
                   setAddText(ADD_SKELETON);
                   setAddError(null);
                 }}
-                className="rounded border border-rule px-3 py-1 text-[12px] text-paper-dim transition-colors hover:border-graphite"
+                className="rounded-lg border border-rule px-3 py-1 text-[12px] text-paper-dim transition-colors hover:border-graphite"
               >
                 Cancel
               </button>
@@ -846,19 +846,19 @@ export default function RefsPanel({
         )}
 
         {importOpen && (
-          <div className="mt-2 rounded border border-rule bg-ink-2 p-2">
+          <div className="mt-2 rounded-lg border border-rule bg-ink-2 p-2">
             <textarea
               value={importText}
               onChange={(e) => setImportText(e.target.value)}
               rows={5}
               placeholder={"Paste BibTeX entries…\n@article{key, …}"}
-              className="w-full resize-y rounded border border-rule bg-ink px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-paper placeholder:text-graphite/60"
+              className="w-full resize-y rounded-lg border border-rule bg-ink px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-paper placeholder:text-graphite/60"
             />
             <div className="mt-1.5 flex items-center gap-2">
               <button
                 onClick={runImport}
                 disabled={importBusy || !importText.trim()}
-                className="rounded border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
+                className="rounded-lg border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
               >
                 {importBusy ? "Adding…" : "Add"}
               </button>
@@ -912,7 +912,7 @@ export default function RefsPanel({
                 })}
                 className="flex w-full items-center gap-2.5 rounded-t-lg px-3 py-3 text-left text-[12.5px] font-semibold text-paper transition-colors hover:bg-leaf/5 focus-visible:outline-2 focus-visible:outline-leaf"
               >
-                <span aria-hidden="true" className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-leaf/10 text-leaf">{collapsedGroups.has(group.id) ? "▸" : "▾"}</span>
+                <span aria-hidden="true" className="flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-leaf/10 text-leaf">{collapsedGroups.has(group.id) ? "▸" : "▾"}</span>
                 <span className="min-w-0 break-words">{group.label}</span>
                 <span className="ml-auto shrink-0 rounded-full border border-leaf/20 bg-leaf/10 px-2 py-0.5 font-mono text-[10px] font-normal text-leaf">
                   {group.entries.length}{group.entries.length !== group.total ? ` / ${group.total}` : ""}
@@ -945,7 +945,7 @@ export default function RefsPanel({
                 <button
                   onClick={() => copy(e.key)}
                   title="Copy \cite{…}"
-                  className={`max-w-[65%] truncate rounded border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
+                  className={`max-w-[65%] truncate rounded-lg border px-1.5 py-0.5 font-mono text-[10px] transition-colors ${
                     copied === e.key
                       ? "border-leaf text-leaf"
                       : total > 0
@@ -982,7 +982,7 @@ export default function RefsPanel({
                     onClick={() => deleteEntry(e)}
                     disabled={busy}
                     aria-label={`Really delete ${e.key}?`}
-                    className="ml-auto shrink-0 rounded bg-pencil/90 px-1.5 text-[10px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
+                    className="ml-auto shrink-0 rounded-lg bg-pencil/90 px-1.5 text-[10px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
                   >
                     really?
                   </button>
@@ -1000,7 +1000,7 @@ export default function RefsPanel({
               </div>
 
               {usageOpen.has(id) && total > 0 && (
-                <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded border border-rule/60 bg-ink-2 px-2 py-1">
+                <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg border border-rule/60 bg-ink-2 px-2 py-1">
                   {e.usage.map((u) => (
                     <span key={u.file} className="flex items-baseline gap-1 font-mono text-[10.5px]">
                       <span className="text-graphite">{u.file}:</span>
@@ -1010,7 +1010,7 @@ export default function RefsPanel({
                           onClick={() => onJump(u.file, line)}
                           aria-label={`${u.file}:${line}`}
                           title={`Jump to ${u.file} line ${line}`}
-                          className="rounded border border-rule px-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+                          className="rounded-lg border border-rule px-1 text-[10.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
                         >
                           {line}
                         </button>
@@ -1020,7 +1020,7 @@ export default function RefsPanel({
                 </div>
               )}
               {e.title && (
-                <p className="mt-2 break-words font-serif text-[15px] leading-snug text-paper">{e.title}</p>
+                <p className="mt-2 break-words font-sans text-[15px] leading-snug text-paper">{e.title}</p>
               )}
               {e.author && <p title={e.author} className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-graphite">{e.author}</p>}
               <ReferenceDetails metadata={e.metadata} />
@@ -1082,26 +1082,26 @@ export default function RefsPanel({
               </div>
 
               {verifyOpenId === id && (
-                <div className="mt-1.5 rounded border border-rule bg-ink-2 p-2">
+                <div className="mt-1.5 rounded-lg border border-rule bg-ink-2 p-2">
                   <textarea
                     value={verifyClaim}
                     onChange={(ev) => setVerifyClaim(ev.target.value)}
                     rows={2}
                     placeholder="Paste the exact sentence this citation is attached to…"
                     aria-label={`Claim to check against ${e.key}`}
-                    className="w-full resize-y rounded border border-rule bg-ink px-2 py-1.5 font-serif text-[12.5px] leading-relaxed text-paper placeholder:text-graphite/60"
+                    className="w-full resize-y rounded-lg border border-rule bg-ink px-2 py-1.5 font-sans text-[12.5px] leading-relaxed text-paper placeholder:text-graphite/60"
                   />
                   <div className="mt-1.5 flex items-center gap-2">
                     <button
                       onClick={() => runVerify(e)}
                       disabled={busyVerify || !verifyClaim.trim()}
-                      className="rounded border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
+                      className="rounded-lg border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
                     >
                       {busyVerify ? "Reading paper…" : "Check"}
                     </button>
                     <button
                       onClick={() => setVerifyOpenId(null)}
-                      className="rounded border border-rule px-3 py-1 text-[12px] text-paper-dim transition-colors hover:border-graphite"
+                      className="rounded-lg border border-rule px-3 py-1 text-[12px] text-paper-dim transition-colors hover:border-graphite"
                     >
                       Cancel
                     </button>
@@ -1111,7 +1111,7 @@ export default function RefsPanel({
               )}
 
               {claimIsOpen && claimResult && (
-                <div className="mt-1.5 rounded border border-rule/60 bg-ink-2 px-2.5 py-2">
+                <div className="mt-1.5 rounded-lg border border-rule/60 bg-ink-2 px-2.5 py-2">
                   <p className="font-mono text-[9.5px] uppercase tracking-wide text-graphite/70">
                     Claim: <span className="normal-case text-graphite">"{claimResult.claim}"</span>
                     {claimResult.file && claimResult.line !== undefined && (
@@ -1129,34 +1129,34 @@ export default function RefsPanel({
                       ({claimResult.basis === "none" ? "no readable source" : claimResult.basis === "summary" ? "publisher summary only" : claimResult.truncated ? "PDF excerpts only" : claimResult.basis === "full_text" ? "full paper text" : "abstract only"})
                     </span>
                   </p>
-                  <p className="mt-1 font-serif text-[12.5px] leading-relaxed text-paper-dim">
+                  <p className="mt-1 font-sans text-[12.5px] leading-relaxed text-paper-dim">
                     {claimResult.explanation}
                   </p>
                 </div>
               )}
 
               {editingId === id && (
-                <div className="mt-1.5 rounded border border-rule bg-ink-2 p-2">
+                <div className="mt-1.5 rounded-lg border border-rule bg-ink-2 p-2">
                   <textarea
                     value={editText}
                     onChange={(ev) => setEditText(ev.target.value)}
                     rows={Math.min(14, editText.split("\n").length + 1)}
                     aria-label={`BibTeX source of ${e.key}`}
                     spellCheck={false}
-                    className="w-full resize-y rounded border border-rule bg-ink px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-paper"
+                    className="w-full resize-y rounded-lg border border-rule bg-ink px-2 py-1.5 font-mono text-[11.5px] leading-relaxed text-paper"
                   />
                   <div className="mt-1.5 flex items-center gap-2">
                     <button
                       onClick={() => saveEdit(e)}
                       disabled={busy || editBusy || !editText.trim()}
                       aria-label={`Save changes to ${e.key}`}
-                      className="rounded border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
+                      className="rounded-lg border border-leaf/60 px-3 py-1 text-[12px] text-leaf transition-colors hover:bg-leaf/10 disabled:opacity-50"
                     >
                       {editBusy ? "Saving…" : "Save"}
                     </button>
                     <button
                       onClick={() => setEditingId(null)}
-                      className="rounded border border-rule px-3 py-1 text-[12px] text-paper-dim transition-colors hover:border-graphite"
+                      className="rounded-lg border border-rule px-3 py-1 text-[12px] text-paper-dim transition-colors hover:border-graphite"
                     >
                       Cancel
                     </button>
@@ -1169,8 +1169,8 @@ export default function RefsPanel({
               )}
 
               {e.summary && (
-                <div className="mt-1.5 rounded border border-rule/60 bg-ink-2 px-2.5 py-2">
-                  <p className="font-serif text-[12.5px] leading-relaxed text-paper-dim">{e.summary}</p>
+                <div className="mt-1.5 rounded-lg border border-rule/60 bg-ink-2 px-2.5 py-2">
+                  <p className="font-sans text-[12.5px] leading-relaxed text-paper-dim">{e.summary}</p>
                   <div className="mt-1 flex items-center gap-1.5">
                     <span className="font-mono text-[9.5px] uppercase tracking-wide text-graphite/70">
                       {SOURCE_LABEL[e.summarySource ?? ""] ?? e.summarySource}
@@ -1195,7 +1195,7 @@ export default function RefsPanel({
           })}</ul>}
         </li>)}
         {visible.length === 0 && (
-          <li className="py-8 text-center font-serif text-sm text-graphite">
+          <li className="py-8 text-center font-sans text-sm text-graphite">
             {loadError
               ? loadError
               : entries.length === 0

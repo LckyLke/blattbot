@@ -140,17 +140,17 @@ export function DialogProvider({ children }: { children: ReactNode }) {
             aria-modal="true"
             aria-labelledby={titleId}
             aria-describedby={current.opts.body ? bodyId : undefined}
-            className={`dialog-card max-w-full rounded-lg border border-rule bg-ink-2 p-5 shadow-[0_24px_64px_rgba(0,0,0,0.5)] ${
+            className={`dialog-card max-w-full rounded-2xl border border-rule bg-ink-2 p-5 shadow-[0_24px_64px_rgba(0,0,0,0.5)] ${
               current.kind === "alert" && current.opts.wide ? "w-[900px]" : "w-[400px]"
             }`}
           >
-            <h2 id={titleId} className="font-serif text-[17px] font-semibold text-paper">
+            <h2 id={titleId} className="font-sans text-[17px] font-semibold text-paper">
               {current.opts.title}
             </h2>
             {current.opts.body && (
               <div
                 id={bodyId}
-                className="mt-2 font-serif text-[13.5px] leading-relaxed text-paper-dim"
+                className="mt-2 font-sans text-[13.5px] leading-relaxed text-paper-dim"
               >
                 {current.opts.body}
               </div>
@@ -160,7 +160,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                 <button
                   ref={cancelRef}
                   onClick={() => settle(false)}
-                  className="rounded border border-rule px-3.5 py-1.5 text-[13px] text-paper-dim transition-colors hover:border-graphite hover:text-paper"
+                  className="rounded-lg border border-rule px-3.5 py-1.5 text-[13px] text-paper-dim transition-colors hover:border-graphite hover:text-paper"
                 >
                   {current.opts.cancelLabel ?? "Cancel"}
                 </button>

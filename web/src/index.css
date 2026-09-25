@@ -1,14 +1,14 @@
 @import "tailwindcss";
 
 @theme {
-  /* Iron-gall ink and laid paper */
+  /* Shared slate surfaces, warm text, and restrained botanical accents. */
   --color-ink: #12151d;
   --color-ink-2: #191d27;
   --color-ink-3: #212633;
   --color-rule: #2d3342;
   --color-paper: #e8e4d8;
   --color-paper-dim: #b9b6ab;
-  --color-graphite: #7d8294;
+  --color-graphite: #8b91a1;
   --color-leaf: #8fb573;
   --color-leaf-deep: #4f7942;
   --color-pencil: #e06552;
@@ -29,7 +29,8 @@ body {
   background: var(--color-ink);
   color: var(--color-paper);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 14px;
+  color-scheme: dark;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -37,18 +38,10 @@ body {
   background: color-mix(in srgb, var(--color-leaf) 35%, transparent);
 }
 
-/* Booktabs: the double rule from academic tables, used as a section divider */
+/* Quiet separators shared by panels and settings sections. */
 .booktabs {
-  border-top: 2px solid var(--color-rule);
-  position: relative;
-}
-.booktabs::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 0;
-  right: 0;
   border-top: 1px solid var(--color-rule);
+  position: relative;
 }
 
 /* TeX-style logotype: Bl(a)ttB(o)t with kerned raised/lowered letters */
@@ -239,10 +232,10 @@ button:hover > .tex-logo .down,
   }
 }
 
-/* Agent prose is a manuscript: set in Spectral */
+/* Chat uses the same calm sans-serif rhythm as the composer. */
 .prose-agent {
-  font-family: var(--font-serif);
-  font-size: 16px;
+  font-family: var(--font-sans);
+  font-size: 14px;
   line-height: 1.65;
 }
 .prose-agent code {
@@ -258,8 +251,8 @@ button:hover > .tex-logo .down,
   line-height: 1.5;
   background: var(--color-ink-3);
   border: 1px solid var(--color-rule);
-  border-radius: 6px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 12px 14px;
   overflow-x: auto;
   margin: 8px 0;
 }
@@ -347,8 +340,8 @@ button:hover > .tex-logo .down,
   line-height: 1.5;
   background: var(--color-ink-3);
   border: 1px solid var(--color-rule);
-  border-radius: 6px;
-  padding: 10px 12px;
+  border-radius: 12px;
+  padding: 12px 14px;
   overflow-x: auto;
   margin: 8px 0;
 }
@@ -467,6 +460,7 @@ button:hover > .tex-logo .down,
 /* Respond to the split pane's width, rather than the browser window. */
 .chat-composer { container-type: inline-size; }
 .chat-composer-toolbar {
+  position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -474,6 +468,8 @@ button:hover > .tex-logo .down,
 }
 @container (max-width: 440px) {
   .chat-composer-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .usage-trigger { padding-inline: 6px; }
+  .usage-trigger-label, .usage-trigger-chevron { display: none; }
   .chat-composer-send { grid-column: 2; grid-row: 1; }
   .chat-composer-settings { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
 }
@@ -741,4 +737,28 @@ button:hover > .tex-logo .down,
     display: flex; width: 100%; min-width: 0; border-right: 0;
   }
   .blattbot-workspace.mobile-files-open > [data-pane] { display: none; }
+}
+
+/* Workspace chrome follows the composer: inset surfaces and quiet controls. */
+.workspace-pane {
+  margin-block: 8px;
+  border-radius: 16px;
+  overflow: hidden;
+}
+.workspace-pane:last-child { margin-right: 8px; }
+.workspace-pane > nav {
+  align-items: center;
+  gap: 4px;
+  min-height: 48px;
+  padding: 8px;
+  border-bottom: 1px solid var(--color-rule);
+  background: var(--color-ink-2);
+}
+.blattbot-header {
+  background: var(--color-ink);
+  border-color: color-mix(in srgb, var(--color-rule) 65%, transparent);
+}
+@media (max-width: 700px) {
+  .workspace-pane { margin-block: 4px; border-radius: 12px; }
+  .workspace-pane:last-child { margin-right: 4px; }
 }

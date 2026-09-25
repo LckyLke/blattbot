@@ -9,6 +9,7 @@ import {
   api,
 } from "../api";
 import type { AgentQuestion, ChatMeta, ProjectStats, Settings } from "../api";
+import UsageLimits from "./UsageLimits";
 import EffortSelect from "./EffortSelect";
 import DiffView from "./DiffView";
 import Markdown from "./Markdown";
@@ -33,6 +34,8 @@ export type ChatItem =
       fileDiff?: string;
       /** One-line result summary of a read-only tool (Grep/Read/search…). */
       resultHead?: string;
+      input?: string;
+      output?: string;
     }
   | { kind: "notice"; tone: "info" | "warn" | "error" | "ok"; text: string; citationGroup?: string; details?: string }
   | {
@@ -329,6 +332,8 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__blattbot__search_papers: "Searching literature",
   mcp__blattbot__add_citation: "Adding citation",
   mcp__blattbot__list_citations: "Reading bibliography",
+  mcp__blattbot__verify_citation_support: "Checking citation support",
+  mcp__blattbot__verify_citations: "Verifying citations",
   mcp__blattbot__read_paper: "Reading paper",
   mcp__blattbot__inspect_repository: "Inspecting repository",
   mcp__blattbot__verify_code_claim: "Checking claim against code",
@@ -659,7 +664,7 @@ export default function Chat({
                           onDeleteChat(c.id);
                         }}
                         aria-label={`Really delete ${c.title}?`}
-                        className="shrink-0 rounded border border-pencil/50 px-1.5 text-[10.5px] text-pencil transition-colors hover:bg-pencil/10 disabled:opacity-40"
+                        className="shrink-0 rounded-lg border border-pencil/50 px-1.5 text-[10.5px] text-pencil transition-colors hover:bg-pencil/10 disabled:opacity-40"
                       >
                         sure?
                       </button>
@@ -686,7 +691,7 @@ export default function Chat({
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
         {items.length === 0 && (
           <div className="mx-auto mt-16 max-w-md text-center">
-            <p className="font-serif text-[15px] leading-relaxed text-graphite">
+            <p className="font-sans text-[15px] leading-relaxed text-graphite">
               Ask for an edit, a rewrite, a restructure — or a citation.
               <br />
               BlattBot works on a synced copy of{" "}
@@ -709,7 +714,7 @@ export default function Chat({
             />
           ))}
           {busy && activity === "thinking" && (
-            <div className="flex items-center gap-2 self-start px-1 font-serif text-[13.5px] italic text-graphite">
+            <div className="flex items-center gap-2 self-start px-1 font-sans text-[12px] text-graphite">
               <span className="working-dot inline-block h-1.5 w-1.5 rounded-full bg-graphite" />
               <span className="thinking-ellipsis">thinking</span>
             </div>
@@ -750,7 +755,7 @@ export default function Chat({
           {dragging && (
             <p
               role="status"
-              className="mx-auto mb-2 max-w-2xl rounded border border-dashed border-leaf/70 px-3 py-1 text-center font-mono text-[11px] text-leaf"
+              className="mx-auto mb-2 max-w-2xl rounded-lg border border-dashed border-leaf/70 px-3 py-1 text-center font-mono text-[11px] text-leaf"
             >
               {busy ? "BlattBot is working — attachments wait for the next message" : "↓ Drop images to attach"}
             </p>
@@ -868,6 +873,7 @@ export default function Chat({
                     {MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
                   </select>
                 </label>
+                <UsageLimits backend={effortSettings?.backend || "codex"} busy={busy} />
               </div>
               <div className="chat-composer-settings flex min-w-0 items-center justify-end gap-1">
                 <ModelChip model={model} projectModel={projectModel} onChange={onChangeModel} onSetProject={onSetProjectModel} />
@@ -993,7 +999,7 @@ function ModelChip({
                 type="button"
                 onClick={() => pick(id)}
                 title={label !== id ? `${label} — set as the global default model` : "Set as the global default model"}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-mono text-[11.5px] transition-colors hover:bg-ink-3 ${
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left font-sans text-[11.5px] transition-colors hover:bg-ink-3 ${
                   id === model ? "text-paper" : "text-paper-dim"
                 }`}
               >
@@ -1021,14 +1027,14 @@ function ModelChip({
                 }}
                 placeholder="any model id…"
                 aria-label="Custom model id"
-                className="min-w-0 flex-1 rounded border border-rule bg-ink px-2 py-1 font-mono text-[11px] text-paper placeholder:text-graphite/60"
+                className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-2 py-1 font-mono text-[11px] text-paper placeholder:text-graphite/60"
               />
               <button
                 type="button"
                 disabled={!custom.trim()}
                 onClick={() => pick(custom)}
                 title="Set as the global default model"
-                className="rounded border border-rule px-2 py-1 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-40"
+                className="rounded-lg border border-rule px-2 py-1 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-40"
               >
                 Set
               </button>
@@ -1049,7 +1055,7 @@ function ModelChip({
                       setOpen(false);
                       onSetProject("");
                     }}
-                    className="ml-auto shrink-0 rounded border border-rule px-1.5 py-0.5 text-[10.5px] text-graphite transition-colors hover:border-pencil hover:text-pencil"
+                    className="ml-auto shrink-0 rounded-lg border border-rule px-1.5 py-0.5 text-[10.5px] text-graphite transition-colors hover:border-pencil hover:text-pencil"
                   >
                     clear project override
                   </button>
@@ -1178,7 +1184,7 @@ function ChatBubble({
               ? "text-leaf border-leaf/40"
               : "text-graphite border-rule";
       return (
-        <div role="status" className={`self-center rounded border px-3 py-1 text-center text-xs ${tone}`}>
+        <div role="status" className={`self-center rounded-lg border px-3 py-1 text-center text-xs ${tone}`}>
           {item.text}
           {item.details && <details className="mt-1 text-left"><summary className="cursor-pointer">Claims needing attention</summary><p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap">{item.details}</p></details>}
         </div>
@@ -1209,14 +1215,15 @@ function ChatBubble({
   }
 }
 
-/** A tool-use pill; edit tools grow a ▸/▾ expander showing the file's diff. */
+/** Every tool call exposes its recorded input/result alongside any edit diff. */
 function ToolChip({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
   const files = useMemo(() => (item.fileDiff ? parseDiff(item.fileDiff) : []), [item.fileDiff]);
-  const expandable = files.length > 0;
   return (
-    <div className={`flex max-w-full flex-col self-start ${open && expandable ? "w-full" : ""}`}>
-      <div className="flex items-center gap-2 self-start rounded-full border border-rule bg-ink-2 py-1 pl-2.5 pr-3 font-mono text-[11.5px] text-paper-dim">
+    <div className={`flex max-w-full flex-col self-start ${open ? "w-full" : ""}`}>
+      <button type="button" onClick={() => setOpen(o => !o)}
+        aria-expanded={open} aria-label={open ? "Hide tool details" : "Show tool details"}
+        className="flex max-w-full items-center gap-2 self-start rounded-full border border-rule bg-ink-2 py-1 pl-2.5 pr-3 text-left font-sans text-[11.5px] text-paper-dim hover:text-paper">
         <span
           className={`inline-block h-1.5 w-1.5 rounded-full ${
             item.status === "running"
@@ -1228,18 +1235,8 @@ function ToolChip({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
         />
         <span>{toolLabel(item.name)}</span>
         {item.detail && <span className="max-w-[280px] truncate text-graphite">{item.detail}</span>}
-        {expandable && (
-          <button
-            type="button"
-            onClick={() => setOpen((o) => !o)}
-            aria-label={open ? "Hide change" : "Show change"}
-            title={open ? "Hide this change" : "Show this change"}
-            className="-mr-1 rounded px-1 text-graphite transition-colors hover:text-paper"
-          >
-            {open ? "▾" : "▸"}
-          </button>
-        )}
-      </div>
+        <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+      </button>
       {item.resultHead && (
         <div
           title={item.resultHead}
@@ -1248,8 +1245,15 @@ function ToolChip({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
           {item.resultHead}
         </div>
       )}
-      {open && expandable && (
-        <div className="mt-1.5 w-full min-w-0 rounded border border-rule bg-ink p-1.5">
+      {open && (
+        <div className="mt-1.5 w-full min-w-0 rounded-lg border border-rule bg-ink p-1.5">
+          <div className="space-y-2 p-2 text-xs text-paper-dim">
+            <div className="font-medium">{toolLabel(item.name)} · {item.status === "running" ? "Running…" : item.status === "error" ? "Failed" : "Completed"}</div>
+            <div className="text-graphite">Input</div>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">{item.input ?? (item.detail || "Input was not recorded.")}</pre>
+            <div className="text-graphite">Result</div>
+            <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words">{item.output ?? (item.status === "running" ? "Waiting for the tool to return…" : item.resultHead ? item.resultHead + "\nOnly a summary was recorded for this call." : "No result details were recorded for this call.")}</pre>
+          </div>
           {files.map((file) => (
             <DiffView key={file.path} file={file} />
           ))}
@@ -1382,7 +1386,7 @@ function QuestionCard({
           onClick={() => onDismiss(item.questionId)}
           aria-label="Skip these questions"
           title="Skip — the agent proceeds with its best judgment"
-          className="ml-auto rounded border border-rule px-2 py-0.5 text-[11px] text-graphite transition-colors hover:border-pencil hover:text-pencil"
+          className="ml-auto rounded-lg border border-rule px-2 py-0.5 text-[11px] text-graphite transition-colors hover:border-pencil hover:text-pencil"
         >
           Skip
         </button>
@@ -1398,7 +1402,7 @@ function QuestionCard({
             </span>
             <Markdown
               text={q.question}
-              className="min-w-0 font-serif text-[14.5px] leading-snug text-paper"
+              className="min-w-0 font-sans text-[14.5px] leading-snug text-paper"
               files={link.files}
               onOpenFile={link.onOpenFile}
             />
@@ -1409,7 +1413,7 @@ function QuestionCard({
                 <label
                   key={o.label}
                   title={o.description || undefined}
-                  className="flex cursor-pointer items-baseline gap-2 rounded border border-rule px-2.5 py-1.5 text-[13px] text-paper-dim transition-colors hover:border-leaf/40 hover:text-paper"
+                  className="flex cursor-pointer items-baseline gap-2 rounded-lg border border-rule px-2.5 py-1.5 text-[13px] text-paper-dim transition-colors hover:border-leaf/40 hover:text-paper"
                 >
                   <input
                     type="checkbox"
@@ -1430,7 +1434,7 @@ function QuestionCard({
                   type="button"
                   onClick={() => choose(q, o.label)}
                   title={o.description || undefined}
-                  className={`rounded border px-2.5 py-1.5 text-left text-[13px] transition-colors ${
+                  className={`rounded-lg border px-2.5 py-1.5 text-left text-[13px] transition-colors ${
                     picked[q.question] === o.label
                       ? "border-leaf/60 bg-leaf/10 text-paper"
                       : "border-rule text-paper-dim hover:border-leaf/40 hover:text-paper"
@@ -1463,7 +1467,7 @@ function QuestionCard({
               }}
               placeholder="Other…"
               aria-label={`Other answer: ${q.question}`}
-              className="rounded border border-rule bg-ink px-2.5 py-1.5 text-[12.5px] text-paper placeholder:text-graphite/60"
+              className="rounded-lg border border-rule bg-ink px-2.5 py-1.5 text-[12.5px] text-paper placeholder:text-graphite/60"
             />
           </div>
         </div>
@@ -1474,7 +1478,7 @@ function QuestionCard({
           type="button"
           onClick={() => complete(picked) && submitWith(picked)}
           disabled={!complete(picked)}
-          className="mt-1 rounded bg-leaf-deep px-3 py-1 text-[12px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-40"
+          className="mt-1 rounded-lg bg-leaf-deep px-3 py-1 text-[12px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-40"
         >
           Submit answers
         </button>

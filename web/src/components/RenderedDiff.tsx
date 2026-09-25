@@ -254,7 +254,7 @@ export default function RenderedDiff({
           onClick={() => setNonce((n) => n + 1)}
           aria-label="Refresh rendered diff"
           title="Recompile both sides and compare again"
-          className="ml-auto rounded border border-rule px-2 py-0.5 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+          className="ml-auto rounded-lg border border-rule px-2 py-0.5 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
         >
           ↻ refresh
         </button>
@@ -293,7 +293,7 @@ export default function RenderedDiff({
           <FailureNote title="Rendered diff failed" body={outcome.message} />
         ) : outcome?.kind === "ready" && changed.length === 0 ? (
           <div className="flex h-full items-center justify-center px-8">
-            <p className="max-w-xs text-center font-serif text-sm leading-relaxed text-graphite">
+            <p className="max-w-xs text-center font-sans text-sm leading-relaxed text-graphite">
               No visual changes — the rendered output of the current state matches the approval
               base on every page.
             </p>
@@ -436,7 +436,7 @@ function MissingPage({ label }: { label: string }) {
       className="mx-auto flex w-full max-w-[860px] items-center justify-center border border-dashed border-rule"
       style={{ aspectRatio: "1 / 1.4142" }}
     >
-      <p className="px-6 text-center font-serif text-sm text-graphite">{label}</p>
+      <p className="px-6 text-center font-sans text-sm text-graphite">{label}</p>
     </div>
   );
 }
@@ -445,9 +445,9 @@ function FailureNote({ title, body, log }: { title: string; body: string; log?: 
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 overflow-y-auto px-8 py-6">
       <p className="text-center text-sm font-medium text-pencil">{title}</p>
-      <p className="max-w-md text-center font-serif text-sm leading-relaxed text-graphite">{body}</p>
+      <p className="max-w-md text-center font-sans text-sm leading-relaxed text-graphite">{body}</p>
       {log && log.trim() && (
-        <pre className="max-h-64 w-full max-w-2xl overflow-auto whitespace-pre-wrap rounded border border-rule bg-ink-2 px-3 py-2 font-mono text-[11px] leading-relaxed text-paper-dim">
+        <pre className="max-h-64 w-full max-w-2xl overflow-auto whitespace-pre-wrap rounded-lg border border-rule bg-ink-2 px-3 py-2 font-mono text-[11px] leading-relaxed text-paper-dim">
           {log.trim()}
         </pre>
       )}

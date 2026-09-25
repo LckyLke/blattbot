@@ -62,7 +62,7 @@ export default function PdfSectionNav({ doc, scrollRef, pageWidth }: {
   const buttonClass = "shrink-0 rounded px-2 py-1 hover:bg-ink-3 hover:text-paper disabled:opacity-40 disabled:cursor-not-allowed";
   return <nav aria-label="PDF sections" className="flex shrink-0 items-center gap-1 border-b border-rule px-3 py-1 text-xs text-paper-dim">
     <button type="button" aria-label="Previous PDF section" title="Previous section" disabled={current <= 0} onClick={() => jump(current - 1)} className={buttonClass}>← Previous</button>
-    <select aria-label="Jump to PDF section" value={current} disabled={!sections.length} onChange={event => jump(Number(event.target.value))} className="min-w-0 flex-1 rounded border border-rule bg-ink-2 px-2 py-1 text-paper">
+    <select aria-label="Jump to PDF section" value={current} disabled={!sections.length} onChange={event => jump(Number(event.target.value))} className="min-w-0 flex-1 rounded-lg border border-rule bg-ink-2 px-2 py-1 text-paper">
       <option value={-1} disabled>{status || "Jump to section…"}</option>
       {sections.map((section, index) => <option key={index} value={index}>{`${"　".repeat(Math.min(section.depth, 6))}${section.title} · p. ${section.page}`}</option>)}
     </select>

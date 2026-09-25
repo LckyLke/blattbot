@@ -302,6 +302,8 @@ async function main() {
 
     browser = await chromium.launch({ executablePath: EXECUTABLE, headless: true });
     const page = await browser.newPage({ viewport: { width: 1500, height: 920 } });
+    // This workflow exercises manual saves and unsaved-draft warnings.
+    await page.addInitScript(() => localStorage.setItem("blattbot.sourceAutosave", "0"));
     page.on("download", () => downloads++);
     // F1 regression net: rendering untrusted chat content must never issue a
     // request to the attacker host embedded in MD_ECHO's image markdown.
@@ -581,7 +583,7 @@ async function main() {
     // The first user message became the chat's title.
     const restoreTitleOk = (await chatHeader.innerText()).includes("Show me the persisted transcript");
     // The tool chip came back with its expandable per-edit diff.
-    const toolExpander = page.getByRole("button", { name: "Show change" });
+    const toolExpander = page.getByRole("button", { name: "Show tool details", exact: true }).filter({ hasText: "Editing" }).first();
     await toolExpander.waitFor({ timeout: 5_000 });
     await toolExpander.click();
     const restoreDiffOk =
@@ -1222,7 +1224,7 @@ async function main() {
     await aside().locator(".cm-flash-line").first().waitFor({ timeout: 10_000 });
     const sourceTabActive = await aside()
       .getByRole("tab", { name: "Source", exact: true })
-      .evaluate((el) => el.className.includes("bg-ink-2"));
+      .evaluate((el) => el.getAttribute("aria-selected") === "true");
     const citeJumpOk =
       sourceTabActive &&
       (await aside().locator(".cm-content").first().innerText()).includes(
@@ -1629,7 +1631,7 @@ async function main() {
     const linkJumpOk =
       (await aside()
         .getByRole("tab", { name: "Source", exact: true })
-        .evaluate((el) => el.className.includes("bg-ink-2"))) &&
+        .evaluate((el) => el.getAttribute("aria-selected") === "true")) &&
       (await aside().getByText("Ln 3, Col 1").count()) > 0;
     await shot("30d4-file-link-jump");
     // The flash decoration clears itself — wait so the next jump gets a fresh one.
@@ -1667,8 +1669,8 @@ async function main() {
     const findPdfBtn = leftPane().getByRole("button", { name: "find in PDF" });
     await findPdfBtn.first().waitFor({ timeout: 10_000 });
     await findPdfBtn.first().click();
-    await aside().locator(".textLayer span.pdf-find-flash").first().waitFor({ timeout: 15_000 });
-    const pdfFindOk = (await aside().locator(".textLayer span.pdf-find-flash").count()) > 0;
+    await aside().locator(".pdf-find-flash").first().waitFor({ timeout: 15_000 });
+    const pdfFindOk = (await aside().locator(".pdf-find-flash").count()) > 0;
     await shot("30d6-quote-find-pdf");
     // Restore the layout the rest of the flow expects (right pane on Source).
     await aside().getByRole("tab", { name: "Source", exact: true }).click();
@@ -2013,8 +2015,9 @@ async function main() {
       body: JSON.stringify({ backend: "claude", openaiBaseUrl: "", openaiModel: "" }),
     });
 
-    // ---- Opening the PDF tab auto-compiles, with a visible progress indicator ----
+    // ---- Recompiling a cached PDF shows progress and keeps its pages visible ----
     await aside().getByRole("tab", { name: "PDF", exact: true }).click();
+    await aside().getByRole("button", { name: "Recompile", exact: true }).click();
     let compilingSeen = false;
     let canvasesDuringCompile = -1;
     try {
@@ -2082,7 +2085,7 @@ async function main() {
     await aside().locator(".cm-flash-line").first().waitFor({ timeout: 10_000 });
     const dblclickSourceActive = await aside()
       .getByRole("tab", { name: "Source", exact: true })
-      .evaluate((el) => el.className.includes("bg-ink-2"));
+      .evaluate((el) => el.getAttribute("aria-selected") === "true");
     const dblclickJumpOk =
       dblclickSourceActive &&
       (await aside().locator(".cm-content").first().innerText()).includes("Attention mechanisms");
@@ -2267,10 +2270,10 @@ async function main() {
     await page.getByRole("button", { name: "Remove Mock Thesis" }).click();
     const confirmDialog = page.getByRole("dialog", { name: "Remove this project?" });
     await confirmDialog.waitFor({ timeout: 5_000 });
-    // The custom dialog card: serif (Spectral) title, danger confirm in pencil.
-    const dialogTitleSerif = await confirmDialog
+    // The custom dialog card follows the shared sans-serif UI; destructive actions retain pencil.
+    const dialogTitleSans = await confirmDialog
       .locator("h2")
-      .evaluate((el) => getComputedStyle(el).fontFamily.includes("Spectral"));
+      .evaluate((el) => getComputedStyle(el).fontFamily.includes("IBM Plex Sans"));
     const dialogDangerPencil = await confirmDialog
       .getByRole("button", { name: "Remove project" })
       .evaluate((el) => getComputedStyle(el).backgroundColor === "rgb(224, 101, 82)");
@@ -2279,7 +2282,7 @@ async function main() {
     await confirmDialog.getByRole("button", { name: "Cancel" }).click();
     await confirmDialog.waitFor({ state: "detached", timeout: 5_000 });
     const customDialogOk =
-      dialogTitleSerif &&
+      dialogTitleSans &&
       dialogDangerPencil &&
       (await page.locator(".card-grid li").filter({ hasText: "Mock Thesis" }).count()) > 0;
 

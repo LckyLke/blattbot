@@ -142,6 +142,7 @@ function itemsFromEvents(
           id: typeof ev.id === "string" ? ev.id : undefined,
           name: String(ev.name ?? ""),
           detail: String(ev.detail ?? ""),
+          input: typeof ev.input === "string" ? ev.input : undefined,
           status: "running",
         });
         break;
@@ -152,6 +153,7 @@ function itemsFromEvents(
             items[i] = {
               ...it,
               status: ev.isError ? "error" : "done",
+              output: typeof ev.output === "string" ? ev.output : undefined,
               ...(typeof ev.fileDiff === "string" && ev.fileDiff.trim()
                 ? { fileDiff: ev.fileDiff }
                 : {}),
@@ -498,7 +500,7 @@ function AppShell() {
           setActivity("tool");
           setChat((prev) => [
             ...prev,
-            { kind: "tool", id: ev.id, name: ev.name, detail: ev.detail ?? "", status: "running" },
+            { kind: "tool", id: ev.id, name: ev.name, detail: ev.detail ?? "", input: ev.input, status: "running" },
           ]);
           break;
         case "tool_result":
@@ -510,6 +512,7 @@ function AppShell() {
                 ? {
                     ...item,
                     status: ev.isError ? "error" : "done",
+                    output: typeof ev.output === "string" ? ev.output : undefined,
                     ...(typeof ev.fileDiff === "string" && ev.fileDiff.trim()
                       ? { fileDiff: ev.fileDiff }
                       : {}),
@@ -1520,8 +1523,8 @@ function AppShell() {
   // order places the physical panes (the sidebar keeps order 0 and comes first).
   const paneClass = (side: PaneSide) =>
     side === "left"
-      ? "booktabs flex min-w-0 flex-1 flex-col border-r border-rule bg-ink"
-      : "booktabs flex min-w-[320px] shrink-0 flex-col bg-ink";
+      ? "workspace-pane flex min-w-0 flex-1 flex-col border border-rule bg-ink"
+      : "workspace-pane flex min-w-[320px] shrink-0 flex-col border border-rule bg-ink";
   const paneStyle = (side: PaneSide): React.CSSProperties =>
     side === "left" ? { order: 0 } : { order: 2, width: panelW };
 
@@ -1661,9 +1664,9 @@ function AppShell() {
               tabIndex={active === key ? 0 : -1}
               onClick={() => selectView(side, key)}
               onKeyDown={tabStripKeyDown}
-              className={`rounded-t px-2.5 py-1.5 text-[13px] transition-colors ${
+              className={`rounded-lg px-3 py-1.5 text-[12px] transition-colors ${
                 active === key
-                  ? "border border-b-0 border-rule bg-ink-2 text-paper"
+                  ? "bg-ink-3 text-paper"
                   : "text-graphite hover:text-paper-dim"
               }`}
             >
@@ -1688,7 +1691,7 @@ function AppShell() {
               <button
                 onClick={() => runCompile(side)}
                 title={`Local preflight${engine ? ` (${engine})` : ""}: checks your edits compile locally; Overleaf's own TeX Live may differ`}
-                className="mb-1 rounded border border-rule px-2.5 py-1 text-xs text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+                className="mb-1 rounded-lg border border-rule px-2.5 py-1 text-xs text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
               >
                 Recompile
               </button>
@@ -1744,7 +1747,7 @@ function AppShell() {
           </h1>
         </button>
         {inProject && (
-          <span className="truncate font-serif text-[15px] italic text-paper-dim">
+          <span className="truncate border-l border-rule pl-4 font-sans text-[13px] text-paper-dim">
             {selected!.name}
           </span>
         )}
@@ -1889,7 +1892,7 @@ function VerifyOnOverleaf({
                 This is the output of Overleaf's own compiler, run on the project as it
                 currently is on Overleaf.
               </p>
-              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded border border-rule bg-ink px-2.5 py-2 font-mono text-[11px] leading-relaxed text-paper-dim">
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-[11px] leading-relaxed text-paper-dim">
                 {r.logTail?.trim() || `status: ${r.status}`}
               </pre>
             </div>
@@ -1909,7 +1912,7 @@ function VerifyOnOverleaf({
       onClick={() => void run()}
       disabled={running}
       title="Compiles the project as it currently is on Overleaf (approved & pushed changes) with Overleaf's own compiler"
-      className="mb-1 rounded border border-rule px-2.5 py-1 text-xs text-paper-dim transition-colors hover:border-gold hover:text-gold disabled:cursor-default disabled:opacity-60"
+      className="mb-1 rounded-lg border border-rule px-2.5 py-1 text-xs text-paper-dim transition-colors hover:border-gold hover:text-gold disabled:cursor-default disabled:opacity-60"
     >
       {running && (
         <span className="working-dot mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-gold align-middle" />

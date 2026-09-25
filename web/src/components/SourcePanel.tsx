@@ -701,8 +701,8 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   /** The server copy of the open file moved under an unsaved draft. */
   const [diskChanged, setDiskChanged] = useState(false);
   const [wrap, setWrap] = useState(() => localStorage.getItem(WRAP_KEY) === "1");
-  /** Opt-in: write the file after AUTOSAVE_MS of idle typing. */
-  const [autosave, setAutosave] = useState(() => localStorage.getItem(AUTOSAVE_KEY) === "1");
+  /** Save after idle typing by default; preserve an explicit opt-out. */
+  const [autosave, setAutosave] = useState(() => localStorage.getItem(AUTOSAVE_KEY) !== "0");
   const [cursor, setCursor] = useState({ line: 1, col: 1, lines: 1 });
 
   const hostRef = useRef<HTMLDivElement>(null);
@@ -1342,7 +1342,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               {saveErr && <span className="text-[11px] text-pencil">{saveErr}</span>}
               {dirty && diskChanged && (
                 <span
-                  className="rounded border border-pencil/40 bg-pencil/10 px-1.5 py-px text-[10.5px] text-pencil"
+                  className="rounded-lg border border-pencil/40 bg-pencil/10 px-1.5 py-px text-[10.5px] text-pencil"
                   title="This file changed on disk (an agent turn, a sync, or a rejected hunk) while you were editing. Save writes your version over it; Revert drops your edits and shows the disk version."
                 >
                   changed on disk
@@ -1353,7 +1353,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                   onClick={mergeWithDisk}
                   disabled={saving}
                   title="Three-way merge: keep your edits and the disk changes together; passages both changed differently are marked as conflicts"
-                  className="rounded border border-rule px-2 py-0.5 text-[11.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                  className="rounded-lg border border-rule px-2 py-0.5 text-[11.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
                 >
                   Merge
                 </button>
@@ -1361,7 +1361,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               {file && !file.binary && (
                 <>
                   {busy && (
-                    <span className="rounded border border-gold/30 bg-gold/10 px-1.5 py-px text-[10.5px] text-gold">
+                    <span className="rounded-lg border border-gold/30 bg-gold/10 px-1.5 py-px text-[10.5px] text-gold">
                       read-only while the agent works
                     </span>
                   )}
@@ -1370,7 +1370,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                       onClick={() => void revert()}
                       disabled={saving}
                       title="Discard the unsaved draft and restore the saved file"
-                      className="rounded border border-rule px-2 py-0.5 text-[11.5px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
+                      className="rounded-lg border border-rule px-2 py-0.5 text-[11.5px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
                     >
                       Revert
                     </button>
@@ -1378,7 +1378,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                   <button
                     onClick={() => void save()}
                     disabled={!dirty || saving || busy}
-                    className="rounded bg-leaf-deep px-2.5 py-0.5 text-[11.5px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+                    className="rounded-lg bg-leaf-deep px-2.5 py-0.5 text-[11.5px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
                   >
                     {saving ? "Saving…" : "Save"}
                   </button>
@@ -1419,12 +1419,12 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
           )}
           {error && <p className="px-4 py-6 text-center text-sm text-pencil">{error}</p>}
           {file?.binary && (
-            <p className="px-4 py-8 text-center font-serif text-sm text-graphite">
+            <p className="px-4 py-8 text-center font-sans text-sm text-graphite">
               Binary file · {fmtSize(file.size)}
             </p>
           )}
           {!sel && !error && (
-            <p className="px-4 py-8 text-center font-serif text-sm text-graphite">
+            <p className="px-4 py-8 text-center font-sans text-sm text-graphite">
               Select a file to view its source.
             </p>
           )}
@@ -1441,7 +1441,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               onClick={() => setAutosave((a) => !a)}
               aria-pressed={autosave}
               title="Autosave: write the file 1.5 s after you stop typing (never while the agent works, never with unresolved conflict markers)"
-              className={`ml-auto rounded border px-1.5 py-px transition-colors ${
+              className={`ml-auto rounded-lg border px-1.5 py-px transition-colors ${
                 autosave
                   ? "border-leaf/60 text-leaf"
                   : "border-rule text-graphite hover:border-leaf/40 hover:text-paper-dim"
@@ -1453,7 +1453,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               onClick={() => setWrap((w) => !w)}
               aria-pressed={wrap}
               title="Toggle line wrapping"
-              className={`rounded border px-1.5 py-px transition-colors ${
+              className={`rounded-lg border px-1.5 py-px transition-colors ${
                 wrap
                   ? "border-leaf/60 text-leaf"
                   : "border-rule text-graphite hover:border-leaf/40 hover:text-paper-dim"

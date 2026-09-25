@@ -124,7 +124,7 @@ export default function ProofPanel({
   if (files.length === 0 && !editing && draftCount === 0 && saveCount === 0) {
     return (
       <div className="flex h-full items-center justify-center px-8">
-        <p className="max-w-xs text-center font-serif text-sm leading-relaxed text-graphite">
+        <p className="max-w-xs text-center font-sans text-sm leading-relaxed text-graphite">
           No pending changes. When BlattBot edits the project, the proof appears here for your
           review.
         </p>
@@ -154,14 +154,14 @@ export default function ProofPanel({
             <button
               onClick={() => void discardMine()}
               disabled={actionsLocked}
-              className="rounded border border-rule px-2.5 py-1 text-[11.5px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
+              className="rounded-lg border border-rule px-2.5 py-1 text-[11.5px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
             >
               Discard my changes to these files
             </button>
             <button
               onClick={() => void overwriteRemote()}
               disabled={actionsLocked}
-              className="rounded bg-pencil/90 px-2.5 py-1 text-[11.5px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
+              className="rounded-lg bg-pencil/90 px-2.5 py-1 text-[11.5px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
             >
               Overwrite Overleaf
             </button>
@@ -221,7 +221,7 @@ export default function ProofPanel({
           <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-rule px-4 py-2">
             <button
               onClick={() => setEditing(null)}
-              className="rounded border border-rule px-2 py-1 text-xs text-paper-dim transition-colors hover:border-gold hover:text-gold"
+              className="rounded-lg border border-rule px-2 py-1 text-xs text-paper-dim transition-colors hover:border-gold hover:text-gold"
             >
               ← Back to diff
             </button>
@@ -300,12 +300,12 @@ export default function ProofPanel({
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Commit message (optional)"
-            className="min-w-0 flex-1 rounded border border-rule bg-ink px-3 py-2 text-[13px] text-paper placeholder:text-graphite/60"
+            className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-3 py-2 text-[13px] text-paper placeholder:text-graphite/60"
           />
           <button
             onClick={() => void approve()}
             disabled={actionsLocked || files.length === 0}
-            className="flex items-center gap-1.5 rounded bg-leaf-deep px-4 py-2 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-leaf-deep px-4 py-2 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
           >
             {acting === "push" && (
               <span className="working-dot inline-block h-1.5 w-1.5 rounded-full bg-paper" />
@@ -316,7 +316,7 @@ export default function ProofPanel({
             <button
               onClick={() => void discard()}
               disabled={actionsLocked || files.length === 0}
-              className="rounded bg-pencil/90 px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
+              className="rounded-lg bg-pencil/90 px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
             >
               Really discard?
             </button>
@@ -324,7 +324,7 @@ export default function ProofPanel({
             <button
               onClick={() => setConfirmDiscard(true)}
               disabled={actionsLocked || files.length === 0}
-              className="flex items-center gap-1.5 rounded border border-rule px-3 py-2 text-[13px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg border border-rule px-3 py-2 text-[13px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
             >
               {acting === "discard" && (
                 <span className="working-dot inline-block h-1.5 w-1.5 rounded-full bg-pencil" />
@@ -372,7 +372,7 @@ function FileDiff({
           onClick={() => setCollapsed((c) => !c)}
           className="flex min-w-0 flex-1 items-baseline gap-2 text-left"
         >
-          <span className="truncate font-serif text-[14.5px] font-semibold text-paper">{file.path}</span>
+          <span className="truncate font-sans text-[14.5px] font-semibold text-paper">{file.path}</span>
           <span className={`rounded-sm border px-1 text-[11px] uppercase tracking-wide ${badge.cls}`}>
             {badge.label}
           </span>
@@ -386,7 +386,7 @@ function FileDiff({
             onClick={() => onEdit(file.path, hunkJumpLine(file.hunks[0]) ?? 1)}
             disabled={!canEdit}
             aria-label={`Edit ${file.path} in Proof`}
-            className="rounded border border-rule px-2 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+            className="rounded-lg border border-rule px-2 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
           >
             Edit
           </button>
@@ -399,7 +399,7 @@ function FileDiff({
             }}
             disabled={busy}
             aria-label={`Really discard changes to ${file.path}?`}
-            className="rounded bg-pencil/90 px-1.5 text-[11px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
+            className="rounded-lg bg-pencil/90 px-1.5 text-[11px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
           >
             really?
           </button>
@@ -409,7 +409,7 @@ function FileDiff({
             disabled={busy}
             aria-label={`Discard changes to ${file.path}`}
             title={`Discard all changes to ${file.path}`}
-            className="rounded border border-rule px-1.5 text-[11px] text-graphite transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
+            className="rounded-lg border border-rule px-1.5 text-[11px] text-graphite transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
           >
             discard file
           </button>
@@ -484,7 +484,7 @@ function HunkBlock({
   return (
     // The header stays OUTSIDE the horizontal scroll area: long LaTeX lines
     // must not drag the hunk's actions off to the right with them.
-    <div className="mt-1 overflow-hidden rounded border border-rule bg-ink-2/60">
+    <div className="mt-1 overflow-hidden rounded-lg border border-rule bg-ink-2/60">
       <div className="flex items-center gap-2 border-b border-rule px-3 py-1">
         <span className="shrink-0 font-mono text-[11px] text-graphite/80">{range}</span>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">
@@ -517,7 +517,7 @@ function HunkBlock({
               }}
               disabled={busy}
               aria-label={`Really discard this change in ${file.path}?`}
-              className="rounded bg-pencil/90 px-2 py-1 text-[11.5px] font-medium leading-none text-ink transition-colors hover:bg-pencil disabled:opacity-50"
+              className="rounded-lg bg-pencil/90 px-2 py-1 text-[11.5px] font-medium leading-none text-ink transition-colors hover:bg-pencil disabled:opacity-50"
             >
               really?
             </button>

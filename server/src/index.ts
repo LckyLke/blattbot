@@ -1,3 +1,4 @@
+import { codexLimits } from "./agent-limits.js";
 import { registerInlineQuestions, isInlineQuestionActive } from "./inline-questions.js";
 import { researchJobs, listResearchJobs } from "./research/jobs.js";
 import { registerDeployment } from "./deployment.js";
@@ -330,6 +331,8 @@ app.get<{ Querystring: { refresh?: string; backend?: string } }>("/api/models", 
   }
   return listModels(s, req.query.refresh === "1");
 });
+
+app.get("/api/agent/codex/limits", async () => codexLimits());
 
 app.get<{ Querystring: { refresh?: string } }>("/api/agent/codex/status", async (req) => {
   const { models, ...status } = await codexStatus(req.query.refresh === "1");

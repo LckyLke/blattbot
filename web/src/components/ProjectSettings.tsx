@@ -85,11 +85,11 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
       <div
         role="dialog"
         aria-label="Project settings"
-        className="flex max-h-[88vh] w-[520px] max-w-full flex-col rounded-lg border border-rule bg-ink-2 shadow-[0_24px_64px_rgba(0,0,0,0.5)]"
+        className="flex max-h-[88vh] w-[520px] max-w-full flex-col rounded-2xl border border-rule bg-ink-2 shadow-[0_24px_64px_rgba(0,0,0,0.5)]"
       >
-        <header className="booktabs flex items-baseline gap-3 px-5 pb-3 pt-4">
-          <h2 className="font-serif text-[17px] font-semibold text-paper">Project settings</h2>
-          <span className="min-w-0 truncate font-serif text-[13px] italic text-graphite">
+        <header className="flex items-baseline gap-3 px-5 pb-3 pt-4">
+          <h2 className="font-sans text-[17px] font-semibold text-paper">Project settings</h2>
+          <span className="min-w-0 truncate font-sans text-[13px] italic text-graphite">
             {project.name}
           </span>
           <button
@@ -107,7 +107,7 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
             <p className="text-sm text-graphite">Loading…</p>
           ) : (
             <>
-              <p className="mb-4 font-serif text-[13px] leading-relaxed text-graphite">
+              <p className="mb-4 font-sans text-[13px] leading-relaxed text-graphite">
                 These apply to this project only, on top of the global agent settings.
               </p>
 
@@ -122,7 +122,7 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                   placeholder={
                     "e.g. Use British English. Prefer \\autoref. Keep sentences under 25 words."
                   }
-                  className="mt-1 w-full resize-y rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs leading-relaxed text-paper placeholder:text-graphite/60"
+                  className="mt-1 w-full resize-y rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs leading-relaxed text-paper placeholder:text-graphite/60"
                 />
               </label>
 
@@ -136,7 +136,7 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                   onChange={(e) => setModel(e.target.value)}
                   list="blattbot-project-models"
                   placeholder="global default"
-                  className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
+                  className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper placeholder:text-graphite/60"
                 />
                 <datalist id="blattbot-project-models">
                   {modelList.models.map((m) => (
@@ -150,7 +150,7 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                 <select
                   value={defaultMode}
                   onChange={(e) => setDefaultMode(e.target.value)}
-                  className="mt-1 block rounded border border-rule bg-ink px-2.5 py-2 text-xs text-paper"
+                  className="mt-1 block rounded-lg border border-rule bg-ink px-2.5 py-2 text-xs text-paper"
                 >
                   {MODE_OPTIONS.map(([id, label]) => (
                     <option key={id} value={id}>
@@ -166,7 +166,7 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                   onClick={save}
                   disabled={saving}
                   aria-label="Save project settings"
-                  className="ml-auto rounded bg-leaf-deep px-4 py-2 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+                  className="ml-auto rounded-lg bg-leaf-deep px-4 py-2 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Save"}
                 </button>

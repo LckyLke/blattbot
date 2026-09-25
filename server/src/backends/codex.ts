@@ -1,3 +1,4 @@
+import { toolDetail } from "./types.js";
 /** Codex owns reasoning and conversation history; BlattBot owns project tools. */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -113,10 +114,10 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
       const name = eventToolName(p.tool);
       const id = p.callId;
       emit({ type: "tool_start", name });
-      emit({ type: "tool_use", id, name, detail: summarizeArgs(p.tool, p.arguments, ctx.dir) });
+      emit({ type: "tool_use", id, name, input: toolDetail(p.arguments), detail: summarizeArgs(p.tool, p.arguments, ctx.dir) });
       const result = await executeTool(ctx, p.tool, p.arguments);
       signal.throwIfAborted();
-      emit({ type: "tool_result", id, isError: result.isError, resultHead: resultHead(name, result.content) });
+      emit({ type: "tool_result", id, isError: result.isError, output: toolDetail(result.content), resultHead: resultHead(name, result.content) });
       return { success: !result.isError, contentItems: [{ type: "inputText", text: result.content }] };
     });
     toolQueue = work.catch(() => {});

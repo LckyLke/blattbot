@@ -44,6 +44,12 @@ export interface PublisherConnection {
 }
 export interface PublisherLogin { id: string; origin: string; institution: string }
 
+export interface UsageLimits {
+  windows: { bucket: string; window: string; remainingPercent: number; resetsAt?: number }[];
+  checkedAt: number;
+  message?: string;
+}
+
 export interface CodexStatus {
   available: boolean;
   authenticated: boolean;
@@ -480,6 +486,7 @@ export const api = {
       return settings;
     }),
   agentInfo: () => request<AgentInfo>("/api/agent/info"),
+  codexLimits: () => request<UsageLimits>("/api/agent/codex/limits"),
   codexStatus: (refresh = false) => request<CodexStatus>(`/api/agent/codex/status${refresh ? "?refresh=1" : ""}`),
   updateCookie: (id: string, cookie: string) =>
     request<{ ok: boolean }>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify({ cookie }) }),

@@ -15,7 +15,7 @@ interface Listing {
   repository: LocalRepository | null;
 }
 const lastFolderKey = "blattbot.localRepositoryFolder";
-const control = "rounded border border-rule px-3 py-2 text-xs text-paper-dim hover:border-leaf disabled:opacity-40";
+const control = "rounded-lg border border-rule px-3 py-2 text-xs text-paper-dim hover:border-leaf disabled:opacity-40";
 
 export default function LocalRepositoryPicker({ projectId, initialPath, onSelect, onClose }: {
   projectId: string;
@@ -72,10 +72,10 @@ export default function LocalRepositoryPicker({ projectId, initialPath, onSelect
   return createPortal(
     <dialog ref={dialog} aria-labelledby={titleId}
       onCancel={e => { e.preventDefault(); onClose(); }}
-      className="m-auto w-[620px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-lg border border-rule bg-ink-2 p-5 text-paper shadow-2xl backdrop:bg-ink/80">
+      className="m-auto w-[620px] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl border border-rule bg-ink-2 p-5 text-paper shadow-2xl backdrop:bg-ink/80">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 id={titleId} className="font-serif text-lg">Choose a local Git repository</h2>
+          <h2 id={titleId} className="font-sans text-lg">Choose a local Git repository</h2>
           <p className="mt-1 text-xs text-graphite">Browse folders on the computer running BlattBot.</p>
         </div>
         <button type="button" className={control} onClick={onClose} aria-label="Close folder picker">×</button>
@@ -84,7 +84,7 @@ export default function LocalRepositoryPicker({ projectId, initialPath, onSelect
         <label className="block text-xs text-paper-dim" htmlFor={`${titleId}-path`}>Folder location</label>
         <div className="mt-1 flex gap-2">
           <input id={`${titleId}-path`} value={location} disabled={loading} onChange={e => setLocation(e.target.value)}
-            className="min-w-0 flex-1 rounded border border-rule bg-ink px-2 py-2 font-mono text-xs" placeholder="Paste a folder path, or use ~/Projects" />
+            className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-2 py-2 font-mono text-xs" placeholder="Paste a folder path, or use ~/Projects" />
           <button className={control} disabled={loading}>Go</button>
         </div>
       </form>
@@ -92,10 +92,10 @@ export default function LocalRepositoryPicker({ projectId, initialPath, onSelect
         <button type="button" className={control} onClick={() => void navigate()} disabled={loading}>Home</button>
         <button type="button" className={control} onClick={() => void navigate(listing!.parent!)} disabled={loading || !listing?.parent}>↑ Up</button>
         <input aria-label="Filter folders" value={filter} onChange={e => setFilter(e.target.value)}
-          className="min-w-0 flex-1 rounded border border-rule bg-ink px-2 py-2 text-xs" placeholder="Filter folders…" />
+          className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-2 py-2 text-xs" placeholder="Filter folders…" />
       </div>
       {error && <p role="alert" className="mb-2 text-sm text-red-400">{error}</p>}
-      <div className="h-56 overflow-y-auto rounded border border-rule bg-ink" aria-busy={loading}>
+      <div className="h-56 overflow-y-auto rounded-lg border border-rule bg-ink" aria-busy={loading}>
         {loading ? <p role="status" className="p-3 text-xs text-graphite">Reading folder…</p> :
           <ul>{entries.map(entry => <li key={entry.path}>
             <button type="button" onClick={() => void navigate(entry.path)}
@@ -103,7 +103,7 @@ export default function LocalRepositoryPicker({ projectId, initialPath, onSelect
               aria-label={`Open folder ${entry.name}`}>
               <span aria-hidden="true" className="text-graphite">▸</span>
               <span className="min-w-0 flex-1 break-all">{entry.name}</span>
-              {entry.gitRepository && <span className="rounded border border-leaf/40 px-1.5 py-0.5 text-[10px] text-leaf">Git</span>}
+              {entry.gitRepository && <span className="rounded-lg border border-leaf/40 px-1.5 py-0.5 text-[10px] text-leaf">Git</span>}
             </button>
           </li>)}</ul>}
         {!loading && !entries.length && <p className="p-3 text-xs text-graphite">{filter ? "No folders match your filter." : "No subfolders here."}</p>}
@@ -121,7 +121,7 @@ export default function LocalRepositoryPicker({ projectId, initialPath, onSelect
       <div className="mt-4 flex justify-end gap-2">
         <button type="button" className={control} onClick={onClose}>Cancel</button>
         <button type="button" disabled={!canSelect}
-          className="rounded bg-leaf px-4 py-2 text-xs font-medium text-ink disabled:opacity-40"
+          className="rounded-lg bg-leaf px-4 py-2 text-xs font-medium text-ink disabled:opacity-40"
           onClick={() => {
             if (!canSelect || !repository) return;
             try { localStorage.setItem(lastFolderKey, repository.path); } catch { /* optional preference */ }

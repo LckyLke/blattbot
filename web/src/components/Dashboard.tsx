@@ -28,7 +28,7 @@ function ago(iso?: string): string | null {
 const GRID_CLS =
   "card-grid mt-4 grid list-none grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3";
 const CARD_CLS =
-  "group relative flex flex-col rounded-lg border border-rule bg-ink-2 transition-colors hover:border-leaf/50";
+  "group relative flex flex-col rounded-2xl border border-rule bg-ink-2 transition-colors hover:border-graphite/50 hover:bg-ink-3/50";
 
 type FormKind = "none" | "account" | "blank" | "git";
 
@@ -61,7 +61,7 @@ export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpe
 
   const toggleForm = (kind: FormKind) => setForm((f) => (f === kind ? "none" : kind));
   const actionCls = (kind: FormKind) =>
-    `rounded border px-3 py-1.5 text-[12.5px] transition-colors ${
+    `rounded-lg border px-3 py-1.5 text-[12.5px] transition-colors ${
       form === kind
         ? "border-leaf/60 bg-leaf/10 text-paper"
         : "border-rule text-paper-dim hover:border-leaf hover:text-leaf"
@@ -69,10 +69,10 @@ export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpe
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-[1100px] px-10 pb-20 pt-12">
+      <div className="mx-auto max-w-[1100px] px-5 pb-20 pt-10 sm:px-10">
         <div className="flex flex-wrap items-baseline gap-3">
           <img src={appUrl("/logo.svg")} alt="" aria-hidden="true" className="h-[30px] w-auto self-center" />
-          <h2 className="font-serif text-[28px] text-paper">Projects</h2>
+          <h2 className="font-sans text-[26px] font-medium tracking-tight text-paper">Projects</h2>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <button onClick={() => toggleForm("account")} className={actionCls("account")}>
               + add account
@@ -86,7 +86,7 @@ export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpe
             <button
               onClick={onOpenSettings}
               aria-label="Open settings"
-              className="rounded border border-rule px-3 py-1.5 text-[12.5px] text-graphite transition-colors hover:border-rule hover:text-paper-dim"
+              className="rounded-lg border border-rule px-3 py-1.5 text-[12.5px] text-graphite transition-colors hover:border-rule hover:text-paper-dim"
             >
               ⚙ Settings
             </button>
@@ -94,7 +94,7 @@ export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpe
         </div>
 
         {empty && form === "none" && (
-          <p className="mt-6 max-w-lg font-serif text-[15px] leading-relaxed text-graphite">
+          <p className="mt-6 max-w-lg font-sans text-[15px] leading-relaxed text-graphite">
             Sign in to Overleaf and pick projects straight from your account — or start a blank
             local project. BlattBot edits a synced copy, verifies it compiles, and shows you every
             change before it reaches Overleaf.
@@ -102,8 +102,8 @@ export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpe
         )}
 
         {(form === "account" || (empty && form === "none")) && (
-          <div className="mt-6 max-w-xl rounded-lg border border-rule bg-ink-2 p-5">
-            <p className="mb-3 text-[12px] font-medium uppercase tracking-[0.14em] text-graphite">
+          <div className="mt-6 max-w-xl rounded-2xl border border-rule bg-ink-2 p-5">
+            <p className="mb-3 text-[12px] font-medium text-graphite">
               Add an Overleaf account
             </p>
             <AccountSignIn autoFocus={empty} onSession={addAccount} />
@@ -167,7 +167,7 @@ function BlankForm({
   }
 
   return (
-    <form onSubmit={createBlank} className="mt-6 max-w-xl rounded-lg border border-rule bg-ink-2 p-5">
+    <form onSubmit={createBlank} className="mt-6 max-w-xl rounded-2xl border border-rule bg-ink-2 p-5">
       <label className="block text-[12px] text-graphite">
         Project name
         <input
@@ -175,7 +175,7 @@ function BlankForm({
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder="My new paper"
-          className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 text-[13px] text-paper placeholder:text-graphite/60"
+          className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 text-[13px] text-paper placeholder:text-graphite/60"
         />
       </label>
       <p className="mt-2 text-[12px] leading-snug text-graphite">
@@ -186,7 +186,7 @@ function BlankForm({
       <div className="mt-3 flex justify-end">
         <button
           disabled={pending || !newName.trim()}
-          className="rounded bg-leaf-deep px-4 py-1.5 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+          className="rounded-lg bg-leaf-deep px-4 py-1.5 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
         >
           {pending ? "Creating…" : "Create project"}
         </button>
@@ -232,7 +232,7 @@ function GitForm({
   }
 
   return (
-    <form onSubmit={connectGit} className="mt-6 max-w-xl rounded-lg border border-rule bg-ink-2 p-5">
+    <form onSubmit={connectGit} className="mt-6 max-w-xl rounded-2xl border border-rule bg-ink-2 p-5">
       <label className="block text-[12px] text-graphite">
         Git URL
         <input
@@ -240,7 +240,7 @@ function GitForm({
           value={gitUrl}
           onChange={(e) => setGitUrl(e.target.value)}
           placeholder="https://git.overleaf.com/… or any git remote"
-          className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-[13px] text-paper placeholder:text-graphite/60"
+          className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-[13px] text-paper placeholder:text-graphite/60"
         />
       </label>
       <label className="mt-3 block text-[12px] text-graphite">
@@ -250,7 +250,7 @@ function GitForm({
           onChange={(e) => setGitToken(e.target.value)}
           type="password"
           placeholder="olp_…"
-          className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 font-mono text-[13px] text-paper placeholder:text-graphite/60"
+          className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-[13px] text-paper placeholder:text-graphite/60"
         />
       </label>
       <label className="mt-3 block text-[12px] text-graphite">
@@ -259,14 +259,14 @@ function GitForm({
           value={gitName}
           onChange={(e) => setGitName(e.target.value)}
           placeholder="My thesis"
-          className="mt-1 w-full rounded border border-rule bg-ink px-2.5 py-2 text-[13px] text-paper placeholder:text-graphite/60"
+          className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 text-[13px] text-paper placeholder:text-graphite/60"
         />
       </label>
       {error && <p className="mt-2 text-[12px] leading-snug text-pencil">{error}</p>}
       <div className="mt-3 flex justify-end">
         <button
           disabled={pending || !gitUrl.trim()}
-          className="rounded bg-leaf-deep px-4 py-1.5 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+          className="rounded-lg bg-leaf-deep px-4 py-1.5 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
         >
           {pending ? "Cloning…" : "Connect project"}
         </button>
@@ -390,7 +390,7 @@ function AccountSection({
           title={disconnected ? "Session expired" : "Connected"}
           className={`inline-block h-2 w-2 self-center rounded-full ${disconnected ? "bg-pencil" : "bg-leaf"}`}
         />
-        <h3 className="font-serif text-[18px] text-paper">{account.host}</h3>
+        <h3 className="font-sans text-[15px] font-medium text-paper">{account.host}</h3>
         <span className="font-mono text-[12px] text-graphite">
           {account.email}
           {account.email && projectCount !== null && " · "}
@@ -402,14 +402,14 @@ function AccountSection({
             <button
               onClick={() => reconnect("import")}
               disabled={reconnecting !== null}
-              className="rounded border border-rule px-2.5 py-0.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+              className="rounded-lg border border-rule px-2.5 py-0.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
             >
               {reconnecting === "import" ? "Looking for a session…" : "Reconnect from browser session"}
             </button>
             <button
               onClick={() => reconnect("browser")}
               disabled={reconnecting !== null}
-              className="rounded border border-rule px-2.5 py-0.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+              className="rounded-lg border border-rule px-2.5 py-0.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
             >
               {reconnecting === "browser" ? "Waiting for login…" : "Log in via browser"}
             </button>
@@ -450,7 +450,7 @@ function AccountSection({
                       aria-label={`Open ${p.name}`}
                       className="flex w-full flex-1 flex-col items-start p-4 text-left"
                     >
-                      <span className="pr-5 font-serif text-[16px] leading-snug text-paper">
+                      <span className="pr-5 font-sans text-[14px] font-medium leading-snug text-paper">
                         {p.name}
                       </span>
                       <span className="mt-auto flex w-full items-center gap-1.5 pt-3">
@@ -473,7 +473,7 @@ function AccountSection({
                   </>
                 ) : (
                   <div className="flex w-full flex-1 flex-col items-start p-4">
-                    <span className="font-serif text-[16px] leading-snug text-paper-dim">
+                    <span className="font-sans text-[14px] font-medium leading-snug text-paper-dim">
                       {p.name}
                     </span>
                     <span className="mt-auto flex w-full items-center gap-1.5 pt-3">
@@ -485,7 +485,7 @@ function AccountSection({
                         onClick={() => importProject(p)}
                         disabled={importing !== null}
                         aria-label={`Import ${p.name}`}
-                        className="ml-auto rounded border border-rule px-2.5 py-0.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                        className="ml-auto rounded-lg border border-rule px-2.5 py-0.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
                       >
                         {importing === p.id ? "Importing…" : "Import"}
                       </button>
@@ -502,7 +502,7 @@ function AccountSection({
                 aria-label={`Open ${p.name}`}
                 className="flex w-full flex-1 flex-col items-start p-4 text-left"
               >
-                <span className="pr-5 font-serif text-[16px] leading-snug text-paper">{p.name}</span>
+                <span className="pr-5 font-sans text-[14px] font-medium leading-snug text-paper">{p.name}</span>
                 <span className="mt-auto flex w-full items-center gap-1.5 pt-3">
                   <span className="rounded-sm border border-leaf/40 px-1 font-mono text-[10.5px] uppercase tracking-wide text-leaf">
                     connected
@@ -600,7 +600,7 @@ function LocalSection({
     <section className="mt-12">
       <div className="flex items-baseline gap-3">
         <span className="inline-block h-2 w-2 self-center rounded-full bg-gold/70" />
-        <h3 className="font-serif text-[18px] text-paper">Local &amp; git</h3>
+        <h3 className="font-sans text-[15px] font-medium text-paper">Local &amp; git</h3>
         <span className="font-mono text-[12px] text-graphite">
           {projects.length} project{projects.length === 1 ? "" : "s"}
         </span>
@@ -615,7 +615,7 @@ function LocalSection({
                 aria-label={`Open ${p.name}`}
                 className="flex w-full flex-1 flex-col items-start p-4 pb-2.5 text-left"
               >
-                <span className="pr-5 font-serif text-[16px] leading-snug text-paper">{p.name}</span>
+                <span className="pr-5 font-sans text-[14px] font-medium leading-snug text-paper">{p.name}</span>
                 <span className="mt-auto flex w-full items-center gap-1.5 pt-3">
                   <span
                     className={`rounded-sm border px-1 font-mono text-[10.5px] uppercase tracking-wide ${
@@ -643,7 +643,7 @@ function LocalSection({
                     disabled={publishing !== null || accounts.length === 0}
                     aria-label={`Publish ${p.name} to Overleaf`}
                     title={accounts.length === 0 ? "Add an Overleaf account first" : undefined}
-                    className="rounded border border-rule px-2.5 py-0.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+                    className="rounded-lg border border-rule px-2.5 py-0.5 text-[12px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
                   >
                     {publishing === p.id ? "Publishing…" : "Publish to Overleaf"}
                   </button>
@@ -656,7 +656,7 @@ function LocalSection({
                         value={pickedAccount}
                         onChange={(e) => setPickedAccount(e.target.value)}
                         aria-label="Publish account"
-                        className="rounded border border-rule bg-ink px-1.5 py-0.5 text-[12px] text-paper"
+                        className="rounded-lg border border-rule bg-ink px-1.5 py-0.5 text-[12px] text-paper"
                       >
                         {accounts.map((a) => (
                           <option key={a.id} value={a.id}>
@@ -668,7 +668,7 @@ function LocalSection({
                       <button
                         onClick={() => void publish(p, pickedAccount)}
                         disabled={!pickedAccount}
-                        className="rounded bg-leaf-deep px-2.5 py-0.5 text-[12px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+                        className="rounded-lg bg-leaf-deep px-2.5 py-0.5 text-[12px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
                       >
                         Publish
                       </button>

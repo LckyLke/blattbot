@@ -18,6 +18,10 @@ writeFileSync(join(dir, "main.tex"), "\\documentclass{article}\n\\begin{document
 execFileSync("git", ["-C", dir, "init", "-b", "main"], { stdio: "pipe" });
 execFileSync("git", ["-C", dir, "add", "."]);
 execFileSync("git", ["-C", dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-m", "Fixture"], { stdio: "pipe" });
+const chats = await import("../src/chats.js");
+const chat = chats.ensureActiveChat(project.id);
+chats.appendEvent(project.id, chat.id, { type: "tool_use", id: "verify-fixture", name: "mcp__blattbot__verify_citation_support", detail: "smith2025", input: JSON.stringify({ key: "smith2025", claim: "The exact claim being verified." }) });
+chats.appendEvent(project.id, chat.id, { type: "tool_result", id: "verify-fixture", output: "SUPPORTED\nEvidence: page 4, the reported experiment.", isError: false });
 const port = 4595, base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
   cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
@@ -44,8 +48,23 @@ try {
       { id: "claude-sonnet-5", label: "Claude", supportsEffort: true, effortLevels: ["low", "high", "max"] },
     ] } });
   });
+  await page.route("**/api/agent/codex/limits", route => route.fulfill({ json: {
+    windows: [{ bucket: "codex", window: "5 hour", remainingPercent: 75, resetsAt: 1800000000 }],
+    checkedAt: Date.now(),
+  } }));
   await page.goto(base, { waitUntil: "networkidle" });
   await page.getByRole("button", { name: "Open Chat Effort Fixture" }).click();
+  await page.getByRole("button", { name: "Usage limits", exact: true }).click();
+  await page.getByText("75% remaining", { exact: true }).waitFor();
+  assert.equal(await page.locator(".chat-composer-toolbar").getByRole("button", { name: "Usage limits", exact: true }).count(), 1);
+  await page.screenshot({ path: "/tmp/blattbot-usage-popover.png", fullPage: true });
+  await page.keyboard.press("Escape");
+  assert.equal(await page.getByRole("region", { name: "Usage limits details" }).count(), 0);
+  const details = page.getByRole("button", { name: "Show tool details", exact: true }).first();
+  await details.click();
+  await page.getByText("SUPPORTED", { exact: false }).waitFor();
+  assert((await page.locator("pre").allTextContents()).some(text => text.includes("The exact claim being verified.")));
+  await page.getByRole("button", { name: "Hide tool details", exact: true }).first().click();
   const effort = page.getByRole("combobox", { name: "Reasoning effort", exact: true });
   const savedSettings = async () => (await page.request.get(base + "/api/settings")).json();
   const choose = async (value: string) => {
@@ -83,6 +102,9 @@ try {
   assert((await input.boundingBox())!.height <= 80);
   await page.setViewportSize({ width: 1050, height: 850 });
   assert(await composer.evaluate(el => el.scrollWidth <= el.clientWidth), "Composer must fit a narrow pane");
+  const usageRect = await composer.getByRole("button", { name: "Usage limits", exact: true }).boundingBox();
+  const sendRect = await composer.getByRole("button", { name: "Send", exact: true }).boundingBox();
+  assert(usageRect && sendRect && usageRect.x + usageRect.width <= sendRect.x, "Usage control must not overlap Send at narrow widths");
   await composer.screenshot({ path: "/tmp/blattbot-composer-narrow.png" });
   await page.setViewportSize({ width: 1450, height: 1000 });
   // Failed writes leave the persisted choice visible and expose the server error.
@@ -111,7 +133,7 @@ try {
   await page.reload({ waitUntil: "networkidle" });
   assert.equal(await effort.count(), 0);
   assert.deepEqual(errors, []);
-  console.log("Chat reasoning effort passed: catalog levels, save/reload, failed save, project override, defaults, Codex/Claude isolation, unsupported backend.");
+  console.log("Chat usage limits, expandable citation evidence, and reasoning effort passed: catalog levels, save/reload, failed save, project override, defaults, Codex/Claude isolation, unsupported backend.");
 } finally {
   await browser?.close(); server.kill("SIGTERM");
   await new Promise(resolve => { if (server.exitCode !== null) resolve(undefined); else server.once("exit", resolve); });

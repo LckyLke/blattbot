@@ -161,13 +161,13 @@ export default function InlineQuestion({ projectId }: { projectId: string }) {
             event.preventDefault(); const step = event.shiftKey ? 40 : 10;
             setPosition(clamp(placed.x + move[0] * step, placed.y + move[1] * step));
           }}>
-          <span className="block font-serif text-base">⠿ Quick question</span><span className="block truncate text-[11px] text-graphite">{passage.location} · Separate from main chat</span>
+          <span className="block font-sans text-base">⠿ Quick question</span><span className="block truncate text-[11px] text-graphite">{passage.location} · Separate from main chat</span>
         </button>
-        <button type="button" aria-label="Clear inline conversation" title="Clear messages and start fresh with the current passage" onClick={clear} className="rounded border border-rule px-2 py-1 text-xs text-paper-dim hover:bg-ink-3">Clear</button>
+        <button type="button" aria-label="Clear inline conversation" title="Clear messages and start fresh with the current passage" onClick={clear} className="rounded-lg border border-rule px-2 py-1 text-xs text-paper-dim hover:bg-ink-3">Clear</button>
         <button aria-label="Minimize inline question" onClick={close} className="rounded px-2 py-1 text-paper-dim hover:bg-ink-3">×</button>
       </header>
       <div className="min-h-0 overflow-y-auto px-4 py-3">
-        <details className="mb-3 rounded border border-leaf/20 bg-leaf/5 px-3 py-2"><summary className="cursor-pointer truncate text-xs text-paper-dim">“{passage.text.slice(0, 120)}{passage.text.length > 120 ? "…" : ""}”</summary><p className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap text-xs text-paper-dim">{passage.text}</p></details>
+        <details className="mb-3 rounded-lg border border-leaf/20 bg-leaf/5 px-3 py-2"><summary className="cursor-pointer truncate text-xs text-paper-dim">“{passage.text.slice(0, 120)}{passage.text.length > 120 ? "…" : ""}”</summary><p className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap text-xs text-paper-dim">{passage.text}</p></details>
         {!messages.length && <p className="mb-2 text-xs text-graphite">Ask about this passage. The model sees the selection and nearby text, not the full paper.</p>}
         {messages.map((message, i) => <div key={i} className={`mb-3 ${message.role === "user" ? "rounded-lg bg-ink-3 px-3 py-2" : "px-1"}`}><span className="mb-1 block text-[10px] uppercase tracking-wide text-graphite">{message.role === "user" ? "You" : "BlattBot"}</span>{message.passage && <details className="mb-1 text-[11px] text-graphite"><summary className="cursor-pointer truncate">{message.passage.location}</summary><p className="max-h-24 overflow-y-auto whitespace-pre-wrap">{message.passage.text}</p></details>}<Markdown text={message.text} className="text-sm" /></div>)}
         {pending && <p role="status" className="py-2 text-xs text-leaf">Thinking about your question…</p>}
@@ -181,7 +181,7 @@ export default function InlineQuestion({ projectId }: { projectId: string }) {
           onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}
           className="block w-full resize-none rounded-lg border border-rule bg-ink p-2 text-sm outline-none focus:border-leaf" />
         <div className="mt-2 flex items-center justify-between gap-2"><span className="text-[10px] text-graphite">Enter to ask · Shift+Enter for a new line</span>
-          {pending ? <button type="button" onClick={() => controller.current?.abort()} className="rounded border border-rule px-3 py-1 text-xs">Stop</button> : <button disabled={!question.trim() || messages.length >= 12 || passage.text.length > 12000} className="rounded bg-leaf px-3 py-1 text-xs text-ink disabled:opacity-40">Ask</button>}
+          {pending ? <button type="button" onClick={() => controller.current?.abort()} className="rounded-lg border border-rule px-3 py-1 text-xs">Stop</button> : <button disabled={!question.trim() || messages.length >= 12 || passage.text.length > 12000} className="rounded-lg bg-leaf px-3 py-1 text-xs text-ink disabled:opacity-40">Ask</button>}
         </div>
       </form>
     </div>}
