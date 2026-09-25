@@ -8,7 +8,8 @@ import {
   MAX_CHAT_IMAGE_LABEL,
   api,
 } from "../api";
-import type { AgentQuestion, ChatMeta, ProjectStats } from "../api";
+import type { AgentQuestion, ChatMeta, ProjectStats, Settings } from "../api";
+import EffortSelect from "./EffortSelect";
 import DiffView from "./DiffView";
 import Markdown from "./Markdown";
 import { useDialog } from "./Dialog";
@@ -90,6 +91,8 @@ interface Props {
   onChangeModel: (model: string) => void;
   /** Write the project's model override ("" clears it). */
   onSetProjectModel: (model: string) => void;
+  effortSettings: Pick<Settings, "backend" | "codexEffort" | "effort"> | null;
+  onChangeEffort: (patch: Partial<Pick<Settings, "codexEffort" | "effort">>) => Promise<void>;
   /** Cumulative cost/turn totals of the project (null until loaded). */
   projectStats?: ProjectStats | null;
   /** A selection to quote into the draft; each new nonce injects once. */
@@ -379,6 +382,8 @@ export default function Chat({
   projectModel,
   onChangeModel,
   onSetProjectModel,
+  effortSettings,
+  onChangeEffort,
   projectStats,
   quote,
   files,
@@ -770,6 +775,7 @@ export default function Chat({
             onChange={onChangeModel}
             onSetProject={onSetProjectModel}
           />
+          {effortSettings && <EffortSelect model={model} settings={effortSettings} onChange={onChangeEffort} />}
           {projectStats && projectStats.totalTurns > 0 && (
             <span
               title={`Project total across ${projectStats.totalTurns} turn${

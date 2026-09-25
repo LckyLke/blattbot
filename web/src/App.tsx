@@ -1159,6 +1159,14 @@ function AppShell() {
     [selectedId, pushChat],
   );
 
+  const changeEffort = useCallback(async (patch: Partial<Pick<Settings, "codexEffort" | "effort">>) => {
+    try {
+      setAppSettings(await api.saveSettings(patch));
+    } catch (err: any) {
+      pushChat({ kind: "notice", tone: "error", text: err.message });
+    }
+  }, [pushChat]);
+
   /** Write (or clear, with "") the project's model override. */
   const changeProjectModel = useCallback(
     async (model: string) => {
@@ -1548,6 +1556,8 @@ function AppShell() {
             projectModel={projSettings?.model ?? ""}
             onChangeModel={changeModel}
             onSetProjectModel={changeProjectModel}
+            effortSettings={appSettings}
+            onChangeEffort={changeEffort}
             projectStats={detail?.stats ?? null}
             quote={chatQuote}
             files={detail?.files ?? []}

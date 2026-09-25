@@ -37,7 +37,9 @@ beforeAll(async () => {
   featureFirst = commit("Implement sum method");
   git("rm", "removed.txt"); git("mv", "renamed.txt", "new-name.txt");
   write("image.bin", Buffer.from([0, 3, 4]));
-  write(":(glob)*", "literal pathspec filename\n");
+  // Glob metacharacters that are also legal Windows filenames.
+  write("literal[1].txt", "literal pathspec filename\n");
+  write("literal1.txt", "glob decoy must not match\n");
   symlinkSync("/etc/passwd", join(source, "link"));
   commit("Update supporting files");
   repo = await repos.attachRepository(id, { source, ref: "feature/method" });
@@ -94,9 +96,11 @@ describe("branch-introduced changes", () => {
   });
   it("keeps binary data out of patches, treats pathspec syntax literally, and does not follow symlinks", async () => {
     expect((await query("diff", { baseCommit: base, path: "image.bin" })).patch).toContain("Binary files");
-    const literal = await query("diff", { baseCommit: base, path: ":(glob)*" });
+    const literal = await query("diff", { baseCommit: base, path: "literal[1].txt" });
     expect(literal.patch).toContain("+literal pathspec filename");
     expect(literal.patch).not.toContain("return sum(x)");
+    expect(literal.patch).not.toContain("glob decoy must not match");
+    expect((await query("diff", { baseCommit: base, path: ":(glob)*" })).patch).toBe("");
     const link = await query("diff", { baseCommit: base, path: "link" });
     expect(link.patch).toContain("+/etc/passwd");
     expect(link.patch).not.toContain("root:");
