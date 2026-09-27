@@ -1,19 +1,20 @@
 import { appUrl } from "../urls";
 import { RepositoryManager } from "./CodeRepositories";
 import SidebarIcon from "./SidebarIcon";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { api, type DirListing, type Project, type ProjectContext } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, type ChatMeta, type DirListing, type Project, type ProjectContext } from "../api";
 
 interface Props {
   /** All imported projects, for the quick switcher. */
   projects: Project[];
   /** The open project. */
   project: Project;
-  /** Its file list (relative paths). */
-  files: string[];
-  /** Checked files = the agent's edit scope for the next message. Empty = whole project. */
-  scope: string[];
-  onScopeChange: (scope: string[]) => void;
+  chats: ChatMeta[];
+  activeChatId: string | null;
+  busy: boolean;
+  onSelectChat: (id: string) => void;
+  onNewChat: () => void;
+  onDeleteChat: (id: string) => void;
   onSelect: (id: string) => void;
   onDashboard: () => void;
   onOpenSettings: () => void;
@@ -25,43 +26,16 @@ interface Props {
   update?: { current: string; latest: string } | null;
 }
 
-interface DirNode {
-  path: string;
-  name: string;
-  dirs: DirNode[];
-  files: { path: string; name: string }[];
-}
-
-function buildTree(paths: string[]): DirNode {
-  const root: DirNode = { path: "", name: "", dirs: [], files: [] };
-  for (const p of paths) {
-    const segs = p.split("/");
-    const name = segs.pop()!;
-    let cur = root;
-    for (const seg of segs) {
-      let next = cur.dirs.find((d) => d.name === seg);
-      if (!next) {
-        next = { path: cur.path ? `${cur.path}/${seg}` : seg, name: seg, dirs: [], files: [] };
-        cur.dirs.push(next);
-      }
-      cur = next;
-    }
-    cur.files.push({ path: p, name });
-  }
-  return root;
-}
-
-/**
- * Project-view left rail: back-to-dashboard navigation, a quick project
- * switcher, and the file tree as a context selector — checked files scope the
- * agent's next message.
- */
+/** Project navigation, persistent chat history, and attached reference material. */
 export default function Sidebar({
   projects,
   project,
-  files,
-  scope,
-  onScopeChange,
+  chats,
+  activeChatId,
+  busy,
+  onSelectChat,
+  onNewChat,
+  onDeleteChat,
   onSelect,
   onDashboard,
   onOpenSettings,
@@ -70,10 +44,10 @@ export default function Sidebar({
   syncing = false,
   update = null,
 }: Props) {
-  const tree = useMemo(() => buildTree(files), [files]);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const scopeSet = useMemo(() => new Set(scope), [scope]);
-
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [chatFilter, setChatFilter] = useState("");
+  useEffect(() => { setConfirmDelete(null); setChatFilter(""); }, [project.id, activeChatId]);
+  const visibleChats = chats.filter(chat => chat.title.toLowerCase().includes(chatFilter.toLowerCase()));
   // --- External read-only context ---
   const [ctx, setCtx] = useState<ProjectContext | null>(null);
   const [ctxOpen, setCtxOpen] = useState(false);
@@ -133,70 +107,6 @@ export default function Sidebar({
 
   const ctxCount = (ctx?.links.length ?? 0) + (ctx?.uploads.length ?? 0);
 
-  function toggleFile(path: string) {
-    onScopeChange(scope.includes(path) ? scope.filter((p) => p !== path) : [...scope, path]);
-  }
-
-  function renderDir(node: DirNode, depth: number): ReactNode {
-    const pad = { paddingLeft: `${8 + depth * 12}px` };
-    return (
-      <div key={node.path || "root"}>
-        {node.path && (
-          <button
-            aria-expanded={!collapsed.has(node.path)}
-            title={node.path}
-            onClick={() =>
-              setCollapsed((prev) => {
-                const next = new Set(prev);
-                if (next.has(node.path)) next.delete(node.path);
-                else next.add(node.path);
-                return next;
-              })
-            }
-            style={pad}
-            className="flex h-8 w-full items-center gap-1.5 rounded-lg pr-2 text-left text-[12px] text-paper-dim transition-colors hover:bg-white/5 hover:text-paper"
-          >
-            <SidebarIcon name="chevron" className={`h-3 w-3 text-graphite transition-transform ${collapsed.has(node.path) ? "" : "rotate-90"}`} />
-            <SidebarIcon name="folder" className="text-graphite" />
-            <span className="truncate">{node.name}</span>
-          </button>
-        )}
-        {(!node.path || !collapsed.has(node.path)) && (
-          <>
-            {node.dirs.map((d) => renderDir(d, node.path ? depth + 1 : depth))}
-            {node.files.map((f) => (
-              <label
-                key={f.path}
-                title={f.path}
-                style={{ paddingLeft: `${8 + (node.path ? depth + 1 : depth) * 12}px` }}
-                className={`group flex h-8 w-full cursor-pointer items-center gap-2 rounded-lg pr-2 text-[11.5px] transition-colors ${
-                  scopeSet.has(f.path) ? "bg-leaf/10 text-paper" : "text-paper-dim hover:bg-white/5"
-                }`}
-              >
-                <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-                  <input
-                    type="checkbox"
-                    checked={scopeSet.has(f.path)}
-                    onChange={() => toggleFile(f.path)}
-                    aria-label={`Scope ${f.path}`}
-                    className="peer h-3.5 w-3.5 appearance-none rounded-lg border border-graphite/40 bg-transparent transition-colors checked:border-leaf checked:bg-leaf group-hover:border-graphite"
-                  />
-                  <svg viewBox="0 0 16 16" className="pointer-events-none absolute inset-0 h-3.5 w-3.5 text-ink opacity-0 peer-checked:opacity-100" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2"><path d="m4 8 3 3 5-6" /></svg>
-                </span>
-                <span className="min-w-0 truncate">{f.name}</span>
-                {f.path === project.mainTex && (
-                  <span className="ml-auto shrink-0 rounded-lg bg-gold/10 px-1.5 py-0.5 text-[9px] text-gold/90">
-                    main
-                  </span>
-                )}
-              </label>
-            ))}
-          </>
-        )}
-      </div>
-    );
-  }
-
   return (
     <nav aria-label="Project sidebar" className="flex w-60 shrink-0 flex-col border-r border-rule/60 bg-ink-2">
       <div className="px-3 pb-2 pt-3">
@@ -255,33 +165,46 @@ export default function Sidebar({
         </div>
       </div>
 
-      <div className="flex items-baseline gap-2 px-5 pb-2 pt-4">
-        <span className="text-[11px] font-medium text-paper-dim">
-          Files
-        </span>
-        <span className="ml-auto text-[10px] text-graphite" title="Select files to limit the agent's scope. No selection includes the whole project.">
-          {scope.length === 0 ? "Whole project" : `${scope.length} file${scope.length > 1 ? "s" : ""}`}
-        </span>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-        {files.length === 0 ? (
-          <p className="px-4 py-2 text-xs text-graphite">No files.</p>
-        ) : (
-          renderDir(tree, 0)
-        )}
-      </div>
-
-      {scope.length > 0 && (
-        <div className="px-3 pb-2">
-          <button
-            onClick={() => onScopeChange([])}
-            className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-[11px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
-          >
-            <SidebarIcon name="close" className="h-3 w-3" /> Clear file selection
-          </button>
+      <div className="px-3 pb-2 pt-3">
+        <button type="button" onClick={onNewChat} disabled={busy}
+          className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] text-paper-dim transition-colors hover:bg-white/5 hover:text-paper disabled:opacity-40">
+          <SidebarIcon name="plus" className="text-leaf" /> New chat
+        </button>
+        <div className="mt-4 flex items-center justify-between px-2 text-[10px] text-graphite">
+          <span>Chats</span><span title="Every chat can access all project files">Whole project</span>
         </div>
-      )}
+        {(chats.length > 5 || chatFilter) && <input aria-label="Search chats" placeholder="Search chats…" value={chatFilter}
+          onChange={event => setChatFilter(event.target.value)}
+          className="mt-2 w-full rounded-lg border border-rule bg-ink px-2 py-1.5 text-[11px] text-paper-dim placeholder:text-graphite" />}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+        <ul aria-label="Project chats" className="space-y-1">
+          {visibleChats.map(chat => <li key={chat.id} className={`group rounded-lg ${chat.id === activeChatId ? "bg-white/5" : "hover:bg-white/[0.03]"}`}>
+            <div className="flex items-center">
+              <button type="button" disabled={busy} onClick={() => onSelectChat(chat.id)}
+                aria-label={`Open chat ${chat.title}`} aria-current={chat.id === activeChatId ? "page" : undefined}
+                title={`${chat.title} · Updated ${new Date(chat.updatedAt).toLocaleString()}`}
+                className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-2.5 text-left text-[12px] transition-colors disabled:opacity-50 ${chat.id === activeChatId ? "text-paper" : "text-paper-dim hover:text-paper"}`}>
+                {busy && chat.id === activeChatId ? <span className="working-dot mx-1 h-1.5 w-1.5 shrink-0 rounded-full bg-leaf" /> : <SidebarIcon name="chat" className="h-3.5 w-3.5 text-graphite" />}
+                <span className="min-w-0 truncate">{chat.title}</span>
+              </button>
+              <button type="button" disabled={busy} onClick={() => setConfirmDelete(confirmDelete === chat.id ? null : chat.id)}
+                aria-label={`Delete ${chat.title}`} title="Delete chat"
+                className="mr-1 rounded p-1 text-graphite opacity-0 transition-colors hover:text-pencil focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:opacity-30">
+                <SidebarIcon name="close" className="h-3 w-3" />
+              </button>
+            </div>
+            {confirmDelete === chat.id && <div className="flex items-center gap-2 px-2 pb-2 text-[10px]">
+              <button type="button" disabled={busy} aria-label={`Really delete ${chat.title}?`}
+                onClick={() => { setConfirmDelete(null); onDeleteChat(chat.id); }}
+                className="rounded border border-pencil/40 px-2 py-1 text-pencil hover:bg-pencil/10">Delete chat</button>
+              <button type="button" onClick={() => setConfirmDelete(null)} className="rounded px-2 py-1 text-graphite hover:text-paper">Cancel</button>
+            </div>}
+          </li>)}
+        </ul>
+        {!visibleChats.length && <p className="px-2 py-3 text-[11px] text-graphite">{chatFilter ? "No matching chats." : "Start a chat about this project."}</p>}
+        {busy && <p className="px-2 pt-3 text-[10px] leading-relaxed text-graphite">Chat switching is available when the current operation finishes.</p>}
+      </div>
 
       {/* External read-only context: reference material the agent may read but never edits. */}
       <div className="mx-3 mb-2 max-h-[42%] shrink-0 overflow-y-auto rounded-xl border border-rule/70 bg-white/[0.02] pb-2">

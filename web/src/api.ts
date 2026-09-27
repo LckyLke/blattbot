@@ -272,6 +272,7 @@ export interface RefEntry extends BibEntry {
   /** Best web link: doi.org → url field → arXiv abstract page. */
   link: string | null;
   usage: RefUsage[];
+  unused?: boolean;
   /** The entry's exact BibTeX source text, for in-place editing. */
   raw: string;
   summary?: string;
@@ -697,6 +698,8 @@ export const api = {
       `/api/projects/${id}/refs/${encodeURIComponent(key)}`,
       { method: "PUT", body: JSON.stringify({ bibtex }) },
     ),
+  deleteUnusedRefs: (id: string) =>
+    request<{ ok: boolean; deleted: { file: string; key: string }[]; diff: string }>(`/api/projects/${id}/refs/delete-unused`, { method: "POST" }),
   deleteRef: (id: string, key: string) =>
     request<{ ok: boolean; diff: string }>(`/api/projects/${id}/refs/${encodeURIComponent(key)}`, {
       method: "DELETE",

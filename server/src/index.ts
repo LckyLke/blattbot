@@ -1,3 +1,4 @@
+import { deleteUnusedReferences, unusedReferenceEntries } from "./unused-references.js";
 import { codexLimits } from "./agent-limits.js";
 import { registerInlineQuestions, isInlineQuestionActive } from "./inline-questions.js";
 import { researchJobs, listResearchJobs } from "./research/jobs.js";
@@ -1395,7 +1396,8 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/refs", async (req, reply)
   const all = readAllBibEntries(dir);
   const usage = collectCiteUsage(dir);
   const store = readPaperStore(project.id);
-  const { unusedKeys, undefinedKeys } = usageReport(all.map((x) => x.entry.key), usage);
+  const { undefinedKeys } = usageReport(all.map((x) => x.entry.key), usage);
+  const unusedKeys = new Set(unusedReferenceEntries(dir, all).map(({ entry }) => entry.key));
   const entries = all.map(({ file, entry }) => {
     const rec = store[entry.key];
     return {
@@ -1408,6 +1410,7 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/refs", async (req, reply)
       doi: entry.fields.doi ?? null,
       link: refLink(entry),
       usage: usage[entry.key] ?? [],
+      unused: unusedKeys.has(entry.key),
       raw: entry.raw,
       summary: rec?.summary,
       summarySource: rec?.source,
@@ -1418,7 +1421,7 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/refs", async (req, reply)
   return {
     entries,
     undefinedKeys,
-    unusedCount: unusedKeys.length,
+    unusedCount: entries.filter(entry => entry.unused).length,
     audit: readAudit(project.id),
     claimAudit: readClaimAudit(project.id),
   };
@@ -1526,6 +1529,21 @@ app.put<{ Params: { id: string; key: string }; Body: { bibtex?: string } }>(
     }
   },
 );
+
+app.post<{ Params: { id: string } }>("/api/projects/:id/refs/delete-unused", async (req, reply) => {
+  const project = getProject(req.params.id);
+  if (!project) return reply.code(404).send({ error: "unknown project" });
+  if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
+  const dir = projectDir(project.id);
+  try {
+    const deleted = deleteUnusedReferences(dir);
+    const diff = await git.workingDiff(dir);
+    broadcast(project.id, { type: "diff", diff });
+    return { ok: true, deleted, diff };
+  } catch (err: any) {
+    return reply.code(422).send({ error: err?.message ?? String(err) });
+  }
+});
 
 app.delete<{ Params: { id: string; key: string } }>(
   "/api/projects/:id/refs/:key",

@@ -30,6 +30,13 @@ git(dir, "fetch", "origin"); git(dir, "branch", "--set-upstream-to=origin/main")
 const code = join(root, "dice-embeddings"); fixture(code, { "model.py": "def loss(x): return x.mean()\n" });
 git(code, "branch", "-m", "kgfm_cqd");
 await repositories.attachRepository(project.id, { source: code, ref: "kgfm_cqd" });
+const chats = await import("../src/chats.js");
+const firstChat = chats.ensureActiveChat(project.id);
+chats.updateChat(project.id, firstChat.id, { title: "Review the introduction" });
+chats.appendEvent(project.id, firstChat.id, { type: "text_final", text: "First conversation transcript." });
+const secondChat = chats.createChat(project.id);
+chats.updateChat(project.id, secondChat.id, { title: "Check the references" });
+chats.appendEvent(project.id, secondChat.id, { type: "text_final", text: "Second conversation transcript." });
 const port = 4596, base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
   cwd: join(dirname(fileURLToPath(import.meta.url)), ".."), env: { ...process.env, BLATTBOT_PORT: String(port) }, stdio: "pipe",
@@ -46,29 +53,49 @@ try {
   browser = await chromium.launch({ executablePath: process.env.BLATTBOT_BROWSER_EXECUTABLE || ["/usr/bin/chromium", "/usr/bin/google-chrome"].find(existsSync), headless: true });
   const page = await browser.newPage({ viewport: { width: 1450, height: 950 } });
   const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
+  await page.addInitScript(projectId => {
+    localStorage.setItem(`blattbot.scope.${projectId}`, JSON.stringify(["main.tex"]));
+    localStorage.setItem("blattbot.paneLeft.v2", "chat");
+    localStorage.setItem("blattbot.paneRight.v2", "source");
+  }, project.id);
+  await page.route("**/api/models**", route => route.fulfill({ json: { backend: "codex", models: [] } }));
+  await page.route("**/api/agent/codex/limits", route => route.fulfill({ json: { windows: [], checkedAt: Date.now() } }));
   await page.goto(base, { waitUntil: "networkidle" });
   await page.getByRole("button", { name: `Open ${name}`, exact: true }).click();
   const sidebar = page.getByRole("navigation", { name: "Project sidebar", exact: true });
-  const main = sidebar.getByRole("checkbox", { name: "Scope main.tex", exact: true });
-  await main.check();
-  await sidebar.getByText("1 file", { exact: true }).waitFor();
-  const figures = sidebar.getByRole("button", { name: "figures", exact: true });
-  await figures.click(); assert.equal(await figures.getAttribute("aria-expanded"), "false");
-  assert.equal(await sidebar.getByRole("checkbox", { name: "Scope figures/double-equivariance.tex", exact: true }).count(), 0);
-  await figures.click();
-  await sidebar.getByRole("checkbox", { name: "Scope figures/double-equivariance.tex", exact: true }).check();
+  const first = sidebar.getByRole("button", { name: "Open chat Review the introduction", exact: true });
+  const second = sidebar.getByRole("button", { name: "Open chat Check the references", exact: true });
+  assert.equal(await sidebar.getByRole("checkbox").count(), 0);
+  await first.waitFor();
+  assert.equal(await first.getAttribute("aria-current"), "page");
+  // Opening a sidebar chat reveals Chat even while the pane shows Source/Proof.
+  await page.getByRole("tablist", { name: "Left pane view" }).getByRole("tab", { name: "Proof", exact: true }).click();
+  await second.click();
+  await page.getByText("Second conversation transcript.", { exact: true }).waitFor();
+  assert.equal(await second.getAttribute("aria-current"), "page");
+  await first.focus(); await first.press("Enter");
+  await page.getByText("First conversation transcript.", { exact: true }).waitFor();
+  await page.reload({ waitUntil: "networkidle" });
+  await first.waitFor();
+  assert.equal(await first.getAttribute("aria-current"), "page");
+  await sidebar.getByRole("button", { name: "New chat", exact: true }).click();
+  const created = sidebar.getByRole("button", { name: "Open chat New chat", exact: true });
+  await created.waitFor();
+  assert.equal(await created.getAttribute("aria-current"), "page");
+  await sidebar.getByRole("button", { name: "Delete New chat", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.equal(await created.count(), 1);
+  await sidebar.getByRole("button", { name: "Delete New chat", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Really delete New chat?", exact: true }).click();
+  await created.waitFor({ state: "detached" });
   await sidebar.getByRole("combobox", { name: "Switch project", exact: true }).selectOption(other.id);
   await sidebar.getByRole("heading", { name: other.name, exact: true }).waitFor();
-  assert(!await main.isChecked());
+  assert.equal(await first.count(), 0);
   await sidebar.getByRole("combobox", { name: "Switch project", exact: true }).selectOption(project.id);
   await sidebar.getByRole("heading", { name, exact: true }).waitFor();
-  assert(await main.isChecked());
-  await sidebar.getByRole("button", { name: "Clear file selection", exact: true }).click();
-  assert(!await main.isChecked());
+  await first.waitFor();
   await sidebar.getByText("dice-embeddings", { exact: true }).waitFor();
   await sidebar.screenshot({ path: "/tmp/blattbot-sidebar.png", animations: "disabled" });
-  await main.focus(); await main.press("Space"); assert(await main.isChecked());
-  await sidebar.screenshot({ path: "/tmp/blattbot-sidebar-selected.png", animations: "disabled" });
   await sidebar.getByRole("button", { name: "Open project settings", exact: true }).click();
   await page.getByRole("button", { name: "Close project settings", exact: true }).click();
   const synced = page.waitForResponse(r => r.url().endsWith(`/api/projects/${project.id}/sync`));
@@ -83,15 +110,30 @@ try {
   await sidebar.getByRole("button", { name: "Delete notes.txt", exact: true }).click();
   await sidebar.getByRole("link", { name: "notes.txt", exact: true }).waitFor({ state: "detached" });
   assert(await sidebar.evaluate(el => el.scrollWidth <= el.clientWidth));
+  // Park Chat on the right before switching to the single-pane mobile layout.
+  await page.getByRole("tablist", { name: "Right pane view" }).getByRole("tab", { name: "Chat", exact: true }).click();
   await page.setViewportSize({ width: 580, height: 760 });
-  await page.getByRole("button", { name: "Toggle project files", exact: true }).click();
+  await page.getByRole("button", { name: "Toggle project sidebar", exact: true }).click();
   await sidebar.waitFor();
   assert(await sidebar.evaluate(el => el.scrollWidth <= el.clientWidth));
   await sidebar.screenshot({ path: "/tmp/blattbot-sidebar-mobile.png", animations: "disabled" });
   await sidebar.getByRole("button", { name: "Remove", exact: true }).click();
   await sidebar.getByText("dice-embeddings", { exact: true }).waitFor({ state: "detached" });
+  // Selecting a chat also dismisses the mobile sidebar.
+  await first.click();
+  await sidebar.waitFor({ state: "hidden" });
+  await page.getByRole("textbox", { name: "Message BlattBot", exact: true }).fill("Inspect the whole project.");
+  let sent: any;
+  await page.route(`**/api/projects/${project.id}/chat`, route => {
+    sent = route.request().postDataJSON();
+    return route.fulfill({ status: 503, json: { error: "Fixture: no model request" } });
+  });
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await page.getByText("Fixture: no model request", { exact: true }).waitFor();
+  assert.equal(sent.message, "Inspect the whole project.");
+  assert.equal(Object.hasOwn(sent, "files"), false, "Legacy scope preferences must not restrict new turns");
   assert.deepEqual(errors, []);
-  console.log("Sidebar passed: project switching, scope, folders, keyboard, settings, sync, repository refresh/remove, context upload/delete, mobile layout.");
+  console.log("Sidebar passed: project switching, chat creation/selection/deletion/reload, keyboard, whole-project context, settings, sync, repository refresh/remove, context upload/delete, mobile layout.");
 } finally {
   await browser?.close(); server.kill("SIGTERM");
   await new Promise(resolve => { if (server.exitCode !== null) resolve(undefined); else server.once("exit", resolve); });

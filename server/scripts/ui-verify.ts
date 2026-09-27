@@ -2,7 +2,7 @@
  * No-agent UI verification: boots the mock Overleaf + an isolated BlattBot
  * server, then drives the real browser UI through the dashboard hub
  * (add account → import project), the project view (Source, manual edit,
- * Proof, resize, Settings, inline PDF), the scope selector, and the
+ * Proof, resize, Settings, inline PDF), the chat sidebar, and the
  * local-project lifecycle (create blank → publish to Overleaf).
  * Screenshots every stage. Costs nothing — no agent turn is involved.
  */
@@ -418,12 +418,11 @@ async function main() {
       chats1.chats.length === 1 &&
       chats1.chats[0].title === "New chat" &&
       chats1.activeChatId === chats1.chats[0].id;
-    const chatHeader = page.getByTitle("Switch chat");
+    const chatHeader = page.getByTitle("Current chat");
     const chatHeaderOk = (await chatHeader.innerText()).includes("New chat");
 
     // ---- "+ new chat" creates a second chat and switches to it ----
-    await chatHeader.click();
-    await page.getByRole("button", { name: "+ new chat" }).click();
+    await page.getByRole("button", { name: "New chat", exact: true }).click();
     await page.waitForTimeout(500);
     const chats2 = await getChats();
     const newChatOk = chats2.chats.length === 2 && chats2.activeChatId !== chats1.activeChatId;
@@ -603,7 +602,6 @@ async function main() {
     await shot("23d-chat-restored");
 
     // ---- Deleting the active chat (confirm pattern) falls back to the other one ----
-    await chatHeader.click();
     await page.getByRole("button", { name: "Delete Show me the persisted transcript" }).click();
     await page.getByRole("button", { name: "Really delete Show me the persisted transcript?" }).click();
     await page.waitForTimeout(500);
@@ -1342,14 +1340,10 @@ async function main() {
 
     await aside().getByRole("tab", { name: "Source", exact: true }).click();
 
-    // ---- Scope selector: checking a file shows the chip on the composer ----
-    await page.getByRole("checkbox", { name: "Scope main.tex" }).check();
-    await page.getByText("scope: main.tex").waitFor({ timeout: 5_000 });
-    const scopeSummary = await page.locator("nav").first().innerText();
-    const scopeChipOk = scopeSummary.includes("1 file");
-    await shot("26-scope-chip");
-    await page.getByRole("button", { name: "Clear scope", exact: true }).click();
-    const scopeCleared = (await page.getByText("scope: main.tex").count()) === 0;
+    // ---- All project files are available; the sidebar now selects chats. ----
+    const wholeProjectContextOk = (await page.getByRole("checkbox", { name: "Scope main.tex" }).count()) === 0;
+    const sidebarChatListOk = (await page.getByRole("list", { name: "Project chats" }).count()) === 1;
+    await shot("26-chat-sidebar");
 
     // ---- External context: browse the filesystem and link a codebase --------
     // A browser file input cannot return a real path, so the picker walks the
@@ -2095,7 +2089,7 @@ async function main() {
     // Layout for this: chat on the left, PDF on the right (the chip only
     // offers itself while the other pane shows the chat).
     await leftPane().getByRole("tab", { name: "Chat", exact: true }).click();
-    await page.getByTitle("Switch chat").waitFor({ timeout: 5_000 });
+    await page.getByTitle("Current chat").waitFor({ timeout: 5_000 });
     await aside().getByRole("tab", { name: "PDF", exact: true }).click();
     await aside().locator(".textLayer span").first().waitFor({ timeout: 60_000 });
     const quoteSelection = await page.evaluate(() => {
@@ -2246,7 +2240,7 @@ async function main() {
 
     // Restore the chat on the left for the rest of the flow (right keeps source).
     await leftPane().getByRole("tab", { name: "Chat", exact: true }).click();
-    await page.getByTitle("Switch chat").waitFor({ timeout: 5_000 });
+    await page.getByTitle("Current chat").waitFor({ timeout: 5_000 });
 
     // ---- Back to the dashboard: create a standalone local project ----
     await page.getByRole("button", { name: "Back to dashboard" }).click();
@@ -2300,8 +2294,7 @@ async function main() {
     await page.getByRole("button", { name: "Create project" }).click();
 
     // It opens straight into the project view with the seeded template files.
-    await page.getByRole("checkbox", { name: "Scope main.tex" }).waitFor({ timeout: 15_000 });
-    await page.getByRole("checkbox", { name: "Scope references.bib" }).waitFor({ timeout: 5_000 });
+    await page.getByRole("navigation", { name: "Project sidebar" }).getByRole("heading", { name: "Scratch Note", exact: true }).waitFor({ timeout: 15_000 });
     await aside().getByRole("tab", { name: "Source", exact: true }).click();
     await page
       .getByText("Start writing here.")
@@ -2435,8 +2428,8 @@ async function main() {
         downloads,
         widthBefore,
         widthAfter,
-        scopeChipOk,
-        scopeCleared,
+        wholeProjectContextOk,
+        sidebarChatListOk,
         browseSrcOk,
         contextLinkedOk,
         browserClosedOk,
@@ -2695,8 +2688,8 @@ async function main() {
     if (canvases < 1) throw new Error("PDF viewer rendered no pages");
     if (downloads > 0) throw new Error("PDF triggered a browser download — must render inline");
     if (Math.abs(widthAfter - widthBefore) < 100) throw new Error("panel resize had no effect");
-    if (!scopeChipOk) throw new Error("scope summary did not reflect the checked file");
-    if (!scopeCleared) throw new Error("scope chip did not clear");
+    if (!wholeProjectContextOk) throw new Error("legacy file-scope selector is still present");
+    if (!sidebarChatListOk) throw new Error("sidebar chat list is missing");
     if (!browseSrcOk) throw new Error("folder picker did not list the linked folder's subdirectory");
     if (!contextLinkedOk) throw new Error("linked folder did not appear in the context list");
     if (!browserClosedOk) throw new Error("folder picker stayed open after a successful link");

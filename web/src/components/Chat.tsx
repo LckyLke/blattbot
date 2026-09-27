@@ -70,9 +70,6 @@ interface Props {
   projectName: string;
   /** The project's preferred mode for new chats ("" or undefined = none set). */
   defaultMode?: string;
-  /** Files the next message is scoped to (empty = whole project). */
-  scope: string[];
-  onClearScope: () => void;
   /** `images` are the composer's attachments — App uploads them, then sends. */
   /** Resolves false when the message was NOT sent — the composer restores it. */
   onSend: (message: string, mode: string, images: File[]) => Promise<boolean>;
@@ -84,9 +81,6 @@ interface Props {
   /** All chats of the project (newest-updated first) and the active one. */
   chats: ChatMeta[];
   activeChatId: string | null;
-  onSelectChat: (chatId: string) => void;
-  onNewChat: () => void;
-  onDeleteChat: (chatId: string) => void;
   /** Resolved model id the next turn will run (e.g. "claude-sonnet-5"). */
   model: string;
   /** The project's raw model override ("" = none — the global setting applies). */
@@ -377,17 +371,12 @@ export default function Chat({
   projectId,
   projectName,
   defaultMode,
-  scope,
-  onClearScope,
   onSend,
   onInterrupt,
   onAnswerQuestion,
   onDismissQuestion,
   chats,
   activeChatId,
-  onSelectChat,
-  onNewChat,
-  onDeleteChat,
   model,
   projectModel,
   onChangeModel,
@@ -409,9 +398,6 @@ export default function Chat({
   useEffect(() => {
     setMode(preselectedMode(projectId, defaultMode));
   }, [projectId, defaultMode]);
-  const [chatMenuOpen, setChatMenuOpen] = useState(false);
-  /** Chat id whose delete button is in its "really?" confirm stage. */
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -534,11 +520,6 @@ export default function Chat({
 
   const activeTitle = chats.find((c) => c.id === activeChatId)?.title ?? "New chat";
 
-  function closeChatMenu() {
-    setChatMenuOpen(false);
-    setConfirmDelete(null);
-  }
-
   function pickMode(id: string) {
     setMode(id);
     // Manual picks are remembered per project (the legacy global key stays
@@ -589,103 +570,9 @@ export default function Chat({
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
-      {/* Chat switcher: slim strip above the transcript. */}
-      <div className="relative flex h-9 shrink-0 items-center gap-2 border-b border-rule bg-ink-2 px-4">
-        <button
-          type="button"
-          title="Switch chat"
-          onClick={() => (chatMenuOpen ? closeChatMenu() : setChatMenuOpen(true))}
-          className="flex min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-[12.5px] text-paper-dim transition-colors hover:text-paper"
-        >
-          <span className="max-w-[300px] truncate">{activeTitle}</span>
-          <span className="text-[9px] text-graphite">▾</span>
-        </button>
-        {chats.length > 1 && (
-          <span className="font-mono text-[10px] text-graphite/70">{chats.length} chats</span>
-        )}
-        {chatMenuOpen && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={closeChatMenu} />
-            <div
-              className="absolute left-3 top-full z-20 mt-1 w-80 rounded-lg border border-rule bg-ink-2 py-1 shadow-xl"
-              onKeyDown={(e) => {
-                // Keyboard escape hatch — the backdrop is mouse-only.
-                if (e.key === "Escape") {
-                  e.stopPropagation();
-                  closeChatMenu();
-                }
-              }}
-            >
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  closeChatMenu();
-                  onNewChat();
-                }}
-                className="w-full px-3 py-1.5 text-left text-[12.5px] text-leaf transition-colors hover:bg-ink-3 disabled:opacity-40"
-              >
-                + new chat
-              </button>
-              {busy && (
-                <p className="border-t border-rule px-3 py-1.5 text-[11px] italic text-graphite">
-                  BlattBot is working — switching chats unlocks when the turn finishes.
-                </p>
-              )}
-              <ul className="max-h-72 overflow-y-auto border-t border-rule">
-                {chats.map((c) => (
-                  <li key={c.id} className="group flex items-center gap-2 px-3 py-1.5 hover:bg-ink-3">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => {
-                        closeChatMenu();
-                        onSelectChat(c.id);
-                      }}
-                      className={`flex min-w-0 flex-1 items-baseline gap-2 text-left disabled:opacity-40 ${
-                        c.id === activeChatId ? "text-paper" : "text-paper-dim"
-                      }`}
-                    >
-                      {c.id === activeChatId && (
-                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-leaf" />
-                      )}
-                      <span className="min-w-0 flex-1 truncate text-[12.5px]">{c.title}</span>
-                      <span className="shrink-0 font-mono text-[10px] text-graphite">
-                        {relTime(c.updatedAt)}
-                      </span>
-                    </button>
-                    {confirmDelete === c.id ? (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => {
-                          setConfirmDelete(null);
-                          closeChatMenu();
-                          onDeleteChat(c.id);
-                        }}
-                        aria-label={`Really delete ${c.title}?`}
-                        className="shrink-0 rounded-lg border border-pencil/50 px-1.5 text-[10.5px] text-pencil transition-colors hover:bg-pencil/10 disabled:opacity-40"
-                      >
-                        sure?
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => setConfirmDelete(c.id)}
-                        aria-label={`Delete ${c.title}`}
-                        title="Delete this chat"
-                        className="shrink-0 rounded px-1 text-[13px] leading-none text-graphite opacity-0 transition-all hover:text-pencil group-hover:opacity-100 disabled:opacity-40"
-                      >
-                        ×
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </>
-        )}
+      <div className="flex h-10 shrink-0 items-center gap-3 border-b border-rule px-5">
+        <span title="Current chat" className="min-w-0 flex-1 truncate text-[12px] text-paper-dim">{activeTitle}</span>
+        <span className="shrink-0 text-[10px] text-graphite" title="The agent can access all project files">Whole project</span>
       </div>
 
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
@@ -759,24 +646,6 @@ export default function Chat({
             >
               {busy ? "BlattBot is working — attachments wait for the next message" : "↓ Drop images to attach"}
             </p>
-          )}
-          {scope.length > 0 && (
-            <div className="mx-auto mb-2 flex max-w-2xl items-center">
-              <span
-                title={scope.join("\n")}
-                className="flex items-center gap-1.5 rounded-full border border-gold/40 py-0.5 pl-2.5 pr-1.5 font-mono text-[11px] text-gold"
-              >
-                scope: {scopeLabel(scope)}
-                <button
-                  type="button"
-                  onClick={onClearScope}
-                  aria-label="Clear scope"
-                  className="rounded-full px-1 leading-none text-gold/70 transition-colors hover:text-paper"
-                >
-                  ×
-                </button>
-              </span>
-            </div>
           )}
           {pending.length > 0 && (
             <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-2.5">

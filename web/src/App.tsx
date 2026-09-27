@@ -64,7 +64,6 @@ function loadPanes(): Panes {
   return { left: "chat", right: "pdf" };
 }
 
-const scopeKey = (id: string) => `blattbot.scope.${id}`;
 
 /** True when `latest` is a strictly newer major.minor.patch than `current`. */
 function isNewerVersion(current: string, latest: string): boolean {
@@ -81,15 +80,6 @@ function isNewerVersion(current: string, latest: string): boolean {
     if ((b[i] ?? 0) < (a[i] ?? 0)) return false;
   }
   return false;
-}
-
-function loadScope(id: string): string[] {
-  try {
-    const raw = JSON.parse(localStorage.getItem(scopeKey(id)) ?? "[]");
-    return Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -265,7 +255,7 @@ export default function App() {
 }
 
 function AppShell() {
-  const [mobileFiles, setMobileFiles] = useState(false);
+  const [mobileSidebar, setMobileSidebar] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [view, setView] = useState<View>("dashboard");
@@ -282,6 +272,9 @@ function AppShell() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [appSettings, setAppSettings] = useState<Settings | null>(null);
   const [busy, setBusy] = useState(false);
+  const [chatNavigation, setChatNavigation] = useState(false);
+  const chatNavigationRef = useRef(false);
+
   const [activity, setActivity] = useState<"idle" | "thinking" | "streaming" | "tool">("idle");
   const [diff, setDiff] = useState<string>("");
   const diffRef = useRef(diff);
@@ -307,7 +300,6 @@ function AppShell() {
   const [pdfSource, setPdfSource] = useState<"local" | "remote">("local");
   const [sourceStamp, setSourceStamp] = useState(0);
   const [panes, setPanes] = useState<Panes>(loadPanes);
-  const [scope, setScope] = useState<string[]>([]);
   // A newer published BlattBot exists — the Sidebar footer links the release.
   const [update, setUpdate] = useState<{ current: string; latest: string } | null>(null);
   const [sourceReveal, setSourceReveal] = useState<{ file: string; line: number; nonce: number }>();
@@ -709,7 +701,6 @@ function AppShell() {
     clearTimeout(liveCompileTimer.current);
     setBusy(false);
     setActivity("idle");
-    setScope(loadScope(selectedId));
     setProjSettings(null);
     setProjSettingsOpen(false);
     // The previous project's file list must not linger under the new id —
@@ -857,26 +848,6 @@ function AppShell() {
     };
   }, [selectedId, refreshDetail, applyRestoredChat]);
 
-  const changeScope = useCallback(
-    (next: string[]) => {
-      setScope(next);
-      if (selectedId) localStorage.setItem(scopeKey(selectedId), JSON.stringify(next));
-    },
-    [selectedId],
-  );
-
-  // Drop scope entries whose files disappeared (agent deletes, syncs, …).
-  useEffect(() => {
-    if (!detail) return;
-    setScope((prev) => {
-      const next = prev.filter((f) => detail.files.includes(f));
-      if (next.length !== prev.length && selectedId) {
-        localStorage.setItem(scopeKey(selectedId), JSON.stringify(next));
-      }
-      return next.length === prev.length ? prev : next;
-    });
-  }, [detail, selectedId]);
-
   const dialog = useDialog();
 
   // Leaving the project view while the Proof holds unapproved changes, or
@@ -969,9 +940,8 @@ function AppShell() {
   const send = useCallback(
     async (message: string, mode: string, images: File[] = []): Promise<boolean> => {
       const id = selectedId;
-      if (!id) return false;
+      if (!id || chatNavigationRef.current) return false;
       const stale = () => selectedRef.current?.id !== id;
-      const files = scope.length > 0 ? [...scope] : undefined;
       // Attachments are stored first: the turn only ever carries their ids, so
       // a failed upload must stop the send rather than silently drop pictures.
       let attachments: { id: string; mime: string }[] = [];
@@ -1000,7 +970,6 @@ function AppShell() {
       pushChat({
         kind: "user",
         text: message,
-        scope: files,
         ...(attachments.length > 0 ? { images: attachments } : {}),
       });
       try {
@@ -1009,7 +978,7 @@ function AppShell() {
           id,
           message,
           mode,
-          files,
+          undefined,
           attachments.length > 0 ? attachments.map((a) => a.id) : undefined,
         );
         if (stale()) return true;
@@ -1031,7 +1000,7 @@ function AppShell() {
         return false;
       }
     },
-    [selectedId, scope, pushChat, refreshChats],
+    [selectedId, pushChat, refreshChats],
   );
 
   const interrupt = useCallback(async () => {
@@ -1102,50 +1071,69 @@ function AppShell() {
     [selectedId, pushChat],
   );
 
+  const showChat = useCallback(() => {
+    setMobileSidebar(false);
+    if (window.matchMedia("(max-width: 900px)").matches && panes.right === "chat") {
+      setPanes({ left: panes.right, right: panes.left });
+      setFlipped(value => !value);
+    } else {
+      setPanes(prev => prev.left === "chat" || prev.right === "chat" ? prev : { ...prev, left: "chat" });
+    }
+  }, [panes]);
+
   const selectChat = useCallback(
     async (chatId: string) => {
-      if (!selectedId || chatId === activeChatId) return;
+      const id = selectedId;
+      if (!id || busy || chatNavigationRef.current || chatId === activeChatId) return;
+      chatNavigationRef.current = true;
+      setChatNavigation(true);
       try {
-        await api.activateChat(selectedId, chatId);
+        await api.activateChat(id, chatId);
+        const { events } = await api.chatTranscript(id, chatId);
+        if (selectedRef.current?.id !== id) return;
         setActiveChatId(chatId);
-        const { events } = await api.chatTranscript(selectedId, chatId);
         setChat(itemsFromEvents(events));
       } catch (err: any) {
-        pushChat({ kind: "notice", tone: "error", text: err.message });
-      }
+        if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
+      } finally { chatNavigationRef.current = false; setChatNavigation(false); }
     },
-    [selectedId, activeChatId, pushChat],
+    [selectedId, activeChatId, busy, pushChat],
   );
 
   const newChat = useCallback(async () => {
-    if (!selectedId) return;
+    const id = selectedId;
+    if (!id || busy || chatNavigationRef.current) return;
+    chatNavigationRef.current = true;
+    setChatNavigation(true);
     try {
-      const created = await api.createChat(selectedId);
+      const created = await api.createChat(id);
+      if (selectedRef.current?.id !== id) return;
       setActiveChatId(created.id);
       setChats((prev) => [created, ...prev]);
       setChat([]);
     } catch (err: any) {
-      pushChat({ kind: "notice", tone: "error", text: err.message });
-    }
-  }, [selectedId, pushChat]);
+      if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
+    } finally { chatNavigationRef.current = false; setChatNavigation(false); }
+  }, [selectedId, busy, pushChat]);
 
   const removeChat = useCallback(
     async (chatId: string) => {
-      if (!selectedId) return;
+      const id = selectedId;
+      if (!id || busy || chatNavigationRef.current) return;
+      chatNavigationRef.current = true;
+      setChatNavigation(true);
       try {
-        const r = await api.deleteChat(selectedId, chatId);
+        const r = await api.deleteChat(id, chatId);
+        const transcript = chatId === activeChatId ? await api.chatTranscript(id, r.activeChatId) : null;
+        if (selectedRef.current?.id !== id) return;
         setChats(r.chats);
         setActiveChatId(r.activeChatId);
-        // Deleting the active chat lands us on another one — load its transcript.
-        if (chatId === activeChatId) {
-          const { events } = await api.chatTranscript(selectedId, r.activeChatId);
-          setChat(itemsFromEvents(events));
-        }
+        if (transcript) setChat(itemsFromEvents(transcript.events));
       } catch (err: any) {
-        pushChat({ kind: "notice", tone: "error", text: err.message });
-      }
+        if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
+      } finally { chatNavigationRef.current = false; setChatNavigation(false); }
     },
-    [selectedId, activeChatId, pushChat],
+    [selectedId, activeChatId, busy, pushChat],
   );
 
   const changeModel = useCallback(
@@ -1535,7 +1523,7 @@ function AppShell() {
         return (
           <Chat
             items={chat}
-            busy={busy}
+            busy={busy || chatNavigation}
             activity={activity}
             onSend={send}
             onInterrupt={interrupt}
@@ -1544,13 +1532,8 @@ function AppShell() {
             projectId={selectedId!}
             projectName={selected!.name}
             defaultMode={projSettings?.defaultMode ?? ""}
-            scope={scope}
-            onClearScope={() => changeScope([])}
             chats={chats}
             activeChatId={activeChatId}
-            onSelectChat={selectChat}
-            onNewChat={newChat}
-            onDeleteChat={removeChat}
             model={
               // The server-resolved per-project model (override → global) is
               // authoritative; the global setting fills in until it loads.
@@ -1723,7 +1706,7 @@ function AppShell() {
     <div className="flex h-full flex-col">
       {inProject && <InlineQuestion key={selected!.id} projectId={selected!.id} />}
       <header className="blattbot-header flex h-12 shrink-0 items-center gap-4 border-b border-rule bg-ink-2 px-4">
-        {inProject && <button className="mobile-files-toggle" aria-label="Toggle project files" aria-expanded={mobileFiles} onClick={() => setMobileFiles(v => !v)}>{mobileFiles ? "✕" : "☰"}</button>}
+        {inProject && <button className="mobile-sidebar-toggle" aria-label="Toggle project sidebar" aria-expanded={mobileSidebar} onClick={() => setMobileSidebar(v => !v)}>{mobileSidebar ? "✕" : "☰"}</button>}
         <button
           onClick={goDashboard}
           aria-label="Back to the project dashboard"
@@ -1762,7 +1745,7 @@ function AppShell() {
         </div>
       </header>
 
-      <div className={`blattbot-workspace flex min-h-0 flex-1 ${mobileFiles && inProject ? "mobile-files-open" : ""}`}>
+      <div className={`blattbot-workspace flex min-h-0 flex-1 ${mobileSidebar && inProject ? "mobile-sidebar-open" : ""}`}>
         {!inProject ? (
           <Dashboard
             projects={projects}
@@ -1776,11 +1759,14 @@ function AppShell() {
             <Sidebar
               projects={projects}
               project={selected!}
-              files={detail?.files ?? []}
-              scope={scope}
-              onScopeChange={changeScope}
-              onSelect={(id) => { setMobileFiles(false); openProject(id); }}
-              onDashboard={() => { setMobileFiles(false); goDashboard(); }}
+              chats={chats}
+              activeChatId={activeChatId}
+              busy={busy || chatNavigation}
+              onSelectChat={(id) => { showChat(); void selectChat(id); }}
+              onNewChat={() => { showChat(); void newChat(); }}
+              onDeleteChat={removeChat}
+              onSelect={(id) => { setMobileSidebar(false); openProject(id); }}
+              onDashboard={() => { setMobileSidebar(false); goDashboard(); }}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenProjectSettings={() => setProjSettingsOpen(true)}
               onSync={selected!.kind === "local" ? undefined : syncNow}

@@ -1,3 +1,4 @@
+import { useDialog } from "./Dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type CitationCheckResult, type ImportBibResult, type RefEntry, type RefsResponse } from "../api";
 import { relTime } from "./Chat";
@@ -140,6 +141,10 @@ export default function RefsPanel({
     setSorting(value);
     try { localStorage.setItem(`blattbot:refs-sorting:${projectId}`, value); } catch { /* Storage may be unavailable. */ }
   }
+  const dialog = useDialog();
+  const [deleteUnusedBusy, setDeleteUnusedBusy] = useState(false);
+  const [deleteUnusedMessage, setDeleteUnusedMessage] = useState<string | null>(null);
+  const [deleteUnusedError, setDeleteUnusedError] = useState<string | null>(null);
   const [unusedOnly, setUnusedOnly] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
   const [showUndefined, setShowUndefined] = useState(false);
@@ -179,6 +184,10 @@ export default function RefsPanel({
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
   useEffect(() => {
+    setData(null);
+    setDeleteUnusedBusy(false);
+    setDeleteUnusedMessage(null);
+    setDeleteUnusedError(null);
     setAuditBusy(false);
     setAuditError(null);
     setVerifyAllBusy(false);
@@ -226,10 +235,11 @@ export default function RefsPanel({
   const undefinedKeys = data?.undefinedKeys ?? [];
   const unusedCount = data?.unusedCount ?? 0;
 
+  const isUnused = (e: RefEntry) => e.unused ?? !e.usage.some(site => site.count > 0);
   const usageTotal = (e: RefEntry) => e.usage.reduce((n, u) => n + u.count, 0);
 
   const visible = entries.filter((e) => {
-    if (unusedOnly && usageTotal(e) > 0) return false;
+    if (unusedOnly && !isUnused(e)) return false;
     if (gapsOnly) {
       const r = verifyResults[`${e.file}:${e.key}`] ?? data?.claimAudit?.results[e.key];
       if (!r || r.verdict === "supported") return false;
@@ -467,6 +477,38 @@ export default function RefsPanel({
       setEditError(err.message);
     } finally {
       setEditBusy(false);
+    }
+  }
+
+  async function deleteUnused() {
+    const startedFor = projectId;
+    const candidates = entries.filter(isUnused);
+    if (busy || deleteUnusedBusy || !candidates.length) return;
+    setDeleteUnusedBusy(true);
+    setDeleteUnusedError(null);
+    setDeleteUnusedMessage(null);
+    try {
+      const confirmed = await dialog.confirm({
+        title: `Delete ${candidates.length} unused reference${candidates.length === 1 ? "" : "s"}?`,
+        body: <div>
+          <p>Remove these entries from the project's bibliography files, including entries hidden by filters. Usage is checked again before deletion. Review or undo the changes in Proof.</p>
+          <ul className="mt-3 max-h-40 overflow-auto text-xs">
+            {candidates.map(e => <li key={entryId(e)} className="py-0.5">{e.key} <span className="text-graphite">· {e.file}</span></li>)}
+          </ul>
+        </div>,
+        confirmLabel: "Delete unused",
+        danger: true,
+      });
+      if (!confirmed || projectIdRef.current !== startedFor) return;
+      const result = await api.deleteUnusedRefs(startedFor);
+      if (projectIdRef.current !== startedFor) return;
+      onDiff(result.diff);
+      setDeleteUnusedMessage(result.deleted.length ? `Deleted ${result.deleted.length} unused reference${result.deleted.length === 1 ? "" : "s"}. Review or undo in Proof.` : "No unused references remain; nothing was deleted.");
+      load();
+    } catch (err: any) {
+      if (projectIdRef.current === startedFor) setDeleteUnusedError(err.message);
+    } finally {
+      if (projectIdRef.current === startedFor) setDeleteUnusedBusy(false);
     }
   }
 
@@ -725,6 +767,14 @@ export default function RefsPanel({
             unused {unusedCount > 0 ? `(${unusedCount})` : ""}
           </button>
           <button
+            onClick={() => void deleteUnused()}
+            disabled={busy || deleteUnusedBusy || !data || unusedCount === 0}
+            title="Remove all unused bibliography entries; review or undo in Proof"
+            className={`${chipBase} border-rule text-graphite transition-colors hover:border-pencil/50 hover:text-pencil disabled:opacity-40 disabled:hover:border-rule disabled:hover:text-graphite`}
+          >
+            {deleteUnusedBusy ? "Deleting…" : "Delete unused"}
+          </button>
+          <button
             onClick={runAudit}
             disabled={auditBusy || entries.length === 0}
             title="Check every entry against Crossref/OpenAlex — no AI involved"
@@ -783,6 +833,8 @@ export default function RefsPanel({
             {auditSummary}
           </p>
         )}
+        {deleteUnusedMessage && <p role="status" className="mt-2 text-[11px] text-leaf">{deleteUnusedMessage}</p>}
+        {deleteUnusedError && <p role="alert" className="mt-2 text-[11px] text-pencil">{deleteUnusedError}</p>}
         {auditError && (
           <p role="status" className="mt-1.5 text-[11.5px] leading-snug text-pencil">
             {auditError}
@@ -971,10 +1023,10 @@ export default function RefsPanel({
                   </button>
                 ) : (
                   <span
-                    title="Never cited in any .tex file"
+                    title={isUnused(e) ? "Not cited or required by another bibliography entry" : "Included by nocite or required by another bibliography entry"}
                     className="rounded-full border border-gold/50 px-1.5 font-mono text-[10px] text-gold"
                   >
-                    unused
+                    {isUnused(e) ? "unused" : "included"}
                   </span>
                 )}
                 {confirmDelete === id ? (
