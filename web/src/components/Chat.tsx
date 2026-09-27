@@ -1,3 +1,4 @@
+import { useFileMentions } from "./FileMentions";
 import { concreteModels, shortModel, useModelList } from "../models";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseDiff } from "../diff";
@@ -8,7 +9,7 @@ import {
   MAX_CHAT_IMAGE_LABEL,
   api,
 } from "../api";
-import type { AgentQuestion, ChatMeta, ProjectStats, Settings } from "../api";
+import type { AgentQuestion, ChatMeta, FileMention, ProjectStats, Settings } from "../api";
 import UsageLimits from "./UsageLimits";
 import EffortSelect from "./EffortSelect";
 import DiffView from "./DiffView";
@@ -72,7 +73,7 @@ interface Props {
   defaultMode?: string;
   /** `images` are the composer's attachments — App uploads them, then sends. */
   /** Resolves false when the message was NOT sent — the composer restores it. */
-  onSend: (message: string, mode: string, images: File[]) => Promise<boolean>;
+  onSend: (message: string, mode: string, images: File[], mentions: FileMention[]) => Promise<boolean>;
   onInterrupt: () => void;
   /** Submit the answers of a pending mid-turn question (question text → answer). */
   onAnswerQuestion: (questionId: string, answers: Record<string, string>) => void;
@@ -401,6 +402,7 @@ export default function Chat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const mentions = useFileMentions(projectId, draft, setDraft, composerRef, busy);
   useLayoutEffect(() => {
     if (composerRef.current) resizeComposer(composerRef.current);
   }, [draft]);
@@ -551,7 +553,8 @@ export default function Chat({
     setPending([]);
     pendingRef.current = [];
     setAttachError("");
-    const sent = await onSend(text, mode, images);
+    mentions.close();
+    const sent = await onSend(text, mode, images, mentions.activeMentions);
     // The previews are handed over to the send; their object URLs are no
     // longer needed (the bubble loads the stored image from the server) — and
     // on a project switch mid-send the message belongs to the project the user
@@ -683,7 +686,8 @@ export default function Chat({
               {attachError}
             </p>
           )}
-          <div>
+          <div className="relative">
+            {mentions.panel}
             <input
               ref={fileInputRef}
               type="file"
@@ -699,7 +703,11 @@ export default function Chat({
             <textarea
               ref={composerRef}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => { setDraft(e.target.value); mentions.update(e.target.value, e.target.selectionStart); }}
+              onSelect={e => { const el = e.currentTarget; if (el.selectionStart === el.selectionEnd) mentions.update(el.value, el.selectionStart); }}
+              aria-autocomplete="list"
+              aria-controls={mentions.open ? mentions.listId : undefined}
+              aria-activedescendant={mentions.activeId}
               onPaste={(e) => {
                 const files = imageFilesFrom(e.clipboardData);
                 if (files.length === 0) return;
@@ -708,6 +716,7 @@ export default function Chat({
                 void addFiles(files);
               }}
               onKeyDown={(e) => {
+                if (mentions.onKeyDown(e)) return;
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   submit();
@@ -715,7 +724,7 @@ export default function Chat({
               }}
               rows={2}
               aria-label="Message BlattBot"
-              placeholder={busy ? "BlattBot is working…" : "Ask BlattBot to edit, rewrite, or cite…"}
+              placeholder={busy ? "BlattBot is working…" : "Ask BlattBot… Type @ to mention a file"}
               disabled={busy}
               className="chat-composer-input block min-h-[76px] w-full resize-none border-0 bg-transparent px-1 py-1 text-[14px] leading-6 text-paper placeholder:text-graphite disabled:opacity-60"
             />

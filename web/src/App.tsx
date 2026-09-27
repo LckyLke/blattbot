@@ -10,6 +10,7 @@ import {
   type Account,
   type AgentQuestion,
   type ChatMeta,
+  type FileMention,
   type ChatTranscriptEvent,
   type CompileInfo,
   type Project,
@@ -938,7 +939,7 @@ function AppShell() {
    * project the user switched to.
    */
   const send = useCallback(
-    async (message: string, mode: string, images: File[] = []): Promise<boolean> => {
+    async (message: string, mode: string, images: File[] = [], mentions: FileMention[] = []): Promise<boolean> => {
       const id = selectedId;
       if (!id || chatNavigationRef.current) return false;
       const stale = () => selectedRef.current?.id !== id;
@@ -980,6 +981,7 @@ function AppShell() {
           mode,
           undefined,
           attachments.length > 0 ? attachments.map((a) => a.id) : undefined,
+          mentions,
         );
         if (stale()) return true;
         // The server accepted the turn — reflect it immediately instead of

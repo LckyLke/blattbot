@@ -87,6 +87,15 @@ export interface Settings {
 }
 
 /** A persistent conversation of a project (session id stays on the server). */
+export interface FileMention {
+  source: "project" | "repository";
+  path: string;
+  repositoryId?: string;
+  commit?: string;
+  label: string;
+  token: string;
+}
+
 export interface ChatMeta {
   id: string;
   title: string;
@@ -541,10 +550,12 @@ export const api = {
   deleteProject: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
   inlineQuestion: (id: string, body: { selection: string; location: string; context: string; messages: { role: "user" | "assistant"; text: string; passage?: { text: string; context: string; location: string } }[] }, signal?: AbortSignal) =>
     request<{ answer: string }>(`/api/projects/${id}/inline-question`, { method: "POST", body: JSON.stringify(body), signal }),
-  chat: (id: string, message: string, mode?: string, files?: string[], images?: string[]) =>
+  mentionFiles: (id: string, query: string) =>
+    request<{ files: FileMention[]; more: boolean; warnings: string[] }>("/api/projects/" + id + "/mention-files?q=" + encodeURIComponent(query)),
+  chat: (id: string, message: string, mode?: string, files?: string[], images?: string[], mentions?: FileMention[]) =>
     request<{ ok: boolean }>(`/api/projects/${id}/chat`, {
       method: "POST",
-      body: JSON.stringify({ message, mode, files, images }),
+      body: JSON.stringify({ message, mode, files, images, mentions }),
     }),
   /** Post one image's raw bytes; the server sniffs the type and names the file. */
   uploadChatImage: (id: string, file: Blob) =>

@@ -1,3 +1,4 @@
+import { mentionFiles, resolveFileMentions, promptWithFileMentions } from "./file-mentions.js";
 import { deleteUnusedReferences, unusedReferenceEntries } from "./unused-references.js";
 import { codexLimits } from "./agent-limits.js";
 import { registerInlineQuestions, isInlineQuestionActive } from "./inline-questions.js";
@@ -1377,6 +1378,11 @@ app.get<{ Params: { id: string } }>("/api/projects/:id/labels", async (req, repl
   return { labels: scanLabels(projectDir(project.id)) };
 });
 
+app.get<{ Params: { id: string }; Querystring: { q?: string } }>("/api/projects/:id/mention-files", async (req, reply) => {
+  if (!getProject(req.params.id)) return reply.code(404).send({ error: "unknown project" });
+  return mentionFiles(req.params.id, String(req.query.q ?? "").slice(0, 200));
+});
+
 // ---- References: Zotero-lite citation manager ------------------------------
 
 /** Best source link for a bib entry: DOI → arXiv abstract page → url field. */
@@ -1739,7 +1745,7 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/disclosure", async (req,
 
 app.post<{
   Params: { id: string };
-  Body: { message: string; mode?: string; files?: string[]; images?: string[] };
+  Body: { message: string; mode?: string; files?: string[]; images?: string[]; mentions?: unknown };
 }>(
   "/api/projects/:id/chat",
   async (req, reply) => {
@@ -1755,6 +1761,13 @@ app.post<{
     } catch (err: any) {
       return reply.code(400).send({ error: err.message });
     }
+    let mentions;
+    try {
+      mentions = await resolveFileMentions(project.id, req.body?.mentions, message);
+    } catch (err: any) {
+      return reply.code(400).send({ error: err.message });
+    }
+    if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn already in progress" });
     // "Here's a screenshot" with no words is the most natural way to use a
     // paste-an-image composer, so pictures alone are a complete message; the
     // attachment note the prompt carries tells the agent what it is looking at.
@@ -1782,6 +1795,7 @@ app.post<{
       appendEvent(project.id, chatId, {
         type: "user_message",
         text: message,
+        ...(mentions.length ? { mentions } : {}),
         mode,
         ...(scope ? { scope } : {}),
         // id + mime is all the restored transcript needs to render a thumbnail.
@@ -1848,7 +1862,7 @@ app.post<{
         });
         await runTurn(
           project,
-          message,
+          promptWithFileMentions(message, mentions),
           turnSink.sink,
           mode,
           scope,
