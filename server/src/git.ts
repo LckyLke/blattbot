@@ -84,6 +84,11 @@ export async function pull(dir: string): Promise<string> {
   return git(dir, "pull", "--rebase", "--autostash");
 }
 
+/** Autostash can leave conflicts even when `git pull` exits successfully. */
+export async function unmergedPaths(dir: string): Promise<string[]> {
+  return (await git(dir, "diff", "--name-only", "--diff-filter=U", "-z")).split("\0").filter(Boolean);
+}
+
 /**
  * Diff of the working tree against HEAD, with untracked files included
  * via intent-to-add so brand-new files show up as additions.

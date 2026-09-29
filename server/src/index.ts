@@ -1847,11 +1847,11 @@ app.post<{
         try {
           const result = await sync.syncIn(project);
           if (result.detail) {
-            broadcast(project.id, { type: "sync_warning", message: result.detail });
+            broadcast(project.id, { type: "sync_warning", message: result.detail, failed: false, drift: result.drift });
             persist({ type: "notice", tone: "warn", text: `Sync: ${result.detail}` });
           }
         } catch (err: any) {
-          broadcast(project.id, { type: "sync_warning", message: err.message });
+          broadcast(project.id, { type: "sync_warning", message: err.message, failed: true });
           persist({ type: "notice", tone: "warn", text: `Sync: ${err.message}` });
         }
         // Wrap the sink so edits stream a live diff and per-edit file diffs mid-turn;

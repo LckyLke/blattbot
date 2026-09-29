@@ -48,6 +48,7 @@
     "test:pdf-links-ui": "tsx scripts/pdf-links-ui-verify.ts",
     "test:chat-effort-ui": "tsx scripts/chat-effort-ui-verify.ts",
     "test:sidebar-ui": "tsx scripts/sidebar-ui-verify.ts",
+    "test:sync-ui": "tsx scripts/sync-ui-verify.ts",
     "test:file-mentions-ui": "tsx scripts/file-mentions-ui-verify.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"

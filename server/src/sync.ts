@@ -88,8 +88,15 @@ export async function syncIn(project: Project): Promise<SyncResult> {
       drift: result.drift,
     };
   }
+  const before = await git.revParse(dir, "HEAD");
   await git.pull(dir);
-  return { ok: true };
+  const drift = await git.unmergedPaths(dir);
+  return {
+    ok: true,
+    changed: before !== await git.revParse(dir, "HEAD"),
+    drift,
+    ...(drift.length ? { detail: `Git conflicts need resolving in: ${drift.join(", ")}. Your original local edits are also preserved in the Git stash.` } : {}),
+  };
 }
 
 export interface RemoteConflict {

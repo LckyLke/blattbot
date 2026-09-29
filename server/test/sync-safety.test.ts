@@ -286,6 +286,30 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     expect(result.warnings?.some((w) => w.includes("run Sync to retry"))).toBe(true);
   });
 
+  it("reports Git autostash conflicts even when pull exits successfully", async () => {
+    const remoteDir = join(dataDir, "remote.git");
+    const collaborator = join(dataDir, "collaborator");
+    const run = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
+    run(dir, "clone", "--bare", dir, remoteDir);
+    run(dir, "remote", "add", "origin", remoteDir);
+    run(dir, "fetch", "origin");
+    const branch = run(dir, "branch", "--show-current").trim();
+    run(dir, "branch", `--set-upstream-to=origin/${branch}`);
+    run(dataDir, "clone", remoteDir, collaborator);
+    run(collaborator, "config", "user.name", "Fixture");
+    run(collaborator, "config", "user.email", "fixture@example.org");
+    writeFileSync(join(collaborator, "main.tex"), MAIN.replace("Body.", "Remote edit."));
+    run(collaborator, "commit", "-am", "Remote edit");
+    run(collaborator, "push");
+    writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Local edit."));
+
+    const result = await sync.syncIn({ ...project(), kind: "git", gitUrl: remoteDir });
+    expect(result.changed).toBe(true);
+    expect(result.drift).toEqual(["main.tex"]);
+    expect(result.detail).toContain("Git conflicts");
+    expect(run(dir, "stash", "show", "-p")).toContain("Local edit.");
+  });
+
   it("git.log returns the commit history", async () => {
     const log = await git.log(dir);
     expect(log).toContain("Initial sync from Overleaf");

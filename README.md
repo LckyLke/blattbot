@@ -39,6 +39,7 @@ The optional Claude backend runs through the Claude Agent SDK, which is included
 
 ## Sync without clobbering
 
+- **Automatic sync and connection notices.** Remote projects sync when opened, restored after a reload, or reconnected after a server restart. A failed sync or overlapping remote edits opens a popup and leaves a warning above the project panes, with retry, reconnect, or review actions. While an Overleaf project is visible, its account session is checked every minute and when you return to the tab. Dismissing the popup keeps the warning visible until sync succeeds; local-only projects do not sync.
 - **Drift detection.** Approving a change first fetches a fresh snapshot from Overleaf. Files that changed both remotely and locally block the push with a per-file conflict list; you can discard your version per file, or force the push — in which case the remote versions are backed up locally first.
 - **Selective merge.** Remote changes to files you have not touched are merged into your mirror as their own commit, both during a normal sync and after a push.
 - **In-place updates.** Edited documents are updated through Overleaf's realtime protocol rather than deleted and re-uploaded, so entity ids are preserved and comments, tracked changes, and per-document history stay attached. If an in-place update fails, BlattBot falls back to a plain upload and tells you.

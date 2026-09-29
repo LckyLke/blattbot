@@ -33,6 +33,8 @@ import RefsPanel from "./components/RefsPanel";
 import ResearchPanel from "./components/ResearchPanel";
 import SourcePanel from "./components/SourcePanel";
 import { countDrafts, subscribeDrafts } from "./drafts";
+import { useProjectSync } from "./useProjectSync";
+import ProjectSyncNotice from "./components/ProjectSyncNotice";
 
 type View = "dashboard" | "project";
 
@@ -337,6 +339,8 @@ function AppShell() {
   }, [panes]);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const [reconnectVersion, setReconnectVersion] = useState(0);
+  const syncWarningRef = useRef<(message: string, paths?: string[]) => void>(() => {});
   // Mirrors `compiling` for use inside callbacks without stale closures.
   const compilingRef = useRef(false);
   compilingRef.current = compiling;
@@ -620,6 +624,9 @@ function AppShell() {
         }
         case "sync_warning":
           pushChat({ kind: "notice", tone: "warn", text: `Sync: ${ev.message}` });
+          if (ev.failed || ev.drift?.length || /session.*(?:expired|rejected)/i.test(String(ev.message))) {
+            syncWarningRef.current(String(ev.message), ev.drift);
+          }
           break;
         // A backend-side notice (e.g. the images could not be sent to this
         // endpoint). The route persists it too, so itemsFromEvents replays it.
@@ -788,6 +795,7 @@ function AppShell() {
           ws.onopen = () => {
             if (cancelled) return;
             if (everConnected) {
+              setReconnectVersion(version => version + 1);
               // Back after a drop: refresh what only ws events would have
               // updated (the effect body already fetched these on open).
               void refreshDetail(selectedId);
@@ -1217,36 +1225,27 @@ function AppShell() {
     [selectedId],
   );
 
-  // Manual pull of incoming Overleaf/git changes.
-  const [syncing, setSyncing] = useState(false);
-  const syncNow = useCallback(async () => {
-    if (!selectedId || syncing) return;
-    setSyncing(true);
-    try {
-      const r = await api.sync(selectedId);
-      const changed = r.changed ?? Boolean(r.output);
-      // Drift = Overleaf moved on for files that also have local edits — warn.
-      pushChat({
-        kind: "notice",
-        tone: r.drift?.length ? "warn" : "info",
-        text: r.output || "Already up to date.",
+  const projectSync = useProjectSync(view === "project" ? selected : null, reconnectVersion, {
+    onAccountChanged: () => { void refreshProjects(); },
+    onSynced: (id, r, manual) => {
+      const changed = r.changed || Boolean(r.merged?.length) || Boolean(r.drift?.length);
+      if (manual || r.output) pushChat({
+        kind: "notice", tone: r.drift?.length ? "warn" : "info", text: r.output || "Already up to date.",
       });
       if (changed) {
         setSourceStamp((s) => s + 1);
         dirtySinceCompile.current = true;
-        api.diff(selectedId).then((d) => setDiff(d.diff)).catch(() => {});
-        void refreshDetail(selectedId);
+        api.diff(id).then((d) => { if (selectedRef.current?.id === id) setDiff(d.diff); }).catch(() => {});
+        void refreshDetail(id);
         const p = panesRef.current;
         if ((p.left === "pdf" || p.right === "pdf") && !compilingRef.current) {
           void startCompileRef.current();
         }
       }
-    } catch (err: any) {
-      pushChat({ kind: "notice", tone: "error", text: err.message });
-    } finally {
-      setSyncing(false);
-    }
-  }, [selectedId, syncing, pushChat, refreshDetail]);
+    },
+  });
+  const { syncNow, syncing } = projectSync;
+  syncWarningRef.current = projectSync.reportWarning;
 
   const reject = useCallback(async () => {
     if (!selectedId) return;
@@ -1746,6 +1745,21 @@ function AppShell() {
           <span className="font-mono">{engine ? `engine · ${engine}` : "no TeX engine"}</span>
         </div>
       </header>
+
+      {inProject && selected!.kind !== "local" && <ProjectSyncNotice
+        key={selected!.id}
+        projectName={selected!.name}
+        issue={projectSync.issue}
+        popup={projectSync.popup}
+        syncing={syncing}
+        reconnecting={projectSync.reconnecting}
+        canReconnect={Boolean(selected!.accountId)}
+        onDismiss={projectSync.dismiss}
+        onSync={syncNow}
+        onReconnect={projectSync.reconnect}
+        onReview={() => setPanes(p => ({ left: "proof", right: p.right === "proof" ? "chat" : p.right }))}
+        onSettings={() => setSettingsOpen(true)}
+      />}
 
       <div className={`blattbot-workspace flex min-h-0 flex-1 ${mobileSidebar && inProject ? "mobile-sidebar-open" : ""}`}>
         {!inProject ? (
