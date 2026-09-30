@@ -40,12 +40,19 @@ try {
   const page = await browser.newPage({ viewport: { width: 1450, height: 1000 } });
   const errors: string[] = []; page.on("pageerror", e => errors.push(e.message));
   await page.addInitScript(() => { localStorage.setItem("blattbot.paneLeft.v2", "chat"); localStorage.setItem("blattbot.paneRight.v2", "source"); });
+  let catalogRefreshed = false;
+  await page.route("**/api/agent/codex/status*", route => {
+    if (new URL(route.request().url()).searchParams.get("refresh") === "1") catalogRefreshed = true;
+    return route.fulfill({ json: { available: true, authenticated: true, executable: "fixture-codex",
+      message: "Codex is connected and ready.", defaultModel: "fixture-codex" } });
+  });
   await page.route("**/api/models**", async route => {
     const backend = new URL(route.request().url()).searchParams.get("backend") || "codex";
     await route.fulfill({ json: { backend, source: "cli", defaultModel: "fixture-codex", models: [
       { id: "fixture-codex", label: "Fixture Codex", supportsEffort: true, effortLevels: ["low", "high", "ultra"] },
       { id: "fixture-limited", label: "Limited effort", supportsEffort: true, effortLevels: ["low"] },
       { id: "claude-sonnet-5", label: "Claude", supportsEffort: true, effortLevels: ["low", "high", "max"] },
+      ...(catalogRefreshed ? [{ id: "fixture-codex-latest", label: "Latest Codex" }] : []),
     ] } });
   });
   await page.route("**/api/agent/codex/limits", route => route.fulfill({ json: {
@@ -80,6 +87,18 @@ try {
   await choose("high"); assert.equal((await savedSettings()).codexEffort, "high");
   await page.reload({ waitUntil: "networkidle" });
   await effort.waitFor(); assert.equal(await effort.inputValue(), "high");
+  // A connection recheck must replace both the settings and chat model caches.
+  await page.getByRole("button", { name: "Open settings", exact: true }).click();
+  const settingsDialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settingsDialog.getByRole("tab", { name: "Agent", exact: true }).click();
+  await settingsDialog.locator('#blattbot-codex-models option[value="fixture-codex"]').waitFor({ state: "attached" });
+  assert.equal(await settingsDialog.locator('#blattbot-codex-models option[value="fixture-codex-latest"]').count(), 0);
+  await settingsDialog.getByRole("button", { name: "Check again", exact: true }).click();
+  await settingsDialog.locator('#blattbot-codex-models option[value="fixture-codex-latest"]').waitFor({ state: "attached" });
+  await settingsDialog.getByRole("button", { name: "Close settings", exact: true }).click();
+  await page.getByRole("button", { name: "Agent model", exact: true }).click();
+  await page.getByRole("button", { name: /^fixture-codex-latest/ }).waitFor();
+  await page.getByRole("button", { name: /^fixture-codex-latest/ }).press("Escape");
   const composer = page.getByRole("form", { name: "Chat composer", exact: true });
   const input = page.getByRole("textbox", { name: "Message BlattBot", exact: true });
   const mode = page.getByRole("combobox", { name: "Chat mode", exact: true });
@@ -133,7 +152,7 @@ try {
   await page.reload({ waitUntil: "networkidle" });
   assert.equal(await effort.count(), 0);
   assert.deepEqual(errors, []);
-  console.log("Chat usage limits, expandable citation evidence, and reasoning effort passed: catalog levels, save/reload, failed save, project override, defaults, Codex/Claude isolation, unsupported backend.");
+  console.log("Chat model refresh, usage limits, expandable citation evidence, and reasoning effort passed: shared catalog refresh, catalog levels, save/reload, failed save, project override, defaults, Codex/Claude isolation, unsupported backend.");
 } finally {
   await browser?.close(); server.kill("SIGTERM");
   await new Promise(resolve => { if (server.exitCode !== null) resolve(undefined); else server.once("exit", resolve); });

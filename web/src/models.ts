@@ -30,6 +30,14 @@ const cached = new Map<string, ModelList>();
 const inflight = new Map<string, Promise<ModelList>>();
 let generation = 0;
 
+/** Re-read all pickers after the server's Codex connection check refreshes its catalog. */
+export function invalidateModelLists(): void {
+  generation++;
+  cached.clear();
+  inflight.clear();
+  window.dispatchEvent(new Event("blattbot:models-changed"));
+}
+
 export function modelSettingPatch(backend: Settings["backend"], model: string): Partial<Settings> {
   return backend === "claude" ? { model } : backend === "openai" ? { openaiModel: model } : { codexModel: model };
 }
@@ -68,8 +76,13 @@ export function useModelList(backend?: BackendId): ModelList {
       inflight.clear();
       setRevision((n) => n + 1);
     };
+    const modelsChanged = () => setRevision((n) => n + 1);
     window.addEventListener("blattbot:settings-changed", changed);
-    return () => window.removeEventListener("blattbot:settings-changed", changed);
+    window.addEventListener("blattbot:models-changed", modelsChanged);
+    return () => {
+      window.removeEventListener("blattbot:settings-changed", changed);
+      window.removeEventListener("blattbot:models-changed", modelsChanged);
+    };
   }, []);
   useEffect(() => {
     let stale = false;

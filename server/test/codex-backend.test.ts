@@ -94,6 +94,20 @@ describe("Codex background harness", () => {
     expect(codexCommand("codex", "win32", `${join(data, "missing")};${npmDir}`)).toEqual({ command: process.execPath, args: [entry] });
     expect(codexCommand(join(data, "custom.exe"), "win32", npmDir)).toEqual({ command: join(data, "custom.exe"), args: [] });
   });
+  it("uses the desktop app's CLI before PATH, while preserving explicit overrides", async () => {
+    const { codexExecutable } = await import("../src/backends/codex-client.js");
+    const appCli = join(data, "bundled-codex");
+    writeFileSync(appCli, "");
+    vi.stubEnv("CODEX_CLI_PATH", ` ${appCli} `);
+    vi.stubEnv("BLATTBOT_CODEX_EXECUTABLE", "custom-codex");
+    expect(codexExecutable()).toBe("custom-codex");
+    vi.stubEnv("BLATTBOT_CODEX_EXECUTABLE", " ");
+    expect(codexExecutable()).toBe(appCli);
+    vi.stubEnv("CODEX_CLI_PATH", join(data, "removed-app-codex"));
+    expect(codexExecutable()).toBe("codex");
+    vi.stubEnv("CODEX_CLI_PATH", "");
+    expect(codexExecutable()).toBe("codex");
+  });
   it("keeps project model overrides with their harness and handles legacy Claude models", async () => {
     const { resolveBackendModel } = await import("../src/agent.js");
     const settings = { ...ctx.settings, codexModel: "codex-model", model: "sonnet" };

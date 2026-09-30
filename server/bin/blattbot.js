@@ -113,6 +113,7 @@ if (args.command === "doctor") {
 const { detectEngine, resetEngineCache } = await import("../dist/compile.js");
 const { DATA_DIR, BIN_DIR } = await import("../dist/config.js");
 const { installTectonic, TECTONIC_VERSION } = await import("../dist/setup.js");
+const { codexExecutable } = await import("../dist/backends/codex-client.js");
 
 // 1. git — hard requirement: cloning, diffs, and the whole review flow use it.
 if (!(await has("git"))) {
@@ -162,7 +163,7 @@ if (!engine) {
 const { loadSettings, selectedBackend } = await import("../dist/settings.js");
 const backend = selectedBackend(loadSettings());
 const harness = backend === "codex"
-  ? (await has(process.env.BLATTBOT_CODEX_EXECUTABLE || "codex"))
+  ? (await has(codexExecutable()))
     ? "Codex found — uses your codex login; check connection in Settings → Agent"
     : "Codex not found — npm install -g @openai/codex, then codex login"
   : backend === "claude"

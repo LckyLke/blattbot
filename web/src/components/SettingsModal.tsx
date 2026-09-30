@@ -1,4 +1,4 @@
-import { useModelList } from "../models";
+import { invalidateModelLists, useModelList } from "../models";
 import { useEffect, useRef, useState } from "react";
 import { api, type Account, type AgentInfo, type ProjectStats, type Settings, type BackendId, type CodexStatus } from "../api";
 import { tabStripKeyDown } from "../a11y";
@@ -110,7 +110,10 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
 
   async function checkCodex() {
     setCheckingCodex(true);
-    try { setCodexStatus(await api.codexStatus(true)); }
+    try {
+      setCodexStatus(await api.codexStatus(true));
+      invalidateModelLists();
+    }
     catch (err: any) { setError(err.message); }
     finally { setCheckingCodex(false); }
   }

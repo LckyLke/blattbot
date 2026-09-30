@@ -8,7 +8,14 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DATA_DIR } from "../config.js";
 
-export const codexExecutable = () => process.env.BLATTBOT_CODEX_EXECUTABLE?.trim() || "codex";
+export function codexExecutable(): string {
+  const override = process.env.BLATTBOT_CODEX_EXECUTABLE?.trim();
+  if (override) return override;
+  // The desktop app supplies its bundled CLI. PATH can still resolve an older
+  // standalone installation whose model catalog lags behind the app's.
+  const appCli = process.env.CODEX_CLI_PATH?.trim();
+  return appCli && existsSync(appCli) ? appCli : "codex";
+}
 export const codexWorkspace = () => join(DATA_DIR, "codex-workspace");
 
 /** Resolve npm's Windows shim to its JS entry, avoiding cmd.exe quoting. */
