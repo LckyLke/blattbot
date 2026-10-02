@@ -55,6 +55,7 @@ import {
   sanitizeKeyForFile,
   verifyAllCitations,
   verifyCitationSupport,
+  deletePaperData,
 } from "./papers.js";
 import type { BibEntry } from "./bib.js";
 import { cachedReferenceMetadata, getReferenceMetadata } from "./reference-metadata.js";
@@ -69,6 +70,7 @@ import {
   endTurnPipeline,
   interruptTurn,
   isTurnActive,
+  deleteSessionData,
   resolveBackendModel,
   resolveModel,
   runOneShot,
@@ -109,6 +111,7 @@ import { broadcast, subscribe } from "./events.js";
 import {
   appendEvent,
   createChat,
+  deleteAllChats,
   deleteChat,
   ensureActiveChat,
   getChat,
@@ -120,6 +123,8 @@ import {
   updateChat,
 } from "./chats.js";
 import { makeTurnEventSink } from "./livediff.js";
+import { deleteResearchData } from "./research/store.js";
+import { withProjectLock } from "./project-lock.js";
 import { RESEARCH_TOOLS } from "./research/tools.js";
 import { GraphIndexer } from "./research/graph-indexer.js";
 import { registerResearchRoutes } from "./research/routes.js";
@@ -168,6 +173,12 @@ const PORT = Number(process.env.BLATTBOT_PORT ?? 4560);
 
 ensureDirs();
 migrateProjectCookies();
+// Before any agent turn can run: no git-bridge token may stay in a .git/config.
+for (const project of listProjects()) {
+  void sync.moveRemoteCredentials(project).catch(() => {
+    /* retried before this project's next pull or push */
+  });
+}
 const AUTH_TOKEN = getAuthToken();
 
 // bodyLimit covers base64-encoded context uploads (25 MB file ≈ 34 MB JSON).
@@ -213,6 +224,7 @@ registerDeployment(app, () => listProjects().some((p) =>
   isTurnActive(p.id) || listResearchJobs(p.id).some((j) => ["queued", "running"].includes(j.state)),
 ));
 const graphIndexer = new GraphIndexer();
+// Called with the project lock already held (see research/routes.ts).
 registerResearchRoutes(app, async (id) => {
   const diff = await git.workingDiff(projectDir(id));
   broadcast(id, { type: "diff", diff });
@@ -757,13 +769,25 @@ app.patch<{ Params: { id: string }; Body: { cookie?: string } }>("/api/projects/
 app.delete<{ Params: { id: string } }>("/api/projects/:id", async (req, reply) => {
   const { id } = req.params;
   if (!getProject(id)) return reply.code(404).send({ error: "unknown project" });
-  removeProject(id);
-  rmSync(projectDir(id), { recursive: true, force: true });
-  rmSync(buildDir(id), { recursive: true, force: true });
-  rmSync(contextUploadsDir(id), { recursive: true, force: true });
-  rmSync(repositoriesDir(id), { recursive: true, force: true });
-  // The chat transcripts that referenced them are going too.
-  deleteChatUploads(id);
+  // A running turn or research job would recreate the folders it writes to.
+  if (isTurnActive(id)) return reply.code(409).send({ error: "Stop the agent turn before removing this project." });
+  if (listResearchJobs(id).some((j) => ["queued", "running"].includes(j.state))) {
+    return reply.code(409).send({ error: "Pause or cancel this project's research tasks before removing it." });
+  }
+  await withProjectLock(id, async () => {
+    removeProject(id);
+    rmSync(projectDir(id), { recursive: true, force: true });
+    rmSync(buildDir(id), { recursive: true, force: true });
+    rmSync(contextUploadsDir(id), { recursive: true, force: true });
+    rmSync(repositoriesDir(id), { recursive: true, force: true });
+    // The chat transcripts that referenced them are going too.
+    deleteChatUploads(id);
+    // Conversations (and what the backends stored for them), research,
+    // paper records/PDFs and audits belong to the project too.
+    for (const sessionId of deleteAllChats(id)) deleteSessionData(sessionId);
+    deleteResearchData(id);
+    deletePaperData(id);
+  });
   return { ok: true };
 });
 
@@ -1011,7 +1035,7 @@ app.get<{ Params: { id: string; imageId: string } }>(
 app.get<{ Params: { id: string } }>("/api/projects/:id/diff", async (req, reply) => {
   const project = getProject(req.params.id);
   if (!project) return reply.code(404).send({ error: "unknown project" });
-  const diff = await git.workingDiff(projectDir(project.id));
+  const diff = await withProjectLock(project.id, () => git.workingDiff(projectDir(project.id)));
   return { diff };
 });
 
@@ -1020,7 +1044,7 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/sync", async (req, reply
   if (!project) return reply.code(404).send({ error: "unknown project" });
   if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
   try {
-    const result = await sync.syncIn(project);
+    const result = await withProjectLock(project.id, () => sync.syncIn(project));
     broadcast(project.id, {
       type: "synced",
       detail: result.detail,
@@ -1051,7 +1075,7 @@ app.post<{ Params: { id: string }; Body: { accountId?: string } }>(
     const account = getAccount(req.body?.accountId ?? "");
     if (!account) return reply.code(404).send({ error: "unknown account" });
     try {
-      const result = await sync.publishLocal(project, account);
+      const result = await withProjectLock(project.id, () => sync.publishLocal(project, account));
       broadcast(project.id, {
         type: "published",
         project: publicProject(result.project),
@@ -1083,7 +1107,11 @@ app.post<{ Params: { id: string }; Body: { message?: string; force?: boolean } }
     if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
     const message = req.body?.message?.trim() || "BlattBot edit";
     try {
-      const result = await sync.approve(project, message, { force: req.body?.force === true });
+      const dir = projectDir(project.id);
+      const { result, pendingDiff } = await withProjectLock(project.id, async () => {
+        const result = await sync.approve(project, message, { force: req.body?.force === true });
+        return { result, pendingDiff: result.pending ? await git.workingDiff(dir) : null };
+      });
       broadcast(project.id, {
         type: "approved",
         pushed: result.pushed,
@@ -1093,9 +1121,7 @@ app.post<{ Params: { id: string }; Body: { message?: string; force?: boolean } }
         absorbedRemote: result.absorbedRemote,
       });
       // "approved" clears the review; files that failed to upload are still pending.
-      if (result.pending) {
-        broadcast(project.id, { type: "diff", diff: await git.workingDiff(projectDir(project.id)), changed: false });
-      }
+      if (pendingDiff !== null) broadcast(project.id, { type: "diff", diff: pendingDiff, changed: false });
       return { ok: true, ...result };
     } catch (err: any) {
       // Remote drift touching locally edited files: nothing was committed or
@@ -1112,7 +1138,7 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/reject", async (req, rep
   const project = getProject(req.params.id);
   if (!project) return reply.code(404).send({ error: "unknown project" });
   if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
-  await git.discard(projectDir(project.id));
+  await withProjectLock(project.id, () => git.discard(projectDir(project.id)));
   broadcast(project.id, { type: "rejected" });
   return { ok: true };
 });
@@ -1143,12 +1169,14 @@ app.post<{ Params: { id: string }; Body: { path?: string } }>(
     if (abs === dir || !abs.startsWith(dir + sep)) {
       return reply.code(400).send({ error: "invalid path" });
     }
-    const current = await git.workingDiff(dir);
-    if (!diffPaths(current).has(rel)) {
+    const diff = await withProjectLock(project.id, async () => {
+      if (!diffPaths(await git.workingDiff(dir)).has(rel)) return null;
+      await git.discardPath(dir, rel);
+      return git.workingDiff(dir);
+    });
+    if (diff === null) {
       return reply.code(409).send({ error: "that file has no pending changes — refresh the proof" });
     }
-    await git.discardPath(dir, rel);
-    const diff = await git.workingDiff(dir);
     broadcast(project.id, { type: "diff", diff });
     return { ok: true, diff };
   },
@@ -1163,12 +1191,15 @@ app.post<{ Params: { id: string }; Body: { patch?: string } }>(
     const patch = req.body?.patch ?? "";
     if (!patch.trim()) return reply.code(400).send({ error: "patch is required" });
     const dir = projectDir(project.id);
-    try {
-      await git.applyReverse(dir, patch);
-    } catch {
-      return reply.code(409).send({ error: "hunk no longer applies — refresh the proof" });
-    }
-    const diff = await git.workingDiff(dir);
+    const diff = await withProjectLock(project.id, async () => {
+      try {
+        await git.applyReverse(dir, patch);
+      } catch {
+        return null;
+      }
+      return git.workingDiff(dir);
+    });
+    if (diff === null) return reply.code(409).send({ error: "hunk no longer applies — refresh the proof" });
     broadcast(project.id, { type: "diff", diff });
     return { ok: true, diff };
   },
@@ -1353,11 +1384,15 @@ app.put<{ Params: { id: string }; Body: { path?: string; content?: string; base?
     } catch {
       return reply.code(404).send({ error: "no such file" });
     }
-    if (req.body.base !== undefined && (typeof req.body.base !== "string" || readFileSync(abs, "utf8") !== req.body.base)) {
+    const base = req.body.base;
+    const diff = await withProjectLock(project.id, async () => {
+      if (base !== undefined && (typeof base !== "string" || readFileSync(abs, "utf8") !== base)) return null;
+      writeFileSync(abs, content);
+      return git.workingDiff(dir).catch(() => "");
+    });
+    if (diff === null) {
       return reply.code(409).send({ error: "This file changed since you opened the passage. Your draft is preserved; open it in Source to reconcile the changes." });
     }
-    writeFileSync(abs, content);
-    const diff = await git.workingDiff(dir).catch(() => "");
     return { ok: true, diff };
   },
 );
@@ -1512,8 +1547,10 @@ app.post<{ Params: { id: string }; Body: { bibtex?: string; bibFile?: string } }
       }
     }
     try {
-      const result = addRefEntry(dir, bibtex, bibFile);
-      const diff = await git.workingDiff(dir);
+      const { result, diff } = await withProjectLock(project.id, async () => {
+        const result = addRefEntry(dir, bibtex, bibFile);
+        return { result, diff: await git.workingDiff(dir) };
+      });
       broadcast(project.id, { type: "diff", diff });
       return { ok: true, key: result.key, diff };
     } catch (err: any) {
@@ -1532,8 +1569,10 @@ app.put<{ Params: { id: string; key: string }; Body: { bibtex?: string } }>(
     if (!bibtex.trim()) return reply.code(400).send({ error: "bibtex is required" });
     const dir = projectDir(project.id);
     try {
-      const result = updateRefEntry(dir, req.params.key, bibtex);
-      const diff = await git.workingDiff(dir);
+      const { result, diff } = await withProjectLock(project.id, async () => {
+        const result = updateRefEntry(dir, req.params.key, bibtex);
+        return { result, diff: await git.workingDiff(dir) };
+      });
       broadcast(project.id, { type: "diff", diff });
       return { ok: true, key: result.key, diff };
     } catch (err: any) {
@@ -1549,8 +1588,10 @@ app.post<{ Params: { id: string } }>("/api/projects/:id/refs/delete-unused", asy
   if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
   const dir = projectDir(project.id);
   try {
-    const deleted = deleteUnusedReferences(dir);
-    const diff = await git.workingDiff(dir);
+    const { deleted, diff } = await withProjectLock(project.id, async () => {
+      const deleted = deleteUnusedReferences(dir);
+      return { deleted, diff: await git.workingDiff(dir) };
+    });
     broadcast(project.id, { type: "diff", diff });
     return { ok: true, deleted, diff };
   } catch (err: any) {
@@ -1566,8 +1607,10 @@ app.delete<{ Params: { id: string; key: string } }>(
     if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
     const dir = projectDir(project.id);
     try {
-      deleteRefEntry(dir, req.params.key);
-      const diff = await git.workingDiff(dir);
+      const diff = await withProjectLock(project.id, async () => {
+        deleteRefEntry(dir, req.params.key);
+        return git.workingDiff(dir);
+      });
       broadcast(project.id, { type: "diff", diff });
       return { ok: true, diff };
     } catch (err: any) {
@@ -1640,10 +1683,24 @@ app.post<{ Params: { id: string }; Body: { bibtex?: string; bibFile?: string } }
   async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
+    if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
     const bibtex = req.body?.bibtex ?? "";
     if (!bibtex.trim()) return reply.code(400).send({ error: "bibtex is required" });
+    const dir = projectDir(project.id);
+    const bibFile = req.body?.bibFile?.trim() || undefined;
+    if (bibFile) {
+      const abs = resolve(dir, bibFile);
+      if (abs === dir || !abs.startsWith(dir + sep)) {
+        return reply.code(400).send({ error: "invalid path" });
+      }
+    }
     try {
-      return importBibtex(projectDir(project.id), bibtex, req.body?.bibFile?.trim() || undefined);
+      const { result, diff } = await withProjectLock(project.id, async () => {
+        const result = importBibtex(dir, bibtex, bibFile);
+        return { result, diff: await git.workingDiff(dir) };
+      });
+      broadcast(project.id, { type: "diff", diff });
+      return result;
     } catch (err: any) {
       return reply.code(422).send({ error: err?.message ?? String(err) });
     }
@@ -1716,7 +1773,10 @@ app.delete<{ Params: { id: string; chatId: string } }>(
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
     if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
+    const sessionId = getChat(project.id, req.params.chatId)?.sessionId;
     if (!deleteChat(project.id, req.params.chatId)) return reply.code(404).send({ error: "unknown chat" });
+    // The OpenAI-compatible backend keeps the full conversation text on disk.
+    if (sessionId) deleteSessionData(sessionId);
     // If the active chat went away this reactivates the newest remaining
     // conversation, or creates a fresh one when none is left.
     const active = ensureActiveChat(project.id);
@@ -1851,9 +1911,11 @@ app.post<{
       try {
         broadcast(project.id, { type: "turn_start" });
         const beforeTurn = await projectFingerprint(projectDir(project.id));
-        // Pick up collaborator edits before the agent touches anything.
+        // Pick up collaborator edits before the agent touches anything. Taking
+        // the lock here also makes the agent wait for an approve or sync that
+        // was already running when this message arrived.
         try {
-          const result = await sync.syncIn(project);
+          const result = await withProjectLock(project.id, () => sync.syncIn(project));
           if (result.detail) {
             broadcast(project.id, { type: "sync_warning", message: result.detail, failed: false, drift: result.drift });
             persist({ type: "notice", tone: "warn", text: `Sync: ${result.detail}` });
@@ -1867,7 +1929,7 @@ app.post<{
         const turnSink = makeTurnEventSink(projectDir(project.id), (event) => {
           broadcast(project.id, event);
           if (!event.live) persist(event);
-        });
+        }, { workingDiff: (dir) => withProjectLock(project.id, () => git.workingDiff(dir)) });
         await runTurn(
           project,
           promptWithFileMentions(message, mentions),
@@ -1892,7 +1954,7 @@ app.post<{
         const changed = beforeTurn !== await projectFingerprint(projectDir(project.id));
         let turnDiff = "";
         try {
-          turnDiff = await git.workingDiff(projectDir(project.id));
+          turnDiff = await withProjectLock(project.id, () => git.workingDiff(projectDir(project.id)));
           broadcast(project.id, { type: "diff", diff: turnDiff, changed });
         } catch (err: any) {
           broadcast(project.id, { type: "error", message: `diff failed: ${err.message}` });

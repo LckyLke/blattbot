@@ -8,6 +8,7 @@ import { createReadStream } from "node:fs";
 import { z } from "zod";
 import { getProject, projectDir } from "../config.js";
 import { addCitation } from "../citations.js";
+import { withProjectLock } from "../project-lock.js";
 import { getPaperContent, readPaper, formatPaperReadResult, verifyEntry } from "../papers.js";
 import { localSourcePath } from "./evidence.js";
 import { inspectPaperPage, readingCapabilities, renderPdfPage } from "./pdfreading.js";
@@ -48,11 +49,15 @@ export function registerResearchRoutes(
                 "Wait for the writing turn to finish before changing the bibliography.",
             });
           if (method !== "GET") running.add(lock);
-          const result = await fn(id, projectDir(id), body, req);
-          if (bibliography) {
+          if (!bibliography) return await fn(id, projectDir(id), body, req);
+          // Bibliography writes change the working tree: serialize them with
+          // approve/sync/saves (onBibChange runs inside the same lock).
+          const result = await withProjectLock(id, async () => {
+            const result = await fn(id, projectDir(id), body, req);
             await onBibChange(id);
-            indexer?.request(id, projectDir(id));
-          }
+            return result;
+          });
+          indexer?.request(id, projectDir(id));
           return result;
         } catch (error: any) {
           return reply

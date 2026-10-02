@@ -92,7 +92,9 @@ try {
   assert.deepEqual(await resolveFileMentions(project.id, sent.mentions, "removed tokens"), []);
   await input.waitFor();
   await page.getByRole("button", { name: "Send", exact: true }).click();
-  await page.getByText("Fixture: no model request", { exact: true }).waitFor();
+  // The retry adds a second notice; waiting for it (not the first one, still
+  // on screen) makes sure `sent` is the retried request.
+  await page.getByText("Fixture: no model request", { exact: true }).nth(1).waitFor();
   assert.equal(sent.mentions.length, 2, "Retry retains mention metadata");
   await input.fill("@missing-file");
   await page.getByText("No matching files.", { exact: true }).waitFor();

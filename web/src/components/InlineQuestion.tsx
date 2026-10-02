@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { EditorView } from "@codemirror/view";
 import { api } from "../api";
 import Markdown from "./Markdown";
 
@@ -30,17 +29,24 @@ export default function InlineQuestion({ projectId }: { projectId: string }) {
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
+    /** Bumped per capture — a selection read that awaited must not outlive a newer one. */
+    let captures = 0;
     function capture(event: Event) {
       if (event instanceof KeyboardEvent && event.key === "Escape") return;
       const target = event.target instanceof Element ? event.target : null;
       if (!target || target.closest("[data-inline-question], [data-quote-chip]")) return;
       clearTimeout(timer);
-      timer = setTimeout(() => {
+      const current = ++captures;
+      timer = setTimeout(async () => {
         let text = "", context = "", location = "Selected text";
         let rect: { left: number; top: number; bottom: number } | undefined;
         let anchor: Element | null = target;
         const cm = target.closest<HTMLElement>(".cm-editor");
         if (cm) {
+          // CodeMirror ships with the (lazily loaded) Source editor; an editor
+          // on the page means that chunk is loaded, so this resolves at once.
+          const { EditorView } = await import("@codemirror/view");
+          if (current !== captures) return;
           const view = EditorView.findFromDOM(cm);
           const range = view?.state.selection.main;
           if (view && range && !range.empty) {

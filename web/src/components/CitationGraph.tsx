@@ -19,6 +19,8 @@ interface Props {
   projectId: string;
   busy: boolean;
   stamp: number;
+  /** False while the Research panel is hidden — the graph stops polling. */
+  active?: boolean;
   onJump: (file: string, line: number) => void;
   initialKey?: string;
   onOpenLibrary?: (key: string) => void;
@@ -37,6 +39,7 @@ export default function CitationGraph({
   projectId,
   busy,
   stamp,
+  active = true,
   onJump,
   initialKey,
   onOpenLibrary,
@@ -83,7 +86,10 @@ export default function CitationGraph({
       );
     return result;
   }, [projectId]);
+  // Poll only while on screen (every 1.2 s during indexing): a hidden panel
+  // must not keep hitting /graph. Showing it again polls at once.
   useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -105,7 +111,7 @@ export default function CitationGraph({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [load, stamp]);
+  }, [load, stamp, active]);
   const act = async (label: string, fn: () => Promise<void>) => {
     if (lock.current) return;
     lock.current = true;

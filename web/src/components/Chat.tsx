@@ -1,6 +1,6 @@
 import { useFileMentions } from "./FileMentions";
 import { concreteModels, shortModel, useModelList } from "../models";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { parseDiff } from "../diff";
 import {
   CHAT_IMAGE_TYPES,
@@ -10,6 +10,7 @@ import {
   api,
 } from "../api";
 import type { AgentQuestion, ChatMeta, FileMention, ProjectStats, Settings } from "../api";
+import type { ChatAttachment, ChatItem } from "../chat-events";
 import UsageLimits from "./UsageLimits";
 import EffortSelect from "./EffortSelect";
 import SpeedSelect from "./SpeedSelect";
@@ -17,51 +18,8 @@ import DiffView from "./DiffView";
 import Markdown from "./Markdown";
 import { useDialog } from "./Dialog";
 
-/** An image the user attached to a message, as the transcript records it. */
-export interface ChatAttachment {
-  id: string;
-  mime: string;
-}
-
-export type ChatItem =
-  | { kind: "user"; text: string; scope?: string[]; images?: ChatAttachment[] }
-  | { kind: "agent"; text: string; streaming: boolean }
-  | {
-      kind: "tool";
-      id?: string;
-      name: string;
-      detail: string;
-      status: "running" | "done" | "error";
-      /** Unified diff of the file this edit touched — expandable under the chip. */
-      fileDiff?: string;
-      /** One-line result summary of a read-only tool (Grep/Read/search…). */
-      resultHead?: string;
-      input?: string;
-      output?: string;
-    }
-  | { kind: "notice"; tone: "info" | "warn" | "error" | "ok"; text: string; citationGroup?: string; details?: string }
-  | {
-      /** A mid-turn agent question — actionable while pending, collapsed after.
-       *  "stale": restored from a transcript with no resolution but not the
-       *  turn-state's pending question either — likely still waiting server-side
-       *  (reload to answer), so it must not claim the user skipped it. */
-      kind: "question";
-      questionId: string;
-      questions: AgentQuestion[];
-      status: "pending" | "answered" | "dismissed" | "stale";
-      /** Question text → chosen answer (present once answered). */
-      answers?: Record<string, string>;
-    }
-  | {
-      kind: "turn_end";
-      costUsd?: number;
-      durationMs?: number;
-      inputTokens?: number;
-      outputTokens?: number;
-      /** Size of the largest request this turn (≈ the conversation) and the model's window. */
-      contextTokens?: number;
-      contextWindow?: number;
-    };
+// The item model lives with the event reducer that builds it (chat-events.ts).
+export type { ChatAttachment, ChatItem } from "../chat-events";
 
 interface Props {
   items: ChatItem[];
@@ -75,7 +33,8 @@ interface Props {
   /** `images` are the composer's attachments — App uploads them, then sends. */
   /** Resolves false when the message was NOT sent — the composer restores it. */
   onSend: (message: string, mode: string, images: File[], mentions: FileMention[]) => Promise<boolean>;
-  onInterrupt: () => void;
+  /** Ask the server to stop the running turn; rejects when the request failed. */
+  onInterrupt: () => Promise<void>;
   /** Submit the answers of a pending mid-turn question (question text → answer). */
   onAnswerQuestion: (questionId: string, answers: Record<string, string>) => void;
   /** Skip a pending mid-turn question — the agent proceeds without answers. */
@@ -340,6 +299,38 @@ function toolLabel(name: string): string {
   return TOOL_LABELS[name] ?? name.replace(/^mcp__\w+__/, "");
 }
 
+/**
+ * How long a streaming bubble waits between markdown re-parses. Every parse
+ * covers the whole growing text, so the interval grows with it: a parse per
+ * token would make a long answer quadratic, this keeps the total linear-ish.
+ */
+const streamParseMs = (length: number) => Math.min(750, 100 + length / 40);
+
+/**
+ * The text a bubble renders: `text` itself once settled; while streaming, a
+ * snapshot refreshed at most every streamParseMs (trailing edge, so the last
+ * tokens always land).
+ */
+function useStreamingText(text: string, streaming: boolean): string {
+  const [shown, setShown] = useState(text);
+  const lastParse = useRef(0);
+  useEffect(() => {
+    if (!streaming) return;
+    const wait = streamParseMs(text.length) - (Date.now() - lastParse.current);
+    const show = () => {
+      lastParse.current = Date.now();
+      setShown(text);
+    };
+    if (wait <= 0) {
+      show();
+      return;
+    }
+    const timer = setTimeout(show, wait);
+    return () => clearTimeout(timer);
+  }, [text, streaming]);
+  return streaming ? shown : text;
+}
+
 /** Assistant prose: full markdown + math via the shared renderer (Markdown.tsx). */
 function AgentText({
   text,
@@ -354,9 +345,10 @@ function AgentText({
   onLocateQuote: (text: string) => Promise<boolean>;
   onFindInPdf?: (text: string) => void;
 }) {
+  const shown = useStreamingText(text, streaming);
   return (
     <Markdown
-      text={text}
+      text={shown}
       className={`prose-agent ${streaming ? "tex-caret" : ""}`}
       files={link.files}
       onOpenFile={link.onOpenFile}
@@ -493,6 +485,29 @@ export default function Chat({
     setAttachError("");
   }
 
+  // ---- Stop: "sending" while the interrupt request is in flight, "sent"
+  // once the server accepted it and the turn is winding down (its turn_end
+  // clears busy). A failed request must be visible — the agent keeps working.
+  const [stopping, setStopping] = useState<"idle" | "sending" | "sent">("idle");
+  const [stopError, setStopError] = useState("");
+  useEffect(() => {
+    if (!busy) setStopping("idle");
+  }, [busy]);
+  async function stop() {
+    if (stopping === "sending") return;
+    const startedFor = projectId;
+    setStopping("sending");
+    setStopError("");
+    try {
+      await onInterrupt();
+      if (projectIdRef.current === startedFor) setStopping("sent");
+    } catch (err: any) {
+      if (projectIdRef.current !== startedFor) return;
+      setStopping("idle");
+      setStopError(`Could not stop the turn: ${err?.message ?? "request failed"}. It is still running.`);
+    }
+  }
+
   // Attachments are per-project state, like the transcript and the scope: the
   // panel is never remounted on a project switch (panes stay mounted so drafts
   // and scroll survive), so without this a figure staged in project A would be
@@ -503,7 +518,10 @@ export default function Chat({
     setPending([]);
     setAttachError("");
     setDragging(false);
+    setStopping("idle");
+    setStopError("");
   }, [projectId]);
+
   // Stable identity so the memoized Markdown bubbles don't re-render per keystroke.
   const mdLink = useMemo<MdLinkProps>(() => ({ files, onOpenFile }), [files, onOpenFile]);
 
@@ -592,9 +610,9 @@ export default function Chat({
           </div>
         )}
         <div className="mx-auto flex max-w-2xl flex-col gap-3">
-          {items.map((item, i) => (
+          {items.map((item) => (
             <ChatBubble
-              key={i}
+              key={item.uid}
               item={item}
               projectId={projectId}
               onAnswerQuestion={onAnswerQuestion}
@@ -687,6 +705,11 @@ export default function Chat({
               {attachError}
             </p>
           )}
+          {stopError && (
+            <p role="alert" className="mx-auto mb-2 max-w-2xl text-[11px] text-pencil">
+              {stopError}
+            </p>
+          )}
           <div className="relative">
             {mentions.panel}
             <input
@@ -762,10 +785,20 @@ export default function Chat({
                 {busy ? (
                   <button
                     type="button"
-                    onClick={onInterrupt}
-                    aria-label="Stop"
-                    title="Stop generating"
-                    className="chat-composer-send flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-paper text-ink transition-colors hover:bg-paper-dim"
+                    onClick={() => void stop()}
+                    disabled={stopping === "sending"}
+                    aria-label={stopping === "idle" ? "Stop" : "Stopping"}
+                    aria-busy={stopping !== "idle"}
+                    title={
+                      stopping === "sending"
+                        ? "Asking BlattBot to stop…"
+                        : stopping === "sent"
+                          ? "Stopping — waiting for the turn to wind down"
+                          : "Stop generating"
+                    }
+                    className={`chat-composer-send flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-paper text-ink transition-colors hover:bg-paper-dim disabled:cursor-default ${
+                      stopping === "idle" ? "" : "working-dot"
+                    }`}
                   >
                     <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" fill="currentColor"><rect x="5" y="5" width="10" height="10" rx="1.5" /></svg>
                   </button>
@@ -854,7 +887,7 @@ function ModelChip({
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
           <div
-            className="absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-lg border border-rule bg-ink-2 py-1 shadow-xl"
+            className="model-chip-popover absolute bottom-full right-0 z-20 mb-1.5 w-72 rounded-lg border border-rule bg-ink-2 py-1 shadow-xl"
             onKeyDown={(e) => {
               // Keyboard escape hatch — the backdrop is mouse-only.
               if (e.key === "Escape") {
@@ -1000,7 +1033,11 @@ function UserImages({ projectId, images }: { projectId: string; images: ChatAtta
   );
 }
 
-function ChatBubble({
+/**
+ * Memoized: every prop but `item` is stable, and settled items keep their
+ * object identity, so a streamed token re-renders only the growing bubble.
+ */
+const ChatBubble = memo(function ChatBubble({
   item,
   projectId,
   onAnswerQuestion,
@@ -1093,7 +1130,7 @@ function ChatBubble({
       );
     }
   }
-}
+});
 
 /** Every tool call exposes its recorded input/result alongside any edit diff. */
 function ToolChip({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {

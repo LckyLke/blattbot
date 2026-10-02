@@ -73,7 +73,7 @@ export interface TurnEventSinkOptions {
 export interface TurnEventSink {
   /** The event sink to pass to runTurn. */
   sink: (event: AgentEventLike) => void;
-  /** Cancel any pending live-diff timer and wait for in-flight enrichment. */
+  /** Cancel any pending live-diff timer and wait for in-flight diffs and enrichment. */
   close(): Promise<void>;
 }
 
@@ -109,6 +109,8 @@ export function makeTurnEventSink(
   let closed = false;
   /** Chain enrichments so edit results keep their relative order. */
   let pending: Promise<void> = Promise.resolve();
+  /** The live working diff currently being computed, if any. */
+  let liveDiff: Promise<void> = Promise.resolve();
 
   function clearTimer() {
     if (timer) {
@@ -123,7 +125,7 @@ export function makeTurnEventSink(
     timer = setTimeout(() => {
       timer = null;
       if (closed) return;
-      void workingDiff(dir)
+      liveDiff = workingDiff(dir)
         .then((diff) => {
           if (!closed) emit({ type: "diff", diff, live: true });
         })
@@ -184,7 +186,9 @@ export function makeTurnEventSink(
     async close() {
       closed = true;
       clearTimer();
-      await pending;
+      // A live diff already running still holds git (and the project lock):
+      // the caller's authoritative diff must not start until it is done.
+      await Promise.all([pending, liveDiff]);
     },
   };
 }

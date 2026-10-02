@@ -151,7 +151,11 @@ try {
   await input.fill("");
   assert((await input.boundingBox())!.height <= 80);
   await page.setViewportSize({ width: 1050, height: 850 });
-  assert(await composer.evaluate(el => el.scrollWidth <= el.clientWidth), "Composer must fit a narrow pane");
+  // The pane split re-clamps to the new window width over the next frames;
+  // judge the settled layout (a real overflow still fails after the wait).
+  const fits = () => composer.evaluate(el => el.scrollWidth <= el.clientWidth);
+  for (let i = 0; i < 50 && !(await fits()); i++) await page.waitForTimeout(100);
+  assert(await fits(), "Composer must fit a narrow pane");
   const usageRect = await composer.getByRole("button", { name: "Usage limits", exact: true }).boundingBox();
   const sendRect = await composer.getByRole("button", { name: "Send", exact: true }).boundingBox();
   assert(usageRect && sendRect && usageRect.x + usageRect.width <= sendRect.x, "Usage control must not overlap Send at narrow widths");

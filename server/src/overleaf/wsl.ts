@@ -88,22 +88,6 @@ export function windowsExe(relative: string): string | null {
   return null;
 }
 
-/** Run a Windows executable through interop and return its stdout. */
-export function runWindowsExe(relative: string, args: string[], timeoutMs = 15_000): string {
-  const exe = windowsExe(relative);
-  if (!exe) throw new Error(`${relative} not found under any mounted Windows drive`);
-  const res = spawnSync(exe, args, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: timeoutMs,
-    // A Linux-side cwd makes cmd.exe complain about UNC paths; start on the drive.
-    cwd: windowsDrives()[0],
-  });
-  if (res.error) throw res.error;
-  if (res.status !== 0) throw new Error(`${relative} exited with ${res.status}`);
-  return res.stdout;
-}
-
 /**
  * Open a URL in the Windows default browser. Tries wslu's wslview (honours the
  * user's setup), then rundll32's URL handler, then `cmd /c start`.

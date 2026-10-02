@@ -47,6 +47,7 @@ const statusLabel: Record<string, string> = {
 export default function PaperLibrary({
   projectId,
   stamp,
+  active = true,
   initialKey,
   open,
   onOpenGraph,
@@ -54,6 +55,8 @@ export default function PaperLibrary({
 }: {
   projectId: string;
   stamp: number;
+  /** False while the Research panel is hidden — the library stops polling. */
+  active?: boolean;
   initialKey?: string;
   open: (key: string, page: number, terms?: string[]) => void;
   onOpenGraph: (key: string) => void;
@@ -85,17 +88,22 @@ export default function PaperLibrary({
   };
   useEffect(() => {
     alive.current = true;
-    void load().catch((e) => {
-      if (alive.current) setError(e.message);
-    });
-    const timer = setInterval(() => void load().catch(() => {}), 5000);
     return () => {
       alive.current = false;
       loadVersion.current++;
       sequence.current++;
-      clearInterval(timer);
     };
   }, [projectId, stamp]);
+  // Load, then keep the library fresh — only while it is on screen: a hidden
+  // Research panel does not poll, and showing it again reloads at once.
+  useEffect(() => {
+    if (!active) return;
+    void load().catch((e) => {
+      if (alive.current) setError(e.message);
+    });
+    const timer = setInterval(() => void load().catch(() => {}), 5000);
+    return () => clearInterval(timer);
+  }, [projectId, stamp, active]);
   const sourceRevision = JSON.stringify(
     data?.library.sources.map((s) => [s.key, s.revision]),
   );

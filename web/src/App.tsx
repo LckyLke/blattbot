@@ -1,14 +1,27 @@
+import { applyChatEvent, liveChatUid, replayChatEvents, type ChatItem, type ChatItemData } from "./chat-events";
 import { appendChatItem } from "./citation-notices";
 import InlineQuestion from "./components/InlineQuestion";
 import { appUrl } from "./urls";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  Component,
+  Suspense,
+  lazy,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { modelSettingPatch } from "./models";
 import {
   api,
   ensureAuth,
   ApproveConflictError,
   type Account,
-  type AgentQuestion,
   type ChatMeta,
   type FileMention,
   type ChatTranscriptEvent,
@@ -24,17 +37,78 @@ import { parseDiff } from "./diff";
 import { DialogProvider, useDialog } from "./components/Dialog";
 import Sidebar from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
-import SettingsModal from "./components/SettingsModal";
 import ProjectSettings from "./components/ProjectSettings";
-import Chat, { type ChatItem } from "./components/Chat";
-import ProofPanel from "./components/ProofPanel";
-import PdfPanel from "./components/PdfPanel";
-import RefsPanel from "./components/RefsPanel";
-import ResearchPanel from "./components/ResearchPanel";
-import SourcePanel from "./components/SourcePanel";
+import ChatView from "./components/Chat";
 import { countDrafts, subscribeDrafts } from "./drafts";
 import { useProjectSync } from "./useProjectSync";
 import ProjectSyncNotice from "./components/ProjectSyncNotice";
+
+/**
+ * A panel module, loaded on first use and memoized: App hands every panel
+ * stable props (useCallback handlers, primitive flags), so a re-render of the
+ * shell — each streamed chat token causes one — skips all of them.
+ */
+function lazyPanel<P extends object>(load: () => Promise<{ default: ComponentType<P> }>) {
+  return lazy(() => load().then((m) => ({ default: memo(m.default) })));
+}
+
+// The heavy panels (pdf.js, CodeMirror, sigma + graphology) and the settings
+// modal are split out of the main bundle; the chat is the default view and
+// stays in it.
+const ProofPanel = lazyPanel(() => import("./components/ProofPanel"));
+const PdfPanel = lazyPanel(() => import("./components/PdfPanel"));
+const RefsPanel = lazyPanel(() => import("./components/RefsPanel"));
+const ResearchPanel = lazyPanel(() => import("./components/ResearchPanel"));
+const SourcePanel = lazyPanel(() => import("./components/SourcePanel"));
+const SettingsModal = lazy(() => import("./components/SettingsModal"));
+const Chat = memo(ChatView);
+
+/** Shown while a panel's chunk loads. */
+function PanelLoading({ label }: { label: string }) {
+  return (
+    <div role="status" className="flex h-full items-center justify-center font-sans text-[12px] text-graphite">
+      <span className="working-dot mr-2 inline-block h-1.5 w-1.5 rounded-full bg-graphite" />
+      Loading {label}…
+    </div>
+  );
+}
+/** Until the project detail loads: a stable [] keeps the memoized panels from re-rendering. */
+const NO_FILES: string[] = [];
+
+/** How browsers word a dynamic import whose file is gone (Chromium, Firefox, Safari). */
+const CHUNK_LOAD_ERROR = /dynamically imported module|Importing a module script failed/i;
+
+/**
+ * Contains a panel that fails to load or render. A tab left open across a
+ * BlattBot upgrade asks for chunk files the new build no longer has; without
+ * a boundary that error would unmount the whole app. The rest keeps working,
+ * and a reload (still behind the unsaved-work guard) fetches the new build.
+ */
+class PanelBoundary extends Component<{ label: string; children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    return (
+      <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 px-8 py-6 text-center font-sans text-[13px] text-graphite">
+        <p className="max-w-sm leading-relaxed">
+          {CHUNK_LOAD_ERROR.test(error.message)
+            ? `Couldn't load ${this.props.label} — BlattBot was probably updated since this page was opened.`
+            : `${this.props.label} ran into an error: ${error.message}`}
+        </p>
+        <button
+          onClick={() => location.reload()}
+          className="rounded-lg border border-rule px-3 py-1.5 text-[12.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf"
+        >
+          Reload
+        </button>
+      </div>
+    );
+  }
+}
 
 type View = "dashboard" | "project";
 
@@ -86,166 +160,6 @@ function isNewerVersion(current: string, latest: string): boolean {
 }
 
 /**
- * Rebuild the chat view from a persisted transcript. Mirrors handleEvent's
- * live mapping: user_message → user bubble (with scope), text_final → settled
- * agent bubble, tool_use + tool_result → resolved tool chip (with fileDiff),
- * question (+ answered/dismissed) → question card, turn_end → marker (or
- * interrupt notice), notice → notice. A question stays pending until its
- * answered/dismissed event or its turn's end collapses it (mirroring the live
- * handler). `pendingQuestionId` is the turn-state's still-unanswered question
- * (if any): its card restores actionable; a question with NO resolution and NO
- * turn_end that is not the pending one is in an unknown state (e.g. the
- * turn-state snapshot predates it) — it renders as stale ("reload to
- * answer"), never as skipped.
- */
-function itemsFromEvents(
-  events: ChatTranscriptEvent[],
-  pendingQuestionId?: string | null,
-): ChatItem[] {
-  const items: ChatItem[] = [];
-  const TONES = ["info", "warn", "error", "ok"] as const;
-  for (const ev of events) {
-    switch (ev?.type) {
-      case "user_message": {
-        const scope = Array.isArray(ev.scope)
-          ? (ev.scope as unknown[]).filter((s): s is string => typeof s === "string")
-          : [];
-        // Attachments persist as {id, mime}; the bubble reloads them by id.
-        const images = Array.isArray(ev.attachments)
-          ? (ev.attachments as unknown[]).flatMap((a) =>
-              a && typeof (a as { id?: unknown }).id === "string"
-                ? [{ id: String((a as { id: string }).id), mime: String((a as { mime?: string }).mime ?? "") }]
-                : [],
-            )
-          : [];
-        items.push({
-          kind: "user",
-          text: String(ev.text ?? ""),
-          ...(scope.length > 0 ? { scope } : {}),
-          ...(images.length > 0 ? { images } : {}),
-        });
-        break;
-      }
-      case "text_final":
-        items.push({ kind: "agent", text: String(ev.text ?? ""), streaming: false });
-        break;
-      case "tool_use":
-        items.push({
-          kind: "tool",
-          id: typeof ev.id === "string" ? ev.id : undefined,
-          name: String(ev.name ?? ""),
-          detail: String(ev.detail ?? ""),
-          input: typeof ev.input === "string" ? ev.input : undefined,
-          status: "running",
-        });
-        break;
-      case "tool_result": {
-        for (let i = items.length - 1; i >= 0; i--) {
-          const it = items[i];
-          if (it.kind === "tool" && it.id !== undefined && it.id === ev.id) {
-            items[i] = {
-              ...it,
-              status: ev.isError ? "error" : "done",
-              output: typeof ev.output === "string" ? ev.output : undefined,
-              ...(typeof ev.fileDiff === "string" && ev.fileDiff.trim()
-                ? { fileDiff: ev.fileDiff }
-                : {}),
-              ...(typeof ev.resultHead === "string" && ev.resultHead
-                ? { resultHead: ev.resultHead }
-                : {}),
-            };
-            break;
-          }
-        }
-        break;
-      }
-      case "question":
-        items.push({
-          kind: "question",
-          questionId: String(ev.questionId ?? ""),
-          questions: Array.isArray(ev.questions) ? (ev.questions as AgentQuestion[]) : [],
-          // Later events (answered/dismissed/turn_end) or the final sweep
-          // below decide how it settles.
-          status: "pending",
-        });
-        break;
-      case "question_answered": {
-        for (let i = items.length - 1; i >= 0; i--) {
-          const it = items[i];
-          if (it.kind === "question" && it.questionId === ev.questionId) {
-            items[i] = {
-              ...it,
-              status: "answered",
-              answers:
-                ev.answers && typeof ev.answers === "object"
-                  ? (ev.answers as Record<string, string>)
-                  : undefined,
-            };
-            break;
-          }
-        }
-        break;
-      }
-      case "question_dismissed": {
-        for (let i = items.length - 1; i >= 0; i--) {
-          const it = items[i];
-          if (it.kind === "question" && it.questionId === ev.questionId) {
-            items[i] = { ...it, status: "dismissed" };
-            break;
-          }
-        }
-        break;
-      }
-      case "turn_end":
-        // The turn's end collapses any question it left unanswered — the same
-        // pending → dismissed sweep the live handler applies.
-        for (let i = 0; i < items.length; i++) {
-          const it = items[i];
-          if (it.kind === "question" && it.status === "pending") {
-            items[i] = { ...it, status: "dismissed" };
-          }
-        }
-        if (ev.interrupted) {
-          items.push({ kind: "notice", tone: "warn", text: "Turn interrupted." });
-        } else {
-          items.push({
-            kind: "turn_end",
-            costUsd: typeof ev.costUsd === "number" ? ev.costUsd : undefined,
-            durationMs: typeof ev.durationMs === "number" ? ev.durationMs : undefined,
-            contextTokens: typeof ev.contextTokens === "number" ? ev.contextTokens : undefined,
-            contextWindow: typeof ev.contextWindow === "number" ? ev.contextWindow : undefined,
-            inputTokens: typeof ev.inputTokens === "number" ? ev.inputTokens : undefined,
-            outputTokens: typeof ev.outputTokens === "number" ? ev.outputTokens : undefined,
-          });
-        }
-        break;
-      case "notice":
-        items.push({
-          kind: "notice",
-          tone: TONES.includes(ev.tone as (typeof TONES)[number])
-            ? (ev.tone as (typeof TONES)[number])
-            : "info",
-          text: String(ev.text ?? ""),
-          citationGroup: typeof ev.citationGroup === "string" ? ev.citationGroup : undefined,
-          details: typeof ev.details === "string" ? ev.details : undefined,
-        });
-        break;
-      default:
-        break;
-    }
-  }
-  // A question still pending here has no resolution event and no turn_end:
-  // the turn is (as far as the transcript knows) still blocked on it. Only
-  // THE turn-state's pending question restores actionable; any other is in an
-  // unknown state — mark it stale ("reload to answer"), never skipped.
-  return items.reduce<ChatItem[]>((all, item) => appendChatItem(all, item), []).map((it) =>
-    it.kind === "question" && it.status === "pending" && it.questionId !== pendingQuestionId
-      ? { ...it, status: "stale" as const }
-      : it,
-  );
-}
-
-/**
  * Root: the dialog provider mounts above the shell so the shell itself (not
  * only its children) can confirm — e.g. leaving with unapproved changes.
  */
@@ -259,8 +173,13 @@ export default function App() {
 
 function AppShell() {
   const [mobileSidebar, setMobileSidebar] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  // null = not loaded yet. An empty list means "no projects"; it must never
+  // stand in for "the server did not answer" — the dashboard would greet a
+  // returning user with the first-run account setup.
+  const [projects, setProjects] = useState<Project[] | null>(null);
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  /** Why the last projects/accounts load failed (null after a good one). */
+  const [listError, setListError] = useState<string | null>(null);
   const [view, setView] = useState<View>("dashboard");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
@@ -302,6 +221,9 @@ function AppShell() {
   const [remoteStamp, setRemoteStamp] = useState(0);
   const [pdfSource, setPdfSource] = useState<"local" | "remote">("local");
   const [sourceStamp, setSourceStamp] = useState(0);
+  // Bumped at every turn end: agent tools can change References/Research
+  // state (an audit, a paper added to the library) without touching a file.
+  const [turnStamp, setTurnStamp] = useState(0);
   const [panes, setPanes] = useState<Panes>(loadPanes);
   // A newer published BlattBot exists — the Sidebar footer links the release.
   const [update, setUpdate] = useState<{ current: string; latest: string } | null>(null);
@@ -333,6 +255,22 @@ function AppShell() {
   paneOwner.current[panes.left] = physOnLeft;
   paneOwner.current[panes.right] = physOnRight;
 
+  // Which panels have been on screen since this project was opened. A panel
+  // mounts the first time it is shown and then stays mounted (hidden) as
+  // above, so opening a project no longer loads the PDF, builds the citation
+  // graph or fetches the references of panels nobody has looked at. The chat
+  // survives a direct project switch (its composer draft carries over).
+  const shownFor = view === "project" ? selectedId : null;
+  const shownViews = useRef<{ project: string | null; views: Set<PaneView> }>({ project: null, views: new Set() });
+  if (shownViews.current.project !== shownFor) {
+    shownViews.current = {
+      project: shownFor,
+      views: new Set(shownViews.current.views.has("chat") ? (["chat"] as const) : []),
+    };
+  }
+  shownViews.current.views.add(panes.left);
+  shownViews.current.views.add(panes.right);
+
   useEffect(() => {
     localStorage.setItem("blattbot.paneLeft.v2", panes.left);
     localStorage.setItem("blattbot.paneRight.v2", panes.right);
@@ -352,9 +290,19 @@ function AppShell() {
   // Debounce for mid-turn recompiles while the PDF pane is visible.
   const liveCompileTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const refreshProjects = useCallback(async () => {
-    setProjects(await api.projects());
-    api.accounts().then(setAccounts).catch(() => setAccounts([]));
+  /**
+   * Reload the project and account lists. A failure keeps whatever was
+   * loaded before (null on a first load) and reports it — the dashboard
+   * shows the error with a retry instead of an empty, first-run hub.
+   * Resolves the fresh project list, or null when it could not be loaded.
+   */
+  const refreshProjects = useCallback(async (): Promise<Project[] | null> => {
+    const [list, accts] = await Promise.allSettled([api.projects(), api.accounts()]);
+    if (list.status === "fulfilled") setProjects(list.value);
+    if (accts.status === "fulfilled") setAccounts(accts.value);
+    const failed = [list, accts].find((r) => r.status === "rejected");
+    setListError(failed ? String(failed.reason?.message ?? failed.reason) : null);
+    return list.status === "fulfilled" ? list.value : null;
   }, []);
 
   // Captured once, before the persist effect below can overwrite it with the
@@ -363,8 +311,8 @@ function AppShell() {
 
   useEffect(() => {
     void (async () => {
-      const list = await api.projects().catch(() => [] as Project[]);
-      setProjects(list);
+      const list = await refreshProjects();
+      if (!list) return;
       // Restore where the user last was: the dashboard stays the dashboard;
       // otherwise reopen the last project (when it still exists).
       const last = localStorage.getItem("blattbot.selectedProject");
@@ -373,7 +321,6 @@ function AppShell() {
         setView("project");
       }
     })();
-    api.accounts().then(setAccounts).catch(() => setAccounts([]));
     api.health().then((h) => setEngine(h.engine)).catch(() => setEngine(null));
     api.settings().then(setAppSettings).catch(() => setAppSettings(null));
     api
@@ -413,8 +360,28 @@ function AppShell() {
     }
   }, [acceptCompile]);
 
-  const pushChat = useCallback((item: ChatItem) => {
-    setChat((prev) => appendChatItem(prev, item));
+  const pushChat = useCallback((item: ChatItemData) => {
+    const uid = liveChatUid();
+    setChat((prev) => appendChatItem(prev, { ...item, uid }));
+  }, []);
+
+  // Streamed text is buffered and applied at most once per animation frame:
+  // a setChat per token re-rendered the whole shell for every few characters.
+  const pendingDelta = useRef("");
+  const deltaFrame = useRef(0);
+  const flushDelta = useCallback(() => {
+    cancelAnimationFrame(deltaFrame.current);
+    deltaFrame.current = 0;
+    const text = pendingDelta.current;
+    if (!text) return;
+    pendingDelta.current = "";
+    const uid = liveChatUid();
+    setChat((prev) => applyChatEvent(prev, { type: "text_delta", text }, { uid }));
+  }, []);
+  const dropDelta = useCallback(() => {
+    cancelAnimationFrame(deltaFrame.current);
+    deltaFrame.current = 0;
+    pendingDelta.current = "";
   }, []);
 
   // Replace the chat with a restored transcript WITHOUT losing live question
@@ -453,7 +420,7 @@ function AppShell() {
   }, []);
 
   const selected = useMemo(
-    () => projects.find((p) => p.id === selectedId) ?? null,
+    () => projects?.find((p) => p.id === selectedId) ?? null,
     [projects, selectedId],
   );
   const selectedRef = useRef(selected);
@@ -461,132 +428,51 @@ function AppShell() {
 
   const handleEvent = useCallback(
     (ev: any) => {
+      if (!ev || typeof ev.type !== "string") return;
+      if (ev.type === "text_delta") {
+        setActivity("streaming");
+        pendingDelta.current += String(ev.text ?? "");
+        if (!deltaFrame.current) deltaFrame.current = requestAnimationFrame(flushDelta);
+        return;
+      }
+      // Any other event first lands the buffered text, so the chat keeps the
+      // server's event order (a text_final must replace the streamed bubble).
+      flushDelta();
+      // The chat items: the same mapping a restored transcript goes through.
+      // Events that don't touch the chat return the same array (no render).
+      const uid = liveChatUid();
+      const projectKind = selectedRef.current?.kind;
+      setChat((prev) => applyChatEvent(prev, ev, { uid, projectKind }));
+
+      // Live-only effects: activity, busy state, the diff, compiles.
       switch (ev.type) {
         case "turn_start":
           setBusy(true);
           setActivity("thinking");
           break;
         case "thinking":
-          setActivity("thinking");
-          break;
-        case "text_delta":
-          setActivity("streaming");
-          setChat((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.kind === "agent" && last.streaming) {
-              const next = prev.slice(0, -1);
-              next.push({ ...last, text: last.text + ev.text });
-              return next;
-            }
-            return [...prev, { kind: "agent", text: ev.text, streaming: true }];
-          });
-          break;
         case "text_final":
+        case "tool_result":
+        case "question_answered":
+        case "question_dismissed":
+          // The model reads the result / the answer next — thinking time again.
           setActivity("thinking");
-          setChat((prev) => {
-            const last = prev[prev.length - 1];
-            if (last?.kind === "agent" && last.streaming) {
-              const next = prev.slice(0, -1);
-              next.push({ kind: "agent", text: ev.text, streaming: false });
-              return next;
-            }
-            return [...prev, { kind: "agent", text: ev.text, streaming: false }];
-          });
           break;
         case "tool_use":
           setActivity("tool");
-          setChat((prev) => [
-            ...prev,
-            { kind: "tool", id: ev.id, name: ev.name, detail: ev.detail ?? "", input: ev.input, status: "running" },
-          ]);
-          break;
-        case "tool_result":
-          // The model reads the result next — that's thinking time again.
-          setActivity("thinking");
-          setChat((prev) =>
-            prev.map((item) =>
-              item.kind === "tool" && item.id === ev.id
-                ? {
-                    ...item,
-                    status: ev.isError ? "error" : "done",
-                    output: typeof ev.output === "string" ? ev.output : undefined,
-                    ...(typeof ev.fileDiff === "string" && ev.fileDiff.trim()
-                      ? { fileDiff: ev.fileDiff }
-                      : {}),
-                    ...(typeof ev.resultHead === "string" && ev.resultHead
-                      ? { resultHead: ev.resultHead }
-                      : {}),
-                  }
-                : item,
-            ),
-          );
           break;
         case "question":
           // The turn is blocked on the user now — no thinking shimmer.
           setActivity("idle");
-          setChat((prev) => [
-            ...prev,
-            {
-              kind: "question",
-              questionId: String(ev.questionId ?? ""),
-              questions: Array.isArray(ev.questions) ? ev.questions : [],
-              status: "pending",
-            },
-          ]);
-          break;
-        case "question_answered":
-          setActivity("thinking");
-          setChat((prev) =>
-            prev.map((item) =>
-              item.kind === "question" && item.questionId === ev.questionId
-                ? { ...item, status: "answered", answers: ev.answers ?? item.answers }
-                : item,
-            ),
-          );
-          break;
-        case "question_dismissed":
-          setActivity("thinking");
-          setChat((prev) =>
-            prev.map((item) =>
-              item.kind === "question" && item.questionId === ev.questionId
-                ? { ...item, status: "dismissed" }
-                : item,
-            ),
-          );
           break;
         case "turn_end":
           turnEndSeq.current++;
           setBusy(false);
           setActivity("idle");
+          setTurnStamp((s) => s + 1);
           // The server decides whether this turn changed files and needs a build.
           clearTimeout(liveCompileTimer.current);
           if (selectedId) void refreshChats(selectedId);
-          setChat((prev) => {
-            // Close any bubble left streaming (e.g. after an interrupt) and
-            // collapse question cards the turn's end left unanswered.
-            const closed = prev.map((item) =>
-              item.kind === "agent" && item.streaming
-                ? { ...item, streaming: false }
-                : item.kind === "question" && item.status === "pending"
-                  ? { ...item, status: "dismissed" as const }
-                  : item,
-            );
-            if (ev.interrupted) {
-              return [...closed, { kind: "notice", tone: "warn", text: "Turn interrupted." }];
-            }
-            return [
-              ...closed,
-              {
-                kind: "turn_end",
-                costUsd: ev.costUsd,
-                durationMs: ev.durationMs,
-                contextTokens: ev.contextTokens,
-                contextWindow: ev.contextWindow,
-                inputTokens: ev.inputTokens,
-                outputTokens: ev.outputTokens,
-              },
-            ];
-          });
           if (selectedId) void refreshDetail(selectedId);
           break;
         case "diff": {
@@ -623,54 +509,18 @@ function AppShell() {
           break;
         }
         case "sync_warning":
-          pushChat({ kind: "notice", tone: "warn", text: `Sync: ${ev.message}` });
           if (ev.failed || ev.drift?.length || /session.*(?:expired|rejected)/i.test(String(ev.message))) {
             syncWarningRef.current(String(ev.message), ev.drift);
           }
-          break;
-        // A backend-side notice (e.g. the images could not be sent to this
-        // endpoint). The route persists it too, so itemsFromEvents replays it.
-        case "notice":
-          pushChat({
-            kind: "notice",
-            tone: ["info", "warn", "error", "ok"].includes(ev.tone) ? ev.tone : "info",
-            text: String(ev.text ?? ""),
-            citationGroup: typeof ev.citationGroup === "string" ? ev.citationGroup : undefined,
-            details: typeof ev.details === "string" ? ev.details : undefined,
-          });
-          break;
-        case "error":
-          pushChat({ kind: "notice", tone: "error", text: ev.message });
           break;
         case "approved":
           setDiff("");
           setApproveConflicts(null);
           setSourceStamp((s) => s + 1);
-          pushChat({
-            kind: "notice",
-            tone: "ok",
-            text:
-              selectedRef.current?.kind === "local"
-                ? "Committed locally."
-                : ev.pushed
-                  ? "Changes pushed to Overleaf."
-                  : "Nothing to push.",
-          });
-          // Safety-relevant push warnings must reach the user: the OT-fallback
-          // notice (comments/tracked changes on a doc may not survive), the
-          // forced-overwrite backup location, files to delete manually, …
-          if (Array.isArray(ev.warnings) && ev.warnings.length > 0) {
-            pushChat({ kind: "notice", tone: "warn", text: ev.warnings.join("\n") });
-          }
           // The push also absorbed collaborator edits to files we hadn't
           // touched — the tree changed beyond what was reviewed.
           if (Array.isArray(ev.absorbedRemote) && ev.absorbedRemote.length > 0) {
             dirtySinceCompile.current = true;
-            pushChat({
-              kind: "notice",
-              tone: "info",
-              text: `Also picked up Overleaf changes to: ${ev.absorbedRemote.join(", ")}`,
-            });
           }
           break;
         case "rejected":
@@ -679,13 +529,12 @@ function AppShell() {
           // The working tree just reverted — the last PDF no longer matches it.
           dirtySinceCompile.current = true;
           setSourceStamp((s) => s + 1);
-          pushChat({ kind: "notice", tone: "info", text: "Changes discarded." });
           break;
         default:
           break;
       }
     },
-    [pushChat, refreshDetail, refreshChats, selectedId, acceptCompile],
+    [flushDelta, refreshDetail, refreshChats, selectedId, acceptCompile],
   );
 
   const handleEventRef = useRef(handleEvent);
@@ -711,13 +560,23 @@ function AppShell() {
     setActivity("idle");
     setProjSettings(null);
     setProjSettingsOpen(false);
+    // Streamed text still buffered for the previous project must not land here.
+    dropDelta();
     // The previous project's file list must not linger under the new id —
     // the Source panel picks its file from this list.
     setDetail(null);
     void refreshDetail(selectedId);
+
+    // Stale-async guard for the effect's fetches (the same pattern as the
+    // projectIdRef in VerifyOnOverleaf): once the user switches projects, a
+    // slow response for the OLD project must not write its diff, settings,
+    // chats, transcript, or — worst — a sticky busy=true into the NEW view.
+    let cancelled = false;
+
     api
       .diff(selectedId)
       .then((d) => {
+        if (cancelled) return;
         setDiff(d.diff);
         // Pending changes right at open: we can't know whether the server's
         // last compile already includes them — treat the preview as stale so
@@ -725,18 +584,15 @@ function AppShell() {
         if (d.diff.trim()) dirtySinceCompile.current = true;
       })
       .catch(() => {});
-    api.projectSettings(selectedId).then(setProjSettings).catch(() => setProjSettings(null));
-
-    // Stale-async guard for the effect's fetches (the same pattern as the
-    // projectIdRef in VerifyOnOverleaf): once the user switches projects, a
-    // slow response for the OLD project must not write its chats, transcript,
-    // or — worst — a sticky busy=true into the NEW project's view.
-    let cancelled = false;
+    api
+      .projectSettings(selectedId)
+      .then((ps) => { if (!cancelled) setProjSettings(ps); })
+      .catch(() => { if (!cancelled) setProjSettings(null); });
 
     /** The restored chat: transcript items + the turn state's pending question. */
-    const restoredItems = (events: ChatTranscriptEvent[], d: ProjectDetail): ChatItem[] => {
+    const restoredItems = (events: ChatTranscriptEvent[], chatId: string, d: ProjectDetail): ChatItem[] => {
       const pending = d.turnActive ? d.pendingQuestion : null;
-      const items = itemsFromEvents(events, pending?.questionId ?? null);
+      const items = replayChatEvents(events, chatId, pending?.questionId ?? null);
       // The `question` event's persistence is best-effort — synthesize the
       // actionable card from the turn state when the transcript lacks it.
       if (
@@ -744,6 +600,7 @@ function AppShell() {
         !items.some((it) => it.kind === "question" && it.questionId === pending.questionId)
       ) {
         items.push({
+          uid: `q:${pending.questionId}`,
           kind: "question",
           questionId: pending.questionId,
           questions: pending.questions,
@@ -770,7 +627,7 @@ function AppShell() {
         // A reload mid-turn: reflect the running turn (composer locks, Stop
         // shows) and re-arm the still-pending question card, if any.
         if (d.turnActive) setBusy(true);
-        applyRestoredChat(restoredItems(events, d));
+        applyRestoredChat(restoredItems(events, r.activeChatId, d));
       } catch {
         /* older server or fetch hiccup — start with an empty chat */
       }
@@ -823,7 +680,7 @@ function AppShell() {
                 if (cancelled) return;
                 setBusy(d.turnActive);
                 if (!d.turnActive) setActivity("idle");
-                applyRestoredChat(restoredItems(events, d));
+                applyRestoredChat(restoredItems(events, r.activeChatId, d));
               } catch {
                 /* keep the current view */
               }
@@ -855,7 +712,7 @@ function AppShell() {
       }
       wsRef.current = null;
     };
-  }, [selectedId, refreshDetail, applyRestoredChat]);
+  }, [selectedId, refreshDetail, applyRestoredChat, dropDelta]);
 
   const dialog = useDialog();
 
@@ -1013,8 +870,10 @@ function AppShell() {
     [selectedId, pushChat, refreshChats],
   );
 
+  // Rejects when the request fails — the Stop button shows it; the turn is
+  // then still running, and silence would suggest it had stopped.
   const interrupt = useCallback(async () => {
-    if (selectedId) await api.interrupt(selectedId).catch(() => {});
+    if (selectedId) await api.interrupt(selectedId);
   }, [selectedId]);
 
   // Answer a mid-turn question. The card collapses optimistically; the server
@@ -1102,7 +961,7 @@ function AppShell() {
         const { events } = await api.chatTranscript(id, chatId);
         if (selectedRef.current?.id !== id) return;
         setActiveChatId(chatId);
-        setChat(itemsFromEvents(events));
+        setChat(replayChatEvents(events, chatId));
       } catch (err: any) {
         if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
       } finally { chatNavigationRef.current = false; setChatNavigation(false); }
@@ -1138,7 +997,7 @@ function AppShell() {
         if (selectedRef.current?.id !== id) return;
         setChats(r.chats);
         setActiveChatId(r.activeChatId);
-        if (transcript) setChat(itemsFromEvents(transcript.events));
+        if (transcript) setChat(replayChatEvents(transcript.events, r.activeChatId));
       } catch (err: any) {
         if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
       } finally { chatNavigationRef.current = false; setChatNavigation(false); }
@@ -1152,7 +1011,13 @@ function AppShell() {
         const settings = await api.settings();
         setAppSettings(await api.saveSettings(modelSettingPatch(settings.backend, model)));
         // A global change shifts the project's effective model too (unless overridden).
-        if (selectedId) api.projectSettings(selectedId).then(setProjSettings).catch(() => {});
+        const id = selectedId;
+        if (id) {
+          api
+            .projectSettings(id)
+            .then((ps) => { if (selectedRef.current?.id === id) setProjSettings(ps); })
+            .catch(() => {});
+        }
       } catch (err: any) {
         pushChat({ kind: "notice", tone: "error", text: err.message });
       }
@@ -1171,23 +1036,33 @@ function AppShell() {
   /** Write (or clear, with "") the project's model override. */
   const changeProjectModel = useCallback(
     async (model: string) => {
-      if (!selectedId) return;
+      const id = selectedId;
+      if (!id) return;
       try {
-        setProjSettings(await api.saveProjectSettings(selectedId, { model }));
+        const saved = await api.saveProjectSettings(id, { model });
+        if (selectedRef.current?.id === id) setProjSettings(saved);
       } catch (err: any) {
-        pushChat({ kind: "notice", tone: "error", text: err.message });
+        if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
       }
     },
     [selectedId, pushChat],
   );
 
+  // The actions below await the server, and the user may switch projects
+  // meanwhile: every write after the await is guarded on the project still
+  // being the one acted on (the same stale-async rule send() follows) — a
+  // conflict banner, a diff, or an error must never land in another project.
   const approve = useCallback(
     async (message: string, force = false) => {
-      if (!selectedId) return;
+      const id = selectedId;
+      if (!id) return;
+      const stale = () => selectedRef.current?.id !== id;
       try {
-        await api.approve(selectedId, message, force);
+        await api.approve(id, message, force);
+        if (stale()) return;
         setApproveConflicts(null);
       } catch (err: any) {
+        if (stale()) return;
         if (err instanceof ApproveConflictError) {
           // Blocked, nothing committed or pushed — the Proof view shows the
           // conflict banner with per-file discard and a forced overwrite.
@@ -1201,28 +1076,52 @@ function AppShell() {
   );
 
   // Conflict banner: drop the local edits to the conflicted files, so the
-  // remote versions merge in on the next sync/approve.
+  // remote versions merge in on the next sync/approve. A path that could not
+  // be discarded keeps its place in the banner and is reported — clearing the
+  // banner anyway would let the next approve run into the same conflict.
   const discardConflicts = useCallback(
     async (paths: string[]) => {
-      if (!selectedId) return;
+      const id = selectedId;
+      if (!id) return;
+      const stale = () => selectedRef.current?.id !== id;
+      const failures = new Map<string, string>();
       for (const path of paths) {
         try {
-          await api.rejectFile(selectedId, path);
-        } catch {
-          /* may already be clean — keep going */
+          await api.rejectFile(id, path);
+        } catch (err: any) {
+          // Keep going — the other files can still be discarded.
+          failures.set(path, err.message);
         }
       }
+      // reject-file refuses a file that is already clean: only a path the
+      // fresh diff still lists counts as not discarded.
+      let pending: Set<string> | null = null;
       try {
-        const d = await api.diff(selectedId);
+        const d = await api.diff(id);
+        if (stale()) return;
         setDiff(d.diff);
+        pending = new Set(parseDiff(d.diff).map((f) => f.path));
       } catch {
-        /* keep the current view */
+        /* keep the current view — and treat every failed path as pending */
       }
+      if (stale()) return;
       dirtySinceCompile.current = true;
       setSourceStamp((s) => s + 1);
-      setApproveConflicts(null);
+      const kept = [...failures.keys()].filter((path) => !pending || pending.has(path));
+      if (kept.length === 0) {
+        setApproveConflicts(null);
+        return;
+      }
+      setApproveConflicts((prev) => prev?.filter((c) => kept.includes(c.path)) ?? null);
+      pushChat({
+        kind: "notice",
+        tone: "error",
+        text:
+          `Could not discard the local edits to ${kept.join(", ")} — ` +
+          kept.map((path) => failures.get(path)).filter((m, i, all) => all.indexOf(m) === i).join("; "),
+      });
     },
-    [selectedId],
+    [selectedId, pushChat],
   );
 
   const projectSync = useProjectSync(view === "project" ? selected : null, reconnectVersion, {
@@ -1248,25 +1147,28 @@ function AppShell() {
   syncWarningRef.current = projectSync.reportWarning;
 
   const reject = useCallback(async () => {
-    if (!selectedId) return;
+    const id = selectedId;
+    if (!id) return;
     try {
-      await api.reject(selectedId);
+      await api.reject(id);
     } catch (err: any) {
-      pushChat({ kind: "notice", tone: "error", text: err.message });
+      if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
     }
   }, [selectedId, pushChat]);
 
   const rejectFile = useCallback(
     async (path: string) => {
-      if (!selectedId) return;
+      const id = selectedId;
+      if (!id) return;
       try {
-        const r = await api.rejectFile(selectedId, path);
+        const r = await api.rejectFile(id, path);
+        if (selectedRef.current?.id !== id) return;
         // The working tree just changed under the last compile/source view.
         dirtySinceCompile.current = true;
         setSourceStamp((s) => s + 1);
         setDiff(r.diff);
       } catch (err: any) {
-        pushChat({ kind: "notice", tone: "error", text: err.message });
+        if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
       }
     },
     [selectedId, pushChat],
@@ -1274,22 +1176,27 @@ function AppShell() {
 
   const rejectHunk = useCallback(
     async (patch: string) => {
-      if (!selectedId) return;
+      const id = selectedId;
+      if (!id) return;
       try {
-        const r = await api.rejectHunk(selectedId, patch);
+        const r = await api.rejectHunk(id, patch);
+        if (selectedRef.current?.id !== id) return;
         dirtySinceCompile.current = true;
         setSourceStamp((s) => s + 1);
         setDiff(r.diff);
       } catch (err: any) {
-        pushChat({ kind: "notice", tone: "error", text: err.message });
+        if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
       }
     },
     [selectedId, pushChat],
   );
 
-  // A manual save from the Source tab changed the working tree — the next
-  // visit to the PDF tab should recompile.
-  const handleManualSaveDiff = useCallback((d: string) => {
+  // A manual save (Source tab, inline Proof edit, a References .bib write)
+  // changed the working tree — the next visit to the PDF tab should
+  // recompile. The panel names the project it wrote to: a save that resolves
+  // after a project switch must not put its diff into the new project.
+  const handleManualSaveDiff = useCallback((projectId: string, d: string) => {
+    if (selectedRef.current?.id !== projectId) return;
     dirtySinceCompile.current = true;
     setDiff(d);
     setSourceStamp((s) => s + 1);
@@ -1358,13 +1265,8 @@ function AppShell() {
       const id = selectedRef.current?.id;
       if (!id) return false;
       try {
-        const res = await fetch(appUrl(`/api/projects/${id}/locate`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        });
-        if (!res.ok) return false;
-        const { file, line } = (await res.json()) as { file: string; line: number };
+        const { file, line } = await api.locate(id, text);
+        if (selectedRef.current?.id !== id) return false;
         revealInSource(file, line);
         return true;
       } catch {
@@ -1547,7 +1449,7 @@ function AppShell() {
             onChangeEffort={changeEffort}
             projectStats={detail?.stats ?? null}
             quote={chatQuote}
-            files={detail?.files ?? []}
+            files={detail?.files ?? NO_FILES}
             onOpenFile={revealInSource}
             onLocateQuote={locateQuote}
             pdfVisible={panes.left === "pdf" || panes.right === "pdf"}
@@ -1581,7 +1483,7 @@ function AppShell() {
         return (
           <SourcePanel
             projectId={selectedId!}
-            files={detail?.files ?? []}
+            files={detail?.files ?? NO_FILES}
             mainTex={selected!.mainTex}
             stamp={sourceStamp}
             busy={busy}
@@ -1611,13 +1513,28 @@ function AppShell() {
             onOpenRef={revealInRefs}
           />
         );
+      // References and Research refresh when the working tree changed (a
+      // save, a reject, an agent edit) or a turn ended — not per chat item.
       case "research":
-        return <ResearchPanel key={selectedId!} projectId={selectedId!} stamp={sourceStamp + chat.length} busy={busy} onJump={revealInSource} />;
+        return (
+          <ResearchPanel
+            key={selectedId!}
+            projectId={selectedId!}
+            stamp={sourceStamp + turnStamp}
+            busy={busy}
+            onJump={revealInSource}
+            visible={panes.left === "research" || panes.right === "research"}
+          />
+        );
       case "refs":
+        // Keyed by project: its per-entry state (an open BibTeX edit, a
+        // delete confirmation) is addressed by file:key and must not carry
+        // over — a Save would write project A's entry into project B.
         return (
           <RefsPanel
+            key={selectedId!}
             projectId={selectedId!}
-            stamp={chat.length}
+            stamp={sourceStamp + turnStamp}
             busy={busy}
             onJump={revealInSource}
             onDiff={handleManualSaveDiff}
@@ -1684,7 +1601,8 @@ function AppShell() {
         </nav>
         <div className="min-h-0 flex-1">
           {/* Panels stay mounted (hidden) in their owning pane so drafts,
-              scroll, and the loaded PDF survive tab switches. */}
+              scroll, and the loaded PDF survive tab switches — once they have
+              been shown at all (see shownViews). */}
           {PANE_TABS.map(([key, label]) =>
             paneOwner.current[key] === phys ? (
               <div
@@ -1694,7 +1612,11 @@ function AppShell() {
                 aria-label={label}
                 className={active === key ? "h-full" : "hidden"}
               >
-                {renderPanel(key)}
+                {shownViews.current.views.has(key) && (
+                  <PanelBoundary label={label}>
+                    <Suspense fallback={<PanelLoading label={label} />}>{renderPanel(key)}</Suspense>
+                  </PanelBoundary>
+                )}
               </div>
             ) : null,
           )}
@@ -1766,6 +1688,7 @@ function AppShell() {
           <Dashboard
             projects={projects}
             accounts={accounts}
+            loadError={listError}
             onOpen={openProject}
             onChanged={refreshProjects}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -1773,7 +1696,7 @@ function AppShell() {
         ) : (
           <>
             <Sidebar
-              projects={projects}
+              projects={projects ?? []}
               project={selected!}
               chats={chats}
               activeChatId={activeChatId}
@@ -1829,16 +1752,20 @@ function AppShell() {
       </div>
 
       {settingsOpen && (
-        <SettingsModal
-          onClose={() => {
-            setSettingsOpen(false);
-            // The modal may have changed the model — keep the composer chip honest.
-            refreshSettings();
-          }}
-          onAccountsChanged={refreshProjects}
-          projectId={inProject ? selectedId : null}
-          projectName={inProject ? selected!.name : undefined}
-        />
+        <PanelBoundary label="Settings">
+          <Suspense fallback={null}>
+            <SettingsModal
+              onClose={() => {
+                setSettingsOpen(false);
+                // The modal may have changed the model — keep the composer chip honest.
+                refreshSettings();
+              }}
+              onAccountsChanged={refreshProjects}
+              projectId={inProject ? selectedId : null}
+              projectName={inProject ? selected!.name : undefined}
+            />
+          </Suspense>
+        </PanelBoundary>
       )}
 
       {projSettingsOpen && selected && (

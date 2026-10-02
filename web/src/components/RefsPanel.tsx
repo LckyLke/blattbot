@@ -21,14 +21,14 @@ function savedSorting(projectId: string): ReferenceSort {
 
 interface Props {
   projectId: string;
-  /** Changes when chat activity happens — used to refresh the list. */
+  /** Changes when the working tree may have changed or a turn ended — refreshes the list. */
   stamp: number;
   /** True while an agent turn runs — manual .bib edits are disabled then. */
   busy: boolean;
   /** Jump to a citation site in the Source tab. */
   onJump: (file: string, line: number) => void;
-  /** Manual .bib writes changed the working tree — pass the new diff up. */
-  onDiff: (diff: string) => void;
+  /** Manual .bib writes changed the working tree — pass the new diff up, with the project written to. */
+  onDiff: (projectId: string, diff: string) => void;
   /** Hand a composed repair request to the agent (starts a turn in Edit mode). */
   onFixWithAgent: (prompt: string) => void;
   /** Reveal request (a citation clicked in the PDF): drop the filters hiding
@@ -38,6 +38,13 @@ interface Props {
 
 /** How long a revealed entry stays flashed. */
 const REVEAL_FLASH_MS = 1800;
+
+/**
+ * Nonce of the last reveal request acted on. Module-level on purpose (as in
+ * SourcePanel): the panel remounts on a pane move or a project switch, and a
+ * remount must not replay a reveal that already happened.
+ */
+let handledRevealNonce = 0;
 
 /**
  * The repair request handed to the agent for a flagged entry. Everything the
@@ -127,11 +134,6 @@ export default function RefsPanel({
   const [grouping, setGrouping] = useState<ReferenceGrouping>(() => savedGrouping(projectId));
   const [sorting, setSorting] = useState<ReferenceSort>(() => savedSorting(projectId));
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  useEffect(() => {
-    setGrouping(savedGrouping(projectId));
-    setSorting(savedSorting(projectId));
-    setCollapsedGroups(new Set());
-  }, [projectId]);
   function changeGrouping(value: ReferenceGrouping) {
     setGrouping(value);
     setCollapsedGroups(new Set());
@@ -177,22 +179,14 @@ export default function RefsPanel({
   const [claimOpen, setClaimOpen] = useState<Set<string>>(new Set());
   const [gapsOnly, setGapsOnly] = useState(false);
 
-  // Stale-async guard: the panel is not remounted on project switch (only the
-  // projectId prop changes), so slow requests — the audit easily runs tens of
-  // seconds, verify-all reads every paper and can run much longer — must
-  // never splice their result into another project's view.
+  // App remounts the panel per project (key={projectId}), so all of the
+  // per-project state above — entry ids are `file:key`, an open edit or a
+  // delete confirmation must never carry over — starts fresh. The stale-async
+  // guards below stay as a second line of defence: slow requests (the audit
+  // easily runs tens of seconds, verify-all reads every paper) must never
+  // splice their result into another project's view.
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
-  useEffect(() => {
-    setData(null);
-    setDeleteUnusedBusy(false);
-    setDeleteUnusedMessage(null);
-    setDeleteUnusedError(null);
-    setAuditBusy(false);
-    setAuditError(null);
-    setVerifyAllBusy(false);
-    setVerifyAllError(null);
-  }, [projectId]);
 
   const loadVersion = useRef(0);
   useEffect(() => () => { loadVersion.current++; }, [projectId]);
@@ -267,7 +261,6 @@ export default function RefsPanel({
   const [flashKey, setFlashKey] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLLIElement>());
   const pendingReveal = useRef<string | null>(null);
-  const revealNonce = useRef(0);
   const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const flashFrame = useRef(0);
   useEffect(
@@ -280,10 +273,11 @@ export default function RefsPanel({
 
   // A request parks the key and drops the filters that could hide it. The
   // mount-time nonce is honoured, not skipped: the click that sends one is
-  // usually what puts this panel on screen in the first place.
+  // usually what mounts this panel in the first place. One already handled is
+  // not re-run by a remount (a pane move, a project switch).
   useEffect(() => {
-    if (!reveal || reveal.nonce === revealNonce.current) return;
-    revealNonce.current = reveal.nonce;
+    if (!reveal || reveal.nonce === handledRevealNonce) return;
+    handledRevealNonce = reveal.nonce;
     pendingReveal.current = reveal.key;
     setFilter("");
     setUnusedOnly(false);
@@ -448,7 +442,7 @@ export default function RefsPanel({
     setAddError(null);
     try {
       const r = await api.addRef(projectId, addText);
-      onDiff(r.diff);
+      onDiff(projectId, r.diff);
       setAddOpen(false);
       setAddText(ADD_SKELETON);
       load();
@@ -470,7 +464,7 @@ export default function RefsPanel({
     setEditError(null);
     try {
       const r = await api.updateRef(projectId, e.key, editText);
-      onDiff(r.diff);
+      onDiff(projectId, r.diff);
       setEditingId(null);
       load();
     } catch (err: any) {
@@ -502,7 +496,7 @@ export default function RefsPanel({
       if (!confirmed || projectIdRef.current !== startedFor) return;
       const result = await api.deleteUnusedRefs(startedFor);
       if (projectIdRef.current !== startedFor) return;
-      onDiff(result.diff);
+      onDiff(startedFor, result.diff);
       setDeleteUnusedMessage(result.deleted.length ? `Deleted ${result.deleted.length} unused reference${result.deleted.length === 1 ? "" : "s"}. Review or undo in Proof.` : "No unused references remain; nothing was deleted.");
       load();
     } catch (err: any) {
@@ -517,7 +511,7 @@ export default function RefsPanel({
     setEntryError(e, null);
     try {
       const r = await api.deleteRef(projectId, e.key);
-      onDiff(r.diff);
+      onDiff(projectId, r.diff);
       load();
     } catch (err: any) {
       setEntryError(e, err.message);

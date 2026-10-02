@@ -139,7 +139,7 @@ try {
   [repository] = await api(`/api/projects/${project.id}/research/repositories`);
   assert.equal(repository.commit, git(source, "rev-parse", "HEAD"));
   await page.getByRole("combobox", { name: "Chat mode", exact: true }).selectOption("code");
-  await page.getByPlaceholder("Ask BlattBot to edit, rewrite, or cite…").fill("Check the loss reduction against loss.py and save the evidence.");
+  await page.getByPlaceholder(/^Ask BlattBot/).fill("Check the loss reduction against loss.py and save the evidence.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
   await page.getByText("Saved a code assessment:", { exact: false }).waitFor({ timeout: 30_000 });
   assert(judgeCalled); assert.deepEqual(toolNames, ["inspect_repository", "read_file", "inspect_repository", "inspect_repository", "inspect_repository", "inspect_repository", "verify_code_claim"]);

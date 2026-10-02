@@ -20,7 +20,7 @@ import { toolDetail } from "./types.js";
  * per-file diffs and the chat UI keeps its labels — the model-facing function
  * names are the plain ones listed in OPENAI_TOOL_INFO.
  */
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { DATA_DIR, getProject } from "../config.js";
@@ -32,7 +32,7 @@ import { searchLiterature } from "../research/discovery.js";
 import { z } from "zod";
 import type { Settings } from "../settings.js";
 import { compileProject } from "../compile.js";
-import { addCitation, formatAddCitationResult, readAllBibEntries, searchPapers } from "../citations.js";
+import { addCitation, formatAddCitationResult, readAllBibEntries } from "../citations.js";
 import {
   auditEntries,
   formatAuditReport,
@@ -171,6 +171,10 @@ export function loadHistory(sessionId: string): OaiMessage[] {
   } catch {
     return [];
   }
+}
+
+export function deleteHistory(sessionId: string): void {
+  if (isOaiSessionId(sessionId)) rmSync(historyPath(sessionId), { force: true });
 }
 
 export function saveHistory(sessionId: string, messages: OaiMessage[]): void {

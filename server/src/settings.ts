@@ -2,7 +2,7 @@
  * User-configurable settings, stored transparently as JSON in the data dir.
  * Everything has a safe default; an empty string means "use the default".
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readJsonFile, writeJsonFile } from "./jsonfile.js";
 import { join } from "node:path";
 import { DATA_DIR, ensureDirs } from "./config.js";
 
@@ -80,13 +80,7 @@ export function selectedBackend(settings: Pick<Settings, "backend">): BackendId 
 }
 
 export function loadSettings(): Settings {
-  if (!existsSync(SETTINGS_PATH)) return { ...DEFAULT_SETTINGS };
-  try {
-    const raw = JSON.parse(readFileSync(SETTINGS_PATH, "utf8"));
-    return { ...DEFAULT_SETTINGS, ...raw };
-  } catch {
-    return { ...DEFAULT_SETTINGS };
-  }
+  return { ...DEFAULT_SETTINGS, ...readJsonFile<Partial<Settings>>(SETTINGS_PATH, {}) };
 }
 
 export function saveSettings(patch: Partial<Settings>): Settings {
@@ -96,7 +90,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     if (typeof v === "string") (next as any)[key] = v;
   }
   ensureDirs();
-  writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), { mode: 0o600 });
+  writeJsonFile(SETTINGS_PATH, next);
   return next;
 }
 

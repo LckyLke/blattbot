@@ -13,7 +13,6 @@ import {
   type BibEntry,
 } from "./bib.js";
 import { findBibFiles } from "./latex.js";
-import { loadSettings } from "./settings.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { researchSignal } from "./research/store.js";
 import { SourceServiceError } from "./research/source-failure.js";

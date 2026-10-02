@@ -4,7 +4,7 @@
  * Projects reference an account by id instead of carrying their own cookie,
  * so a session survives restarts and can be refreshed in one place.
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readJsonFile, writeJsonFile } from "./jsonfile.js";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DATA_DIR, ensureDirs, listProjects, updateProject, type Project } from "./config.js";
@@ -27,17 +27,12 @@ export interface OlAccount {
 }
 
 function load(): OlAccount[] {
-  if (!existsSync(ACCOUNTS_PATH)) return [];
-  try {
-    return JSON.parse(readFileSync(ACCOUNTS_PATH, "utf8")) as OlAccount[];
-  } catch {
-    return [];
-  }
+  return readJsonFile<OlAccount[]>(ACCOUNTS_PATH, []);
 }
 
 function save(accounts: OlAccount[]): void {
   ensureDirs();
-  writeFileSync(ACCOUNTS_PATH, JSON.stringify(accounts, null, 2), { mode: 0o600 });
+  writeJsonFile(ACCOUNTS_PATH, accounts);
 }
 
 export function listAccounts(): OlAccount[] {

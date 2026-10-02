@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
+import { readJsonFile, writeJsonFile } from "./jsonfile.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -77,17 +78,12 @@ export function ensureDirs(): void {
 }
 
 function loadRegistry(): Project[] {
-  if (!existsSync(REGISTRY_PATH)) return [];
-  try {
-    return JSON.parse(readFileSync(REGISTRY_PATH, "utf8")) as Project[];
-  } catch {
-    return [];
-  }
+  return readJsonFile<Project[]>(REGISTRY_PATH, []);
 }
 
 function saveRegistry(projects: Project[]): void {
   ensureDirs();
-  writeFileSync(REGISTRY_PATH, JSON.stringify(projects, null, 2), { mode: 0o600 });
+  writeJsonFile(REGISTRY_PATH, projects);
 }
 
 export function listProjects(): Project[] {

@@ -12,12 +12,15 @@ interface Props {
   stamp: number;
   busy: boolean;
   onJump: (file: string, line: number) => void;
+  /** False while the panel sits hidden in its pane — polling pauses. */
+  visible?: boolean;
 }
 export default function ResearchPanel({
   projectId,
   stamp,
   busy,
   onJump,
+  visible = true,
 }: Props) {
   const [tab, setTab] = useState<"graph" | "library" | "reading">("graph");
   const reading = useRef<ReadingHandle>(null);
@@ -149,6 +152,7 @@ export default function ResearchPanel({
             projectId={projectId}
             busy={busy}
             stamp={stamp + refresh}
+            active={visible}
             onJump={onJump}
             initialKey={graphKey}
             onOpenLibrary={(key) => {
@@ -162,6 +166,7 @@ export default function ResearchPanel({
           <PaperLibrary
             projectId={projectId}
             stamp={stamp + refresh}
+            active={visible}
             initialKey={libraryKey}
             open={(key, page, terms) => void open(key, page, terms)}
             onOpenGraph={(key) => {

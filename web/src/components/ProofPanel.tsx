@@ -1,14 +1,25 @@
 import { InlineDiffContext } from "./InlineDiffEdit";
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { Suspense, lazy, useMemo, useState, useSyncExternalStore } from "react";
 import { tabStripKeyDown } from "../a11y";
 import { buildHunkPatch, parseDiff, type DiffFile, type DiffHunk } from "../diff";
 import type { CompileInfo, SyncConflict } from "../api";
 import { useDialog } from "./Dialog";
 import { HunkLines } from "./DiffView";
-import RenderedDiff from "./RenderedDiff";
-import SourcePanel from "./SourcePanel";
 import { countDrafts, draftPaths, subscribeDrafts } from "../drafts";
 import { countFileSaves, subscribeFileSaves } from "../editor-sync";
+
+// Loaded on demand: the rendered diff pulls in pdf.js, the embedded Source
+// editor CodeMirror — the text diff, the Proof's default view, needs neither.
+const RenderedDiff = lazy(() => import("./RenderedDiff"));
+const SourcePanel = lazy(() => import("./SourcePanel"));
+
+function Loading({ what }: { what: string }) {
+  return (
+    <p role="status" className="px-4 py-6 text-center font-sans text-[12px] text-graphite">
+      Loading {what}…
+    </p>
+  );
+}
 
 interface Props {
   diff: string;
@@ -17,7 +28,8 @@ interface Props {
   conflicts: SyncConflict[] | null;
   projectId: string;
   sourceStamp: number;
-  onDiff: (diff: string) => void;
+  /** A manual edit changed the working tree: the fresh diff, and the project it was saved to. */
+  onDiff: (projectId: string, diff: string) => void;
   onSaved: () => void;
   /** Local build state (App-owned) — the rendered diff's "current" side. */
   compile: CompileInfo | null;
@@ -208,13 +220,15 @@ export default function ProofPanel({
 
       {mode === "rendered" ? (
         <div role="tabpanel" aria-label="Rendered diff" className="min-h-0 flex-1">
-          <RenderedDiff
-            projectId={projectId}
-            compile={compile}
-            compiling={compiling}
-            pdfStamp={pdfStamp}
-            onEnsureCurrent={onEnsureCurrentPdf}
-          />
+          <Suspense fallback={<Loading what="the rendered diff" />}>
+            <RenderedDiff
+              projectId={projectId}
+              compile={compile}
+              compiling={compiling}
+              pdfStamp={pdfStamp}
+              onEnsureCurrent={onEnsureCurrentPdf}
+            />
+          </Suspense>
         </div>
       ) : editing ? (
         <div role="tabpanel" aria-label="Proof editor" className="flex min-h-0 flex-1 flex-col">
@@ -228,16 +242,18 @@ export default function ProofPanel({
             <span className="text-[11px] text-graphite">Save locally, then review and approve below.</span>
           </div>
           <div className="min-h-0 flex-1">
-            <SourcePanel
-              key={editing.path}
-              projectId={projectId}
-              files={[editing.path]}
-              embedded={editing}
-              stamp={sourceStamp}
-              busy={busy || acting !== null}
-              onDiff={onDiff}
-              onSaved={onSaved}
-            />
+            <Suspense fallback={<Loading what="the editor" />}>
+              <SourcePanel
+                key={editing.path}
+                projectId={projectId}
+                files={[editing.path]}
+                embedded={editing}
+                stamp={sourceStamp}
+                busy={busy || acting !== null}
+                onDiff={onDiff}
+                onSaved={onSaved}
+              />
+            </Suspense>
           </div>
         </div>
       ) : (

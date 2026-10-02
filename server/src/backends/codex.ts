@@ -1,7 +1,7 @@
 import { toolDetail } from "./types.js";
 /** Codex owns reasoning and conversation history; BlattBot owns project tools. */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "../config.js";
 import { listChats, readTranscript } from "../chats.js";
@@ -29,6 +29,9 @@ const toolsetPath = (id: string) => join(DATA_DIR, "codex-toolsets", `${id}.txt`
 const toolsetHash = () => createHash("sha256").update(JSON.stringify(codexTools())).digest("hex");
 function hasCurrentTools(id: string): boolean {
   try { return readFileSync(toolsetPath(id), "utf8") === toolsetHash(); } catch { return false; }
+}
+export function forgetCodexToolset(id: string): void {
+  if (/^[a-zA-Z0-9-]+$/.test(id)) rmSync(toolsetPath(id), { force: true });
 }
 export function recordCodexToolset(id: string): void {
   if (!/^[a-zA-Z0-9-]+$/.test(id)) throw new Error("invalid Codex thread id");

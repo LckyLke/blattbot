@@ -44,6 +44,16 @@ const FIND_FLASH_MS = 2000;
 const CITE_CARD_W = 300;
 const CITE_SHOW_MS = 120;
 const CITE_HIDE_MS = 90;
+/**
+ * Lazy page rendering, relative to the scroll pane: a page renders once it
+ * comes within RENDER_MARGIN of the visible area and gives its canvas back
+ * once it is beyond RELEASE_MARGIN. A 150-page document at DPR 2 would
+ * otherwise keep ~1.5 GB of canvases for every page ever scrolled past (and
+ * re-render all of them on each zoom). The gap between the two keeps a page
+ * at the edge from flapping.
+ */
+const RENDER_MARGIN = "900px 0px";
+const RELEASE_MARGIN = "3000px 0px";
 
 /**
  * Normalize text lifted from the PDF text layer: drop soft hyphens, expand
@@ -252,16 +262,17 @@ export default function PdfPanel({
   useEffect(() => {
     if (!hasPdf) return;
     let cancelled = false;
+    // Set once the document is handed to `doc` — from then on the effect
+    // below owns it and destroys it when it is replaced.
+    let adopted = false;
     const task = getDocument({ url: pdfUrl });
     task.promise.then(
       async (d) => {
-        if (cancelled) {
-          void d.loadingTask.destroy();
-          return;
-        }
+        if (cancelled) return;
         // Capture where the user is now, including scrolling during compilation/loading.
         await prepareReplacement.current(d, () => cancelled);
-        if (cancelled) { void d.loadingTask.destroy(); return; }
+        if (cancelled) return;
+        adopted = true;
         setDestination(null);
         setDoc(d);
         setLoadError(null);
@@ -272,6 +283,10 @@ export default function PdfPanel({
     );
     return () => {
       cancelled = true;
+      // A newer build (or another source) replaced this one before it was
+      // shown: abort its download and parse instead of finishing a document
+      // nobody will see — or, when it already loaded, free it.
+      if (!adopted) void task.destroy().catch(() => {});
     };
   }, [pdfUrl, hasPdf, projectId]);
 
@@ -483,23 +498,23 @@ export default function PdfPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [hasPdf]);
 
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   /** Double-clicked word + context → the server's best source position. */
   const locate = useCallback(
     async (query: string) => {
       try {
-        const res = await fetch(appUrl(`/api/projects/${projectId}/locate`), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: query }),
-        });
-        if (!res.ok) {
-          showToast("no matching source found");
-          return;
-        }
-        const { file, line } = (await res.json()) as { file: string; line: number };
-        onJumpToSource(file, line);
+        const { file, line } = await api.locate(projectId, query);
+        // The panel is keyed by project: unmounted means the user moved on,
+        // and the jump would land in another project's source.
+        if (mounted.current) onJumpToSource(file, line);
       } catch {
-        showToast("no matching source found");
+        if (mounted.current) showToast("no matching source found");
       }
     },
     [projectId, onJumpToSource, showToast],
@@ -1001,6 +1016,8 @@ function PdfPage({
   /** The rendered text layer's spans and their item strings, for dblclick context. */
   const itemsRef = useRef<{ divs: HTMLElement[]; strs: string[] }>({ divs: [], strs: [] });
   const [near, setNear] = useState(false);
+  /** The canvas holds a rendering (or one is in flight) — released when far. */
+  const rendered = useRef(false);
   const [aspect, setAspect] = useState(Math.SQRT2); // height/width; A4 until measured
   // Navigation also activates a distant, lazily rendered page. Reapply after
   // its actual dimensions arrive; manual interaction clears the destination.
@@ -1041,6 +1058,9 @@ function PdfPage({
    * finishes rendering — whichever comes last applies it.
    */
   const applyHighlight = useCallback(() => {
+    // A new hit scrolls into view; re-drawing a persistent one (after a zoom,
+    // or a released page rendering again) must not move the user's scroll.
+    const fresh = pendingHl.current !== null;
     const hl = pendingHl.current ?? (currentHighlight.current?.persistent ? currentHighlight.current : null);
     const { divs, strs } = itemsRef.current;
     if (!hl || divs.length === 0) return;
@@ -1058,7 +1078,7 @@ function PdfPage({
       if (start >= hl.end) break;
     }
     if (hit.length === 0) return;
-    hit[0].element.scrollIntoView({ block: "center" });
+    if (fresh) hit[0].element.scrollIntoView({ block: "center" });
     const parent = highlightRef.current;
     if (!parent) return;
     const bounds = parent.getBoundingClientRect();
@@ -1107,14 +1127,31 @@ function PdfPage({
   useEffect(() => {
     const el = holderRef.current;
     if (!el) return;
-    const io = new IntersectionObserver(
+    // Observed against the scroll pane itself: with the viewport as root, the
+    // pane's own clipping would hide every off-screen page from the margins.
+    const root = el.closest<HTMLElement>("[data-pdf-scroll]");
+    const latest = (entries: IntersectionObserverEntry[]) => entries[entries.length - 1];
+    const render = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) setNear(true);
+        if (latest(entries)?.isIntersecting) setNear(true);
       },
-      { rootMargin: "900px 0px" },
+      { root, rootMargin: RENDER_MARGIN },
     );
-    io.observe(el);
-    return () => io.disconnect();
+    const release = new IntersectionObserver(
+      (entries) => {
+        const e = latest(entries);
+        // A hidden pane (display:none) reports an empty box — that is no
+        // reason to drop the pages the user comes back to.
+        if (e && !e.isIntersecting && e.boundingClientRect.height > 0) setNear(false);
+      },
+      { root, rootMargin: RELEASE_MARGIN },
+    );
+    render.observe(el);
+    release.observe(el);
+    return () => {
+      render.disconnect();
+      release.disconnect();
+    };
   }, []);
 
   useEffect(() => {
@@ -1131,6 +1168,7 @@ function PdfPage({
         const viewport = page.getViewport({ scale: (width / base.width) * dpr });
         const canvas = canvasRef.current;
         if (!canvas) return;
+        rendered.current = true;
         canvas.width = Math.floor(viewport.width);
         canvas.height = Math.floor(viewport.height);
         renderTask = page.render({ canvas, viewport });
@@ -1144,6 +1182,26 @@ function PdfPage({
       renderTask?.cancel();
     };
   }, [doc, pageNo, near, width]);
+
+  // Far away again: hand back the canvas bitmap, the text layer's spans and
+  // pdf.js's per-page render state (operator lists, decoded images). The
+  // render effects above have already cancelled anything in flight; pdf.js
+  // defers the cleanup until such a cancel has settled.
+  useEffect(() => {
+    if (near || !rendered.current) return;
+    rendered.current = false;
+    const canvas = canvasRef.current;
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+    textRef.current?.replaceChildren();
+    itemsRef.current = { divs: [], strs: [] };
+    void doc.getPage(pageNo).then(
+      (page) => page.cleanup(),
+      () => {},
+    );
+  }, [near, doc, pageNo]);
 
   // Selectable text overlay: mirrors the canvas lifecycle (same laziness,
   // re-rendered on zoom/resize, cancelled and cleared on the way out).

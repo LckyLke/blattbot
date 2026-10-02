@@ -11,7 +11,8 @@
  * turn_end, notice) — high-frequency stream deltas are never persisted;
  * text_final carries the full text.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { readJsonFile, writeJsonFile } from "./jsonfile.js";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { DATA_DIR, getProject, updateProject } from "./config.js";
@@ -51,6 +52,13 @@ function chatsDir(projectId: string): string {
   return join(DATA_DIR, "chats", projectId);
 }
 
+/** Remove every chat of a project; returns their model session ids for cleanup. */
+export function deleteAllChats(projectId: string): string[] {
+  const sessions = loadRegistry(projectId).flatMap((c) => (c.sessionId ? [c.sessionId] : []));
+  rmSync(chatsDir(projectId), { recursive: true, force: true });
+  return sessions;
+}
+
 function registryPath(projectId: string): string {
   return join(chatsDir(projectId), "chats.json");
 }
@@ -60,19 +68,13 @@ export function transcriptPath(projectId: string, chatId: string): string {
 }
 
 function loadRegistry(projectId: string): ChatMeta[] {
-  const path = registryPath(projectId);
-  if (!existsSync(path)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8"));
-    return Array.isArray(raw) ? (raw as ChatMeta[]) : [];
-  } catch {
-    return [];
-  }
+  const raw = readJsonFile<unknown>(registryPath(projectId), []);
+  return Array.isArray(raw) ? (raw as ChatMeta[]) : [];
 }
 
 function saveRegistry(projectId: string, chats: ChatMeta[]): void {
   mkdirSync(chatsDir(projectId), { recursive: true });
-  writeFileSync(registryPath(projectId), JSON.stringify(chats, null, 2), { mode: 0o600 });
+  writeJsonFile(registryPath(projectId), chats);
 }
 
 /**

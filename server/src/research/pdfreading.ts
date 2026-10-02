@@ -6,7 +6,10 @@ import {
   readFileSync,
   rmSync,
   mkdtempSync,
+  readdirSync,
   renameSync,
+  statSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, sep } from "node:path";
@@ -25,6 +28,17 @@ import { z } from "zod";
 const exec = promisify(execFile);
 const renderer = () => process.env.BLATTBOT_PDFTOPPM || "pdftoppm";
 const ocr = () => process.env.BLATTBOT_TESSERACT || "tesseract";
+/** Tesseract's default language; a binary without its data cannot OCR anything. */
+const OCR_LANGUAGE = "eng";
+async function ocrLanguageInstalled(): Promise<boolean> {
+  try {
+    // Older releases print the list on stderr.
+    const { stdout, stderr } = await exec(ocr(), ["--list-langs"], { timeout: 5000 });
+    return `${stdout}\n${stderr}`.split(/\r?\n/).some((line) => line.trim() === OCR_LANGUAGE);
+  } catch {
+    return false;
+  }
+}
 async function renderWithPdfJs(path: string, pageNumber: number, image: string) {
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const assets = dirname(createRequire(import.meta.url).resolve("pdfjs-dist/package.json"));
@@ -62,7 +76,7 @@ export async function readingCapabilities() {
   };
   const [poppler, textRecognition] = await Promise.all([
     available(renderer(), ["-v"]),
-    available(ocr(), ["--version"]),
+    ocrLanguageInstalled(),
   ]);
   let bundled = false;
   try { const { createCanvas } = await import("@napi-rs/canvas"); createCanvas(1, 1); bundled = true; } catch { /* optional platform binding unavailable */ }
@@ -72,8 +86,26 @@ export async function readingCapabilities() {
     ocr: render && textRecognition,
     visual: render,
     renderer: poppler ? "poppler" : bundled ? "pdfjs" : "unavailable",
-    note: "PDF pages use Poppler when available, with a bundled PDF.js renderer as fallback. OCR still requires Tesseract. Visual interpretation requires an image-capable model.",
+    note: "PDF pages use Poppler when available, with a bundled PDF.js renderer as fallback. OCR still requires Tesseract with English language data. Visual interpretation requires an image-capable model.",
   };
+}
+/** Rendered pages are shared by every project (keyed by PDF content); drop
+ * documents nobody has viewed for a month, checking at most once an hour. */
+const PAGE_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+let lastPagePrune = 0;
+function prunePageCache(): void {
+  const now = Date.now();
+  if (now - lastPagePrune < 60 * 60 * 1000) return;
+  lastPagePrune = now;
+  const root = join(DATA_DIR, "paper-pages");
+  let entries: string[];
+  try { entries = readdirSync(root); } catch { return; }
+  for (const name of entries) {
+    try {
+      const dir = join(root, name);
+      if (now - statSync(dir).mtimeMs > PAGE_CACHE_MAX_AGE_MS) rmSync(dir, { recursive: true, force: true });
+    } catch { /* raced with another render — next prune */ }
+  }
 }
 export async function renderPdfPage(
   path: string,
@@ -85,7 +117,11 @@ export async function renderPdfPage(
   const dir = join(DATA_DIR, "paper-pages", hash);
   mkdirSync(dir, { recursive: true });
   const image = join(dir, `${page}.png`);
-  if (existsSync(image)) return image;
+  if (existsSync(image)) {
+    try { const now = new Date(); utimesSync(dir, now, now); } catch { /* only affects pruning */ }
+    return image;
+  }
+  prunePageCache();
   const work = mkdtempSync(join(dir, "render-"));
   try {
     try { await exec(
@@ -135,7 +171,9 @@ export async function ocrPdfPage(path: string, page: number): Promise<string> {
     throw new Error(
       error.code === "ENOENT"
         ? "OCR needs Tesseract. Install it or set BLATTBOT_TESSERACT; alternatively provide text passages."
-        : `OCR failed: ${error.message}`,
+        : /Failed loading language/i.test(String(error.message))
+          ? `OCR needs Tesseract's English language data (${OCR_LANGUAGE}.traineddata, e.g. the tesseract-data-eng or tesseract-ocr-eng package); alternatively provide text passages.`
+          : `OCR failed: ${error.message}`,
     );
   }
 }

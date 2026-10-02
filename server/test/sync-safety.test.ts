@@ -63,6 +63,9 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     mock.files.set(rel, Buffer.from(text));
   }
 
+  /** A path's contents as committed at HEAD. */
+  const atHead = (rel: string) => execFileSync("git", ["show", `HEAD:${rel}`], { cwd: dir, encoding: "utf8" });
+
   /** A cookie-mode project pointing at the mock (legacy per-project cookie). */
   const project = (): Project => ({
     id: "drift-proj",
@@ -218,8 +221,8 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     expect(result.merged).toEqual(["fig[1].png"]);
 
     // The remote file landed as a commit; fig1.png's pending edit did NOT.
-    expect((await git.showAtHead(dir, "fig[1].png"))?.toString()).toBe("REMOTE NEW");
-    expect((await git.showAtHead(dir, "fig1.png"))?.toString()).toBe("base");
+    expect(atHead("fig[1].png")).toBe("REMOTE NEW");
+    expect(atHead("fig1.png")).toBe("base");
     expect(readFileSync(join(dir, "fig1.png"), "utf8")).toBe("AGENT EDIT");
     expect(await git.workingDiff(dir)).toContain("fig1.png");
   });
@@ -264,7 +267,7 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     const result = await olsync.syncIn(client, REMOTE_ID, dir);
     expect(result.merged).toEqual(["figure.pdf"]);
     // Committed despite the ignore rule — the remote explicitly has the file.
-    expect((await git.showAtHead(dir, "figure.pdf"))?.toString()).toBe("%PDF-1.4 remote");
+    expect(atHead("figure.pdf")).toBe("%PDF-1.4 remote");
     expect(readFileSync(join(dir, "main.tex"), "utf8")).toContain("Pending.");
   });
 
@@ -334,6 +337,33 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     expect(log).not.toContain("notes.tex");
   });
 
+  it("never reverts what a co-author typed after the conflict check — the doc stays pending", async () => {
+    const { OverleafClient: Client } = await import("../src/overleaf/olclient.js");
+    const coAuthor = MAIN.replace("Body.", "Body. Co-author typed this.");
+    const download = Client.prototype.downloadZip;
+    // The co-author's keystrokes land right after approve took its snapshot.
+    vi.spyOn(Client.prototype, "downloadZip").mockImplementationOnce(async function (this: any, id: string) {
+      const zip = await download.call(this, id);
+      mock.files.set("main.tex", Buffer.from(coAuthor));
+      return zip;
+    });
+    writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Agent edit."));
+    writeFileSync(join(dir, "refs.bib"), BIB + "@article{b, title={B}, year={2001}}\n");
+
+    const result = await sync.approve(project(), "edit");
+    expect(result.pending).toEqual(["main.tex"]);
+    expect(result.warnings?.some((w) => w.includes("main.tex") && w.includes("collaborator"))).toBe(true);
+    expect(mock.files.get("main.tex")?.toString()).toBe(coAuthor);
+    expect(mock.files.get("refs.bib")?.toString()).toContain("{b,");
+    expect(await git.changedPaths(dir)).toEqual(["main.tex"]);
+
+    // The retry now sees the overlap and asks the user instead of overwriting.
+    await expect(sync.approve(project(), "edit")).rejects.toMatchObject({
+      name: "ApproveConflictError",
+      conflicts: [{ path: "main.tex", kind: "modified" }],
+    });
+  });
+
   it("git-bridge approve un-commits when the push fails, so a retry pushes it", async () => {
     const remoteDir = join(dataDir, "remote.git");
     const run = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
@@ -376,6 +406,14 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     expect(result.drift).toEqual(["main.tex"]);
     expect(result.detail).toContain("Git conflicts");
     expect(run(dir, "stash", "show", "-p")).toContain("Local edit.");
+
+    // Approve refuses to commit the conflict markers; once resolved, it pushes.
+    const gitProject = { ...project(), kind: "git" as const, gitUrl: remoteDir };
+    await expect(sync.approve(gitProject, "resolve")).rejects.toThrow(/main\.tex.*conflict markers/);
+    expect(run(remoteDir, "show", "HEAD:main.tex")).not.toContain("<<<<<<<");
+    writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Merged edit."));
+    expect(await sync.approve(gitProject, "resolve")).toEqual({ pushed: true });
+    expect(run(remoteDir, "show", "HEAD:main.tex")).toContain("Merged edit.");
   });
 
   it("git.log returns the commit history", async () => {

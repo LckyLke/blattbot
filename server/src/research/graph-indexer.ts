@@ -1,4 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { findBibFiles } from "../latex.js";
 import { listProjects, projectDir } from "../config.js";
 import { readAllBibEntries } from "../citations.js";
 import {
@@ -7,7 +9,7 @@ import {
   readGraph,
   type CitationGraph,
 } from "./graph.js";
-import { digest, readStore, saveStore } from "./store.js";
+import { digest, readStore, researchPath, saveStore } from "./store.js";
 import { sourceFailure, type SourceFailure } from "./source-failure.js";
 
 interface Attempt {
@@ -41,18 +43,47 @@ interface Dependencies {
   active: typeof graphBuildActive;
   clock: () => number;
 }
+/** Change signature of a file: absent, or its size and timestamps. */
+function fileSignature(path: string): string {
+  try {
+    const st = statSync(path);
+    return `${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+  } catch {
+    return "-";
+  }
+}
+function bibSignature(dir: string): string {
+  return findBibFiles(dir).map((file) => `${file}=${fileSignature(join(dir, file))}`).join("|");
+}
+/**
+ * The scan revisits every project every 15 s and on every mutation, and
+ * request()+status() rebuilt the whole graph (thousands of edges) from
+ * re-parsed .bib files each time — blocking the event loop for no change.
+ * Results are reused while the .bib files and graph store are unchanged.
+ */
+const memo = new Map<string, { signature: string; value: unknown }>();
+function memoized<T>(key: string, signature: string, compute: () => T): T {
+  const hit = memo.get(key);
+  if (hit && hit.signature === signature) return hit.value as T;
+  const value = compute();
+  memo.set(key, { signature, value });
+  return value;
+}
 const defaults: Dependencies = {
   projects: () =>
     listProjects()
       .map((p) => ({ id: p.id, dir: projectDir(p.id) }))
       .filter((p) => existsSync(p.dir)),
   hashes: (dir) =>
-    Object.fromEntries(
-      readAllBibEntries(dir)
-        .filter(({ entry }) => entry.type !== "string")
-        .map(({ entry }) => [entry.key, digest(entry.fields)]),
+    memoized(`hashes:${dir}`, bibSignature(dir), () =>
+      Object.fromEntries(
+        readAllBibEntries(dir)
+          .filter(({ entry }) => entry.type !== "string")
+          .map(({ entry }) => [entry.key, digest(entry.fields)]),
+      ),
     ),
-  graph: readGraph,
+  graph: (id, dir) =>
+    memoized(`graph:${id}`, `${bibSignature(dir)}#${fileSignature(researchPath(id, "graph"))}`, () => readGraph(id, dir)),
   build: buildGraph,
   active: graphBuildActive,
   clock: Date.now,

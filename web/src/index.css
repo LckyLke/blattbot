@@ -472,6 +472,9 @@ button:hover > .tex-logo .down,
   .usage-trigger-label, .usage-trigger-chevron { display: none; }
   .chat-composer-send { grid-column: 2; grid-row: 1; }
   .chat-composer-settings { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; }
+  /* The chip now sits at the left edge: open its menu rightwards, or the
+     pane clips it (and the backdrop swallows clicks meant for the menu). */
+  .chat-composer-settings .model-chip-popover { right: auto; left: 0; }
 }
 
 /* --- CodeMirror panels (search / goto-line are plain DOM, themed here) --- */

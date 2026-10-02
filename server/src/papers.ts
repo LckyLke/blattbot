@@ -19,8 +19,6 @@ export { RateLimitError } from "./research-providers.js";
 import {
   CROSSREF_MAILTO,
   readAllBibEntries,
-  searchCrossref,
-  searchOpenAlex,
   searchPapers,
   type PaperHit,
 } from "./citations.js";
@@ -61,6 +59,13 @@ const papersDir = () => join(DATA_DIR, "papers");
 const storePath = (projectId: string) => join(papersDir(), `${projectId}.json`);
 const pdfDir = (projectId: string) => join(papersDir(), projectId);
 
+/** Everything this module keeps for a project (records, PDFs, audits). */
+export function deletePaperData(projectId: string): void {
+  for (const path of [storePath(projectId), pdfDir(projectId), auditPath(projectId), claimAuditPath(projectId)]) {
+    rmSync(path, { recursive: true, force: true });
+  }
+}
+
 export function readPaperStore(projectId: string): PaperStore {
   try {
     return JSON.parse(readFileSync(storePath(projectId), "utf8")) as PaperStore;
@@ -95,7 +100,6 @@ export function paperPdfPath(projectId: string, citeKey: string, store = readPap
 
 // ---- Semantic Scholar resolution ------------------------------------------
 
-const S2_BASE = "https://api.semanticscholar.org/graph/v1";
 const S2_FIELDS = "title,tldr,abstract,url,openAccessPdf,externalIds,year,citationCount,venue,publicationVenue";
 
 export interface S2Paper {
@@ -1077,17 +1081,6 @@ export function matchesRecord(
 }
 
 /** Check a DOI against Crossref and compare titles. */
-/**
- * arXiv's own DOI namespace. Crossref does not index these at all (they are
- * registered with DataCite), so a Crossref lookup 404s on a perfectly real
- * preprint — which is why the audit must ask arXiv directly instead of
- * reporting the entry as unfindable.
- */
-export function arxivIdFromDoi(doi: string): string | undefined {
-  const m = /^10\.48550\/arxiv\.(.+)$/i.exec(doi.trim());
-  return m ? m[1] : undefined;
-}
-
 /** Check an arXiv id against arXiv's own API and compare titles. */
 async function auditByArxiv(arxivId: string, entry: EntryFacts): Promise<AuditResult> {
   const bare = arxivId.replace(/v\d+$/i, "");

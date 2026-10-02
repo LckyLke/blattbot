@@ -2011,6 +2011,8 @@ async function main() {
 
     // ---- Recompiling a cached PDF shows progress and keeps its pages visible ----
     await aside().getByRole("tab", { name: "PDF", exact: true }).click();
+    // The PDF panel mounts when first shown: let the cached build load first.
+    await aside().locator("canvas").first().waitFor({ state: "visible", timeout: 30_000 });
     await aside().getByRole("button", { name: "Recompile", exact: true }).click();
     let compilingSeen = false;
     let canvasesDuringCompile = -1;

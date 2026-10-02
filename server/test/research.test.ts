@@ -391,7 +391,7 @@ describe("paper reading extensions", () => {
   });
   it.runIf(
     spawnSync("pdftoppm", ["-v"]).status === 0 &&
-      spawnSync("tesseract", ["--version"]).status === 0,
+      /^eng$/m.test(`${spawnSync("tesseract", ["--list-langs"], { encoding: "utf8" }).stdout ?? ""}`),
   )(
     "renders real pages, persists OCR and invalidates earlier text assessments",
     async () => {

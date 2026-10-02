@@ -64,8 +64,8 @@ interface Props {
   stamp: number;
   /** True while an agent turn runs — manual editing is disabled then. */
   busy: boolean;
-  /** Receives the fresh working diff after a manual save. */
-  onDiff: (diff: string) => void;
+  /** Receives the fresh working diff after a manual save, with the project it was saved to. */
+  onDiff: (projectId: string, diff: string) => void;
   /** Called after a successful save — App recompiles when the PDF pane is visible. */
   onSaved?: () => void;
   /** Jump request: select `file`, scroll to `line`, flash it. Fires on `nonce` change. */
@@ -995,7 +995,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
         setDiskChanged(false);
       }
       notifyEditors({ projectId, path, origin: editorId, kind: "document", content: live, saved: content });
-      onDiffRef.current(res.diff);
+      onDiffRef.current(projectId, res.diff);
       onSavedRef.current?.();
     } catch (err: any) {
       setSaveErr(err.message);

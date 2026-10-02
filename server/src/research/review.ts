@@ -1,5 +1,4 @@
 import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { z } from "zod";
 import { getProject } from "../config.js";
 import { listFiles } from "../latex.js";

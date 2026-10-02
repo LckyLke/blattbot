@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DATA_DIR } from "../config.js";
+import { currentVersion } from "../version.js";
 
 export function codexExecutable(): string {
   const override = process.env.BLATTBOT_CODEX_EXECUTABLE?.trim();
@@ -140,7 +141,7 @@ export class CodexClient {
 
   async initialize(): Promise<void> {
     await this.request("initialize", {
-      clientInfo: { name: "blattbot", title: "BlattBot", version: "0.4.2" },
+      clientInfo: { name: "blattbot", title: "BlattBot", version: currentVersion() },
       capabilities: { experimentalApi: true },
     });
     this.send({ method: "initialized", params: {} });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Project } from "./api";
+import { api, HttpError, type Project } from "./api";
 
 type SyncResult = Awaited<ReturnType<typeof api.sync>>;
 export interface SyncIssue {
@@ -73,6 +73,9 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
             : "Overleaf and your local copy both changed these files. Your local edits were kept. Review the changes before syncing again.", paths: result.drift });
         } else clear();
       } catch (error) {
+        // 409: an agent turn is running (e.g. this page was reloaded mid-turn).
+        // The turn syncs before it edits, so an automatic sync just skips.
+        if (!manual && error instanceof HttpError && error.status === 409) return;
         if (!cancelled) report(failure(error));
       } finally {
         syncing = false;

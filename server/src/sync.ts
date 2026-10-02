@@ -88,8 +88,9 @@ export async function syncIn(project: Project): Promise<SyncResult> {
       drift: result.drift,
     };
   }
+  await moveRemoteCredentials(project);
   const before = await git.revParse(dir, "HEAD");
-  await git.pull(dir);
+  await git.pull(dir, project.token);
   const drift = await git.unmergedPaths(dir);
   return {
     ok: true,
@@ -229,7 +230,7 @@ export async function approve(
     let result: PushResult;
     try {
       result = await withSession(project, (client) =>
-        pushChanges(client, project.overleafProjectId!, dir, base, head),
+        pushChanges(client, project.overleafProjectId!, dir, base, head, snapshot),
       );
     } catch (err: any) {
       await git.resetSoft(dir, base);
@@ -249,7 +250,34 @@ export async function approve(
       ...(failed.length > 0 ? { pending: failed } : {}),
     };
   }
-  return git.commitAndPush(dir, message);
+  // An autostash conflict from the last sync leaves <<<<<<< markers in the
+  // files; `git add --all` would commit and push them as content.
+  const conflicted = (await git.unmergedPaths(dir)).filter((path) => {
+    try {
+      return /^<{7}(?: |$)/m.test(readFileSync(join(dir, path), "utf8"));
+    } catch {
+      return false;
+    }
+  });
+  if (conflicted.length > 0) {
+    throw new Error(`Resolve the Git conflicts in ${conflicted.join(", ")} first — they still contain <<<<<<< conflict markers.`);
+  }
+  await moveRemoteCredentials(project);
+  return git.commitAndPush(dir, message, project.token);
+}
+
+/**
+ * Git-bridge clones made by older versions keep the token in .git/config's
+ * remote URL, readable from an agent's shell. Move it to the project record
+ * (projects.json, which agents cannot read) and strip it from the URL.
+ */
+export async function moveRemoteCredentials(project: Project): Promise<void> {
+  if ((project.kind ?? "git") !== "git") return;
+  const token = await git.stripRemoteCredentials(projectDir(project.id));
+  if (token && !project.token) {
+    updateProject(project.id, { token });
+    project.token = token;
+  }
 }
 
 /**

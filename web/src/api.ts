@@ -442,9 +442,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (res.status === 404 && message === "not found") {
       message = "The BlattBot server is running an older version — restart it and try again.";
     }
-    throw new Error(message);
+    throw new HttpError(message, res.status);
   }
   return (await res.json()) as T;
+}
+
+/** A failed API call; `status` lets callers tell e.g. a busy project (409) from a real failure. */
+export class HttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "HttpError";
+  }
 }
 
 export const api = {
@@ -601,6 +609,12 @@ export const api = {
       method: "POST",
     }),
   diff: (id: string) => request<{ diff: string }>(`/api/projects/${id}/diff`),
+  /** Best source position of a passage (PDF text, a chat quote); rejects on a miss. */
+  locate: (id: string, text: string) =>
+    request<{ file: string; line: number }>(`/api/projects/${id}/locate`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
   /**
    * Approve & push. A 409 carrying `conflicts` (Overleaf changed files the
    * local tree also edited) throws ApproveConflictError so the Proof view can

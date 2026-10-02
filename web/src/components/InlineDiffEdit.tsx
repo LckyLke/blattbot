@@ -5,7 +5,7 @@ import { countFileSaves, notifyEditors, startFileSave, subscribeEditors } from "
 import { passageRange, type DiffLine } from "../diff";
 
 export const InlineDiffContext = createContext<{
-  projectId: string; busy: boolean; onDiff: (diff: string) => void; onSaved: () => void;
+  projectId: string; busy: boolean; onDiff: (projectId: string, diff: string) => void; onSaved: () => void;
 } | null>(null);
 
 export default function InlineDiffEdit({ path, lines }: { path: string; lines: DiffLine[] }) {
@@ -78,7 +78,7 @@ export default function InlineDiffEdit({ path, lines }: { path: string; lines: D
       else stashDraft(projectId, path, { content: live, base: content });
       notifyEditors({ projectId, path, origin, kind: "document", content: live, saved: content });
       setEdit(null); owned.current = null;
-      onDiff(result.diff); onSaved();
+      onDiff(projectId, result.diff); onSaved();
     } catch (err) { setError((err as Error).message); }
     finally { stopTracking(); setSaving(false); finish(); }
   }

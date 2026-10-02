@@ -6,6 +6,19 @@
 - Fixed: when a push to Overleaf failed partway through an approval, the approved edits stayed committed locally and the next sync could overwrite them with Overleaf's versions. They now stay pending — approve again to retry. A single file that fails to upload stays pending while the rest of the approval is committed. Git-bridge projects un-commit the same way when the pull or push fails, and are never left mid-rebase.
 - Fixed: an error outside the agent backend during a turn (turn setup, the post-turn compile) could stop the server. The turn now ends with an error message.
 - Security: `add_citation` writes only to `.bib` files inside the project, on every backend. The Claude backend's file tools can no longer read `.git`, matching the other backends.
+- Approve, sync, rejects, manual saves and reference edits now run one at a time per project, and an agent turn waits for an approve or sync that is already running. An approve can no longer push edits the agent started while it was uploading.
+- Fixed: an in-place Overleaf update could revert text a co-author typed while the approval was running. That file now stays pending, and the next approve shows the conflict.
+- Git-bridge projects: approve refuses files that still contain `<<<<<<<` conflict markers from a sync. The access token is no longer stored in the clone's `.git/config`, where an agent's shell could read it; existing clones are migrated on startup.
+- BlattBot's own state files (projects, accounts, settings, chat lists) are written atomically. A file that cannot be parsed is kept as a `.corrupt-…` copy instead of being silently replaced by an empty list.
+- Removing a project also removes its chats, stored model conversations, research data and paper records, and waits until no turn or research task is running. Deleting a chat removes the conversation the OpenAI-compatible backend stored for it. Rendered paper pages nobody viewed for 30 days are pruned.
+- Faster sync on large projects (one Git call instead of one per file). The background citation-graph scan no longer rebuilds unchanged graphs every 15 seconds.
+- OCR is reported as available only when Tesseract has English language data; the error names the missing package.
+- Updated `@fastify/static` to 10.x for its path-handling security advisories.
+- Fixed: a save or reference edit that finished after switching projects could show its diff in the other project's Proof tab, and an open References edit form could save into another project.
+- The interface loads faster: panels load on first use, the PDF, editor and citation-graph code is split from the main bundle, hidden panels stop polling, and streamed replies no longer re-render the whole app on every token. Long PDFs free the pages you scrolled away from.
+- Fonts ship with the app instead of loading from Google Fonts.
+- When the server is unreachable, the dashboard shows an error with Retry instead of the first-run setup. Stop, project removal and conflict discards now report failures instead of failing silently.
+- Fixed: in a narrow chat pane the model menu opened off-screen and could not be clicked. Reloading during a turn no longer shows a sync error.
 
 - Updated the website with Research walkthroughs recorded from a real sample project, captions, transcripts and a responsive video player.
 - Fixed live source search selecting the whole query after every keystroke. Codex startup now disables external MCP servers through nested configuration and omits null options, compatible with the current CLI.

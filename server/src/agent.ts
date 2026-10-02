@@ -14,8 +14,8 @@ import { repositoryManifest } from "./repositories.js";
 import { citationPassages, unreadCitationChanges } from "./sourcecoverage.js";
 import { abortQuestion } from "./questions.js";
 import { claudeBackend, runOneShot as runOneShotClaude } from "./backends/claude.js";
-import { openaiBackend, runOneShotOpenai } from "./backends/openai.js";
-import { codexBackend, runOneShotCodex } from "./backends/codex.js";
+import { deleteHistory, openaiBackend, runOneShotOpenai } from "./backends/openai.js";
+import { codexBackend, forgetCodexToolset, runOneShotCodex } from "./backends/codex.js";
 import { selectedBackend, type BackendId } from "./settings.js";
 import {
   SYSTEM_APPEND,
@@ -45,6 +45,16 @@ const activeControllers = new Map<string, AbortController>();
 // call returns, and a second /chat can start while that tail is still
 // running two git/tectonic processes against the same working tree at once.
 const pipelinesInFlight = new Set<string>();
+
+/**
+ * Drop what BlattBot itself stored for a model session (the OpenAI-compatible
+ * backend's full conversation log, Codex's tool-catalog marker). Claude and
+ * Codex keep their own transcripts in their CLIs' data directories.
+ */
+export function deleteSessionData(sessionId: string): void {
+  deleteHistory(sessionId);
+  forgetCodexToolset(sessionId);
+}
 
 export function isTurnActive(projectId: string): boolean {
   return activeControllers.has(projectId) || pipelinesInFlight.has(projectId);

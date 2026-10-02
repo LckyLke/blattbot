@@ -76,17 +76,13 @@ export async function scanRemoteDrift(
   snapshot: Map<string, Buffer>,
 ): Promise<Map<string, RemoteChangeKind>> {
   const drift = new Map<string, RemoteChangeKind>();
-  const headPaths = await git.listHeadFiles(dir);
-  const head = new Set(headPaths);
+  const head = await git.headBlobs(dir);
   for (const [rel, content] of snapshot) {
-    if (!head.has(rel)) {
-      drift.set(rel, "added");
-      continue;
-    }
-    const committed = await git.showAtHead(dir, rel);
-    if (!committed || !committed.equals(content)) drift.set(rel, "modified");
+    const committed = head.get(rel);
+    if (!committed) drift.set(rel, "added");
+    else if (committed !== git.blobId(content, committed)) drift.set(rel, "modified");
   }
-  for (const rel of headPaths) {
+  for (const rel of head.keys()) {
     if (!snapshot.has(rel)) drift.set(rel, "deleted");
   }
   return drift;
@@ -205,9 +201,11 @@ export async function pushChanges(
   dir: string,
   fromRef: string,
   toRef: string,
+  /** The remote state the caller's conflict check approved (see applyChanges). */
+  checkedSnapshot?: Map<string, Buffer>,
 ): Promise<PushResult> {
   const nameStatus = await git.diffNameStatus(dir, fromRef, toRef);
-  return applyChanges(client, remoteProjectId, dir, parseNameStatus(nameStatus));
+  return applyChanges(client, remoteProjectId, dir, parseNameStatus(nameStatus), checkedSnapshot);
 }
 
 /** Upload the entire working tree (used when publishing a local project). */
@@ -222,6 +220,15 @@ export async function pushAll(
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
+/** A co-author changed the doc after the conflict check — never overwrite that. */
+class RemoteDocChangedError extends Error {}
+
+/** Same doc text, ignoring line-ending and final-newline differences. */
+function sameDocText(a: string, b: string): boolean {
+  const norm = (t: string) => t.replace(/\r\n/g, "\n").replace(/\n$/, "");
+  return a === b || norm(a) === norm(b);
+}
+
 /** Strict UTF-8 decode; null when the bytes are not valid UTF-8. */
 function decodeUtf8(buf: Buffer): string | null {
   try {
@@ -231,11 +238,20 @@ function decodeUtf8(buf: Buffer): string | null {
   }
 }
 
+/**
+ * With `checkedSnapshot`, an in-place doc edit first confirms the live doc
+ * still matches the snapshot the caller's conflict check approved. The edit
+ * is computed against the LIVE text, so anything a co-author typed after the
+ * snapshot would otherwise be silently reverted; such a doc is left alone and
+ * reported as failed (it stays pending, and the next approve's conflict check
+ * shows the overlap).
+ */
 async function applyChanges(
   client: OverleafClient,
   remoteProjectId: string,
   dir: string,
   changes: PushChange[],
+  checkedSnapshot?: Map<string, Buffer>,
 ): Promise<PushResult> {
   const result: PushResult = { uploaded: [], updatedInPlace: [], deleted: [], failed: [], warnings: [] };
   if (changes.length === 0) return result;
@@ -301,17 +317,25 @@ async function applyChanges(
    * so the edit is verified by re-joining the doc and byte-comparing its text
    * against the target — a mismatch or a pushed otUpdateError fails the doc.
    */
-  const updateDocInPlace = async (docId: string, target: string): Promise<void> => {
+  const updateDocInPlace = async (docId: string, target: string, path: string): Promise<void> => {
     const s = await getSession();
     const { lines, version } = await s.joinDoc(docId);
+    const checked = checkedSnapshot ? decodeUtf8(checkedSnapshot.get(path) ?? Buffer.alloc(0)) : null;
+    const assertUnchanged = (live: string) => {
+      if (checkedSnapshot && !checkedSnapshot.has(path)) throw new RemoteDocChangedError();
+      if (checked !== null && !sameDocText(live, checked)) throw new RemoteDocChangedError();
+    };
     try {
       const current = lines.join("\n");
       if (current === target) return; // remote already matches
+      assertUnchanged(current);
       try {
         await s.applyOtUpdate(docId, computeTextOp(current, target), version);
       } catch (err: any) {
         if (!/version/i.test(String(err?.message ?? err))) throw err;
         const fresh = await s.joinDoc(docId);
+        if (fresh.lines.join("\n") === target) return;
+        assertUnchanged(fresh.lines.join("\n"));
         const op = computeTextOp(fresh.lines.join("\n"), target);
         if (op.length > 0) await s.applyOtUpdate(docId, op, fresh.version);
       }
@@ -351,11 +375,18 @@ async function applyChanges(
             );
           } else {
             try {
-              await updateDocInPlace(entity.id, target);
+              await updateDocInPlace(entity.id, target, change.path);
               result.updatedInPlace.push(change.path);
               result.uploaded.push(change.path);
               continue;
             } catch (err: any) {
+              if (err instanceof RemoteDocChangedError) {
+                result.failed.push(change.path);
+                result.warnings.push(
+                  `${change.path}: a collaborator edited it on Overleaf during the approval — not overwritten; still pending, approve again to review the conflict`,
+                );
+                continue;
+              }
               result.warnings.push(
                 `${change.path}: in-place update failed (${err?.message ?? err}) — replacing the whole doc instead; comments/tracked changes on ${change.path} may not survive`,
               );

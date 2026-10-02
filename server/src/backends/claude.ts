@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { getProject, projectDir, updateProject } from "../config.js";
 import { attachmentBase64, chatUploadsDir, type TurnAttachment } from "../chatimages.js";
 import { compileProject } from "../compile.js";
-import { addCitation, formatAddCitationResult, readAllBibEntries, searchPapers } from "../citations.js";
+import { addCitation, formatAddCitationResult, readAllBibEntries } from "../citations.js";
 import {
   auditEntries,
   formatAuditReport,
@@ -24,6 +24,7 @@ import { searchLiterature } from "../research/discovery.js";
 import { checkToolPaths, projectReadRoots, secretDenyRules } from "./paths.js";
 import { loadSettings, type Settings } from "../settings.js";
 import { executableOptions } from "../sdkinfo.js";
+import { currentVersion } from "../version.js";
 import { askUserQuestions, validateQuestions, type AgentQuestion } from "../questions.js";
 import {
   AGENT_TOOL_INFO,
@@ -189,7 +190,7 @@ export function buildMcpServer(ctx: BackendTurnContext) {
 
   return createSdkMcpServer({
     name: "blattbot",
-    version: "0.1.0",
+    version: currentVersion(),
     tools: [compileTool, searchTool, addCitationTool, listCitationsTool, auditCitationsTool, verifyCitationTool, readPaperSourceTool,
       ...RESEARCH_TOOLS.map((entry) => tool(entry.name, entry.description, entry.shape, async (args) => {
         try { return text(await executeResearchTool(ctx, entry.name, args)); }

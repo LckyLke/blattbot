@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -58,30 +59,54 @@ async function gitLiteral(cwd: string, ...args: string[]): Promise<string> {
 }
 
 /**
- * Inject credentials into an https git URL. Overleaf's git bridge authenticates
- * as user "git" with the token as password. Non-https URLs (local paths, ssh)
- * are returned unchanged.
+ * Credentials for ONE remote command. Overleaf's git bridge authenticates as
+ * user "git" with the token as password. The token is never written into the
+ * remote URL in .git/config, where an agent's shell could read it with
+ * `git remote -v`: a credential helper given on the command line answers the
+ * auth challenge from the environment instead. The empty helper first clears
+ * any configured ones, so the token is not saved to the user's keychain.
  */
-export function authedUrl(gitUrl: string, token?: string): string {
-  if (!token || !gitUrl.startsWith("https://")) return gitUrl;
-  const u = new URL(gitUrl);
-  u.username = "git";
-  u.password = token;
-  return u.toString();
+export function remoteAuth(token?: string): { args: string[]; env: Record<string, string> } {
+  if (!token) return { args: [], env: {} };
+  return {
+    args: ["-c", "credential.helper=", "-c", 'credential.helper=!f() { echo username=git; echo "password=$BLATTBOT_GIT_TOKEN"; }; f'],
+    env: { BLATTBOT_GIT_TOKEN: token },
+  };
+}
+
+/**
+ * Older BlattBot versions cloned with the token inside the remote URL. Rewrite
+ * such a URL without its credentials; returns the password it held, if any.
+ */
+export async function stripRemoteCredentials(dir: string): Promise<string | null> {
+  let url: URL;
+  try {
+    url = new URL((await git(dir, "remote", "get-url", "origin")).trim());
+  } catch {
+    return null; // no origin, or not a URL (local path, scp-style ssh)
+  }
+  if (!url.password) return null;
+  const password = decodeURIComponent(url.password);
+  url.username = "";
+  url.password = "";
+  await git(dir, "remote", "set-url", "origin", url.toString());
+  return password;
 }
 
 export async function clone(gitUrl: string, token: string | undefined, dir: string): Promise<void> {
+  const auth = remoteAuth(token);
   // autocrlf=false: mirrors must stay byte-faithful — Windows' default CRLF
   // conversion would silently rewrite every file pushed back to Overleaf.
-  await git(undefined, "-c", "core.autocrlf=false", "clone", authedUrl(gitUrl, token), dir);
+  await gitWithEnv(undefined, auth.env, [...auth.args, "-c", "core.autocrlf=false", "clone", gitUrl, dir]);
   await git(dir, "config", "core.autocrlf", "false");
   // Identity for commits made through BlattBot.
   await git(dir, "config", "user.name", "BlattBot");
   await git(dir, "config", "user.email", "blattbot@localhost");
 }
 
-export async function pull(dir: string): Promise<string> {
-  return git(dir, "pull", "--rebase", "--autostash");
+export async function pull(dir: string, token?: string): Promise<string> {
+  const auth = remoteAuth(token);
+  return gitWithEnv(dir, auth.env, [...auth.args, "pull", "--rebase", "--autostash"]);
 }
 
 /** Autostash can leave conflicts even when `git pull` exits successfully. */
@@ -210,14 +235,15 @@ export async function applyReverse(dir: string, patch: string): Promise<void> {
 }
 
 /** Stage everything, commit, rebase on the remote, and push. */
-export async function commitAndPush(dir: string, message: string): Promise<{ pushed: boolean }> {
+export async function commitAndPush(dir: string, message: string, token?: string): Promise<{ pushed: boolean }> {
   await git(dir, "add", "--all");
   if (!(await hasChanges(dir))) return { pushed: false };
   await git(dir, "commit", "-m", message);
+  const auth = remoteAuth(token);
   try {
     // Pick up anything collaborators pushed while the agent was working.
-    await git(dir, "pull", "--rebase");
-    await git(dir, "push", "origin", "HEAD");
+    await gitWithEnv(dir, auth.env, [...auth.args, "pull", "--rebase"]);
+    await gitWithEnv(dir, auth.env, [...auth.args, "push", "origin", "HEAD"]);
   } catch (err) {
     // Never leave a half-done rebase, or an unpushed commit that later
     // approvals would report as "nothing to push": un-commit so the changes
@@ -262,25 +288,27 @@ export async function commitPaths(dir: string, message: string, paths: string[])
   return true;
 }
 
-/** All paths tracked at HEAD ("/"-separated, like listFiles). */
-export async function listHeadFiles(dir: string): Promise<string[]> {
-  const out = await git(dir, "ls-tree", "-r", "--name-only", "-z", "HEAD");
-  return out.split("\0").filter(Boolean);
+/**
+ * Every blob tracked at HEAD ("/"-separated path → object id), from ONE git
+ * call — compare contents against it with blobId() instead of spawning a
+ * `git show` per file.
+ */
+export async function headBlobs(dir: string): Promise<Map<string, string>> {
+  const blobs = new Map<string, string>();
+  for (const record of (await git(dir, "ls-tree", "-r", "-z", "HEAD")).split("\0")) {
+    // "<mode> <type> <object>\t<path>"
+    const m = /^\d+ blob ([0-9a-f]+)\t(.+)$/s.exec(record);
+    if (m) blobs.set(m[2], m[1]);
+  }
+  return blobs;
 }
 
-/** Contents of a path as committed at HEAD, or null when HEAD does not have it. */
-export async function showAtHead(dir: string, relPath: string): Promise<Buffer | null> {
-  try {
-    const { stdout } = await execFileP("git", ["show", `HEAD:${relPath}`], {
-      cwd: dir,
-      maxBuffer: 64 * 1024 * 1024,
-      encoding: "buffer",
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "true" },
-    });
-    return stdout;
-  } catch {
-    return null;
-  }
+/** The object id git gives `content` as a blob (SHA-1, or SHA-256 repos when `like` is one). */
+export function blobId(content: Buffer, like = ""): string {
+  return createHash(like.length === 64 ? "sha256" : "sha1")
+    .update(`blob ${content.length}\0`)
+    .update(content)
+    .digest("hex");
 }
 
 /** Zip archive of the tree as committed at a rev (materializes old revisions). */
@@ -314,6 +342,3 @@ export async function log(dir: string, count = 20): Promise<string> {
   return git(dir, "log", `--max-count=${count}`, "--pretty=format:%h %an %ad %s", "--date=relative");
 }
 
-export async function headRef(dir: string): Promise<string> {
-  return (await git(dir, "rev-parse", "--short", "HEAD")).trim();
-}

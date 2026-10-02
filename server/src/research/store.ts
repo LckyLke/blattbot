@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -31,6 +32,11 @@ export function researchPath(projectId: string, name: string): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(projectId) || !/^[a-z-]+$/.test(name))
     throw new Error("invalid research store identifier");
   return join(DATA_DIR, "research", projectId, `${name}.json`);
+}
+/** Every research store of a project. */
+export function deleteResearchData(projectId: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(projectId)) throw new Error("invalid research store identifier");
+  rmSync(join(DATA_DIR, "research", projectId), { recursive: true, force: true });
 }
 export function readStore<T>(projectId: string, name: string, fallback: T): T {
   const path = researchPath(projectId, name);

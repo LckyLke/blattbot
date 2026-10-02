@@ -5,10 +5,14 @@ import AccountSignIn, { RemoteLoginHint } from "./AccountSignIn";
 import { useDialog } from "./Dialog";
 
 interface Props {
-  projects: Project[];
-  accounts: Account[];
+  /** null while the first load is in flight (or failed — see loadError). */
+  projects: Project[] | null;
+  accounts: Account[] | null;
+  /** Why the last load of the lists failed; null after a good one. */
+  loadError: string | null;
   onOpen: (id: string) => void;
-  onChanged: () => void;
+  /** Reload the lists — after a change, and from the error state's Retry. */
+  onChanged: () => void | Promise<unknown>;
   onOpenSettings: () => void;
 }
 
@@ -38,20 +42,34 @@ type FormKind = "none" | "account" | "blank" | "git";
  * rest get an Import action), plus local/git projects with creation and
  * publish-to-Overleaf affordances.
  */
-export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpenSettings }: Props) {
+export default function Dashboard({ projects, accounts, loadError, onOpen, onChanged, onOpenSettings }: Props) {
   const [form, setForm] = useState<FormKind>("none");
+  const [retrying, setRetrying] = useState(false);
 
-  const accountIds = useMemo(() => new Set(accounts.map((a) => a.id)), [accounts]);
+  const accountIds = useMemo(() => new Set((accounts ?? []).map((a) => a.id)), [accounts]);
   // Everything that doesn't live under a listed account: local, git, orphans.
   const localish = useMemo(
     () =>
-      projects.filter(
+      (projects ?? []).filter(
         (p) => p.kind === "local" || p.kind === "git" || !(p.accountId && accountIds.has(p.accountId)),
       ),
     [projects, accountIds],
   );
 
-  const empty = accounts.length === 0 && projects.length === 0;
+  // Only lists that actually loaded can be empty: while they load, or when
+  // the server could not be reached, this is not a first run — the account
+  // setup must not flash (or stick) for a returning user.
+  const loaded = projects !== null && accounts !== null;
+  const empty = loaded && accounts.length === 0 && projects.length === 0;
+
+  async function retry() {
+    setRetrying(true);
+    try {
+      await onChanged();
+    } finally {
+      setRetrying(false);
+    }
+  }
 
   async function addAccount(url: string, cookie: string) {
     await api.addAccount(url, cookie);
@@ -93,6 +111,34 @@ export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpe
           </div>
         </div>
 
+        {loadError && (
+          <div
+            role="alert"
+            className="mt-6 flex max-w-xl flex-wrap items-center gap-3 rounded-2xl border border-pencil/40 bg-ink-2 px-5 py-4"
+          >
+            <p className="min-w-0 flex-1 font-sans text-[13.5px] leading-relaxed text-paper-dim">
+              {loaded
+                ? "Couldn't refresh your projects — showing the last loaded list."
+                : "Couldn't load your projects — the BlattBot server is not answering."}
+              <span className="mt-1 block font-mono text-[11.5px] text-pencil">{loadError}</span>
+            </p>
+            <button
+              onClick={() => void retry()}
+              disabled={retrying}
+              className="rounded-lg border border-rule px-3 py-1.5 text-[12.5px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+            >
+              {retrying ? "Retrying…" : "Retry"}
+            </button>
+          </div>
+        )}
+
+        {!loaded && !loadError && (
+          <p role="status" className="mt-6 flex items-center gap-2 text-[12.5px] text-graphite">
+            <span className="working-dot inline-block h-1.5 w-1.5 rounded-full bg-graphite" />
+            Loading projects…
+          </p>
+        )}
+
         {empty && form === "none" && (
           <p className="mt-6 max-w-lg font-sans text-[15px] leading-relaxed text-graphite">
             Sign in to Overleaf and pick projects straight from your account — or start a blank
@@ -113,22 +159,26 @@ export default function Dashboard({ projects, accounts, onOpen, onChanged, onOpe
         {form === "blank" && <BlankForm onDone={onChanged} onOpen={onOpen} onClose={() => setForm("none")} />}
         {form === "git" && <GitForm onDone={onChanged} onOpen={onOpen} onClose={() => setForm("none")} />}
 
-        {accounts.map((a) => (
-          <AccountSection
-            key={a.id}
-            account={a}
-            projects={projects}
-            onOpen={onOpen}
-            onChanged={onChanged}
-          />
-        ))}
+        {loaded && (
+          <>
+            {accounts.map((a) => (
+              <AccountSection
+                key={a.id}
+                account={a}
+                projects={projects}
+                onOpen={onOpen}
+                onChanged={onChanged}
+              />
+            ))}
 
-        <LocalSection
-          projects={localish}
-          accounts={accounts}
-          onOpen={onOpen}
-          onChanged={onChanged}
-        />
+            <LocalSection
+              projects={localish}
+              accounts={accounts}
+              onOpen={onOpen}
+              onChanged={onChanged}
+            />
+          </>
+        )}
       </div>
     </div>
   );
@@ -371,7 +421,11 @@ function AccountSection({
       danger: true,
     });
     if (!ok) return;
-    await api.deleteProject(p.id).catch(() => {});
+    try {
+      await api.deleteProject(p.id);
+    } catch (err: any) {
+      void dialog.alert({ title: "Couldn't remove the project", body: `“${p.name}” was not removed: ${err.message}` });
+    }
     onChanged();
   }
 
@@ -592,7 +646,11 @@ function LocalSection({
       danger: true,
     });
     if (!ok) return;
-    await api.deleteProject(p.id).catch(() => {});
+    try {
+      await api.deleteProject(p.id);
+    } catch (err: any) {
+      void dialog.alert({ title: "Couldn't remove the project", body: `“${p.name}” was not removed: ${err.message}` });
+    }
     onChanged();
   }
 
