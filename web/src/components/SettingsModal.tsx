@@ -32,6 +32,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
   const [backend, setBackend] = useState<BackendId>("codex");
   const [codexModel, setCodexModel] = useState("");
   const [codexEffort, setCodexEffort] = useState<Settings["codexEffort"]>("");
+  const [codexServiceTier, setCodexServiceTier] = useState<Settings["codexServiceTier"]>("");
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [checkingCodex, setCheckingCodex] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
@@ -85,6 +86,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
       setBackend(s.backend || "codex");
       setCodexModel(s.codexModel ?? "");
       setCodexEffort(s.codexEffort ?? "");
+      setCodexServiceTier(s.codexServiceTier ?? "");
       setModel(s.model);
       setBaseUrl(s.anthropicBaseUrl);
       setOaiBaseUrl(s.openaiBaseUrl);
@@ -184,6 +186,7 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
         backend,
         codexModel: codexModel.trim(),
         codexEffort,
+        codexServiceTier,
         model: model.trim(),
         anthropicBaseUrl: baseUrl.trim(),
         openaiBaseUrl: oaiBaseUrl.trim(),
@@ -510,6 +513,16 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
                         .map((level) => <option key={level} value={level}>{level}</option>)}
                     </select>
                   </label>
+                  <label className="block text-[11px] text-graphite">Codex speed
+                    <select value={codexServiceTier} onChange={(e) => setCodexServiceTier(e.target.value as Settings["codexServiceTier"])}
+                      aria-describedby="codex-speed-hint"
+                      className="mt-1 w-full rounded-lg border border-rule bg-ink px-2.5 py-2 text-xs text-paper">
+                      <option value="">Codex default</option>
+                      <option value="default">Standard</option>
+                      <option value="priority">Fast</option>
+                    </select>
+                  </label>
+                  <p id="codex-speed-hint" className="text-[11px] leading-relaxed text-graphite">Fast mode gives faster responses on supported models and uses more of your Codex allowance. Applies from the next turn, including background helpers.</p>
                   <p className="text-[11px] leading-relaxed text-graphite">Codex reports token usage. Dollar costs are unavailable for these turns.</p>
                 </div>
               )}

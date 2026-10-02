@@ -161,6 +161,7 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
     await client.initialize();
     signal.throwIfAborted();
     const config = await client.threadConfig();
+    const serviceTier = settings.codexServiceTier || config.service_tier || null;
     const editing = Boolean(ctx && !ctx.readOnly);
     // The native policy also supplies model-visible permission instructions.
     // Keep it aligned with the host tools, including when resuming old chats.
@@ -174,7 +175,8 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
         : "Current BlattBot turn: project editing is ENABLED. Use write_file and edit_file for requested project changes; add_citation is also available. Attached external context remains read-only.";
     const common = {
       cwd: codexWorkspace(), sandbox: editing ? "workspace-write" : "read-only", approvalPolicy: "never",
-      config: { ...config, sandbox_workspace_write: {
+      serviceTier,
+      config: { ...config, ...(settings.codexServiceTier === "priority" ? { "features.fast_mode": true } : {}), sandbox_workspace_write: {
         writable_roots: editing ? [ctx!.dir] : [], network_access: false,
         exclude_tmpdir_env_var: true, exclude_slash_tmp: true,
       } }, baseInstructions: instructions,
@@ -210,6 +212,7 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
     emit({ type: "thinking" });
     const turn = await client.request("turn/start", {
       threadId,
+      serviceTier,
       sandboxPolicy,
       approvalPolicy: "never",
       input: [

@@ -286,6 +286,74 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     expect(result.warnings?.some((w) => w.includes("run Sync to retry"))).toBe(true);
   });
 
+  it("a push that throws midway leaves every approved change pending — no sync can overwrite it", async () => {
+    // sync.ts was re-imported after resetModules, so spy on THAT module graph's client.
+    const { OverleafClient: Client } = await import("../src/overleaf/olclient.js");
+    const localMain = MAIN.replace("Body.", "Approved edit.");
+    writeFileSync(join(dir, "main.tex"), localMain); // existing doc: in-place update, lands first
+    writeFileSync(join(dir, "notes.tex"), "New file.\n"); // new file: upload, throws
+    const upload = vi.spyOn(Client.prototype, "uploadFile").mockRejectedValueOnce(new Error("socket hang up"));
+    const before = await git.revParse(dir, "HEAD");
+
+    await expect(sync.approve(project(), "edit")).rejects.toThrow(/socket hang up.*still pending/);
+    expect(await git.revParse(dir, "HEAD")).toBe(before);
+    expect(mock.files.get("main.tex")?.toString()).toBe(localMain);
+    const diff = await git.workingDiff(dir);
+    expect(diff).toContain("Approved edit.");
+    expect(diff).toContain("notes.tex");
+
+    // The next sync keeps both; main.tex already matches Overleaf, so it is not drift.
+    const synced = await sync.syncIn(project());
+    expect(synced.drift).toBeUndefined();
+    expect(readFileSync(join(dir, "main.tex"), "utf8")).toBe(localMain);
+    expect(readFileSync(join(dir, "notes.tex"), "utf8")).toBe("New file.\n");
+
+    upload.mockRestore();
+    const retried = await sync.approve(project(), "edit");
+    expect(retried.pushed).toBe(true);
+    expect(mock.files.get("notes.tex")?.toString()).toBe("New file.\n");
+    expect(await git.hasChanges(dir)).toBe(false);
+  });
+
+  it("a file that fails to upload stays pending while the rest of the approval is committed", async () => {
+    const { OverleafClient: Client } = await import("../src/overleaf/olclient.js");
+    writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Landed."));
+    writeFileSync(join(dir, "notes.tex"), "Rejected upload.\n");
+    vi.spyOn(Client.prototype, "uploadFile").mockResolvedValueOnce({ ok: false, duplicate: false });
+    const before = await git.revParse(dir, "HEAD");
+
+    const result = await sync.approve(project(), "partial");
+    expect(result.pushed).toBe(true);
+    expect(result.pending).toEqual(["notes.tex"]);
+    expect(result.warnings?.some((w) => w.includes("notes.tex") && w.includes("still pending"))).toBe(true);
+    expect(await git.revParse(dir, "HEAD")).not.toBe(before);
+    expect(await git.changedPaths(dir)).toEqual(["notes.tex"]);
+    const log = execFileSync("git", ["log", "-1", "--name-only", "--format=%s"], { cwd: dir, encoding: "utf8" });
+    expect(log).toContain("partial");
+    expect(log).toContain("main.tex");
+    expect(log).not.toContain("notes.tex");
+  });
+
+  it("git-bridge approve un-commits when the push fails, so a retry pushes it", async () => {
+    const remoteDir = join(dataDir, "remote.git");
+    const run = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
+    run(dir, "clone", "--bare", dir, remoteDir);
+    run(dir, "remote", "add", "origin", remoteDir);
+    run(dir, "fetch", "origin");
+    run(dir, "branch", `--set-upstream-to=origin/${run(dir, "branch", "--show-current").trim()}`);
+    const before = await git.revParse(dir, "HEAD");
+    writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Git edit."));
+    run(dir, "remote", "set-url", "origin", join(dataDir, "missing.git"));
+
+    await expect(sync.approve({ ...project(), kind: "git", gitUrl: remoteDir }, "edit")).rejects.toThrow();
+    expect(await git.revParse(dir, "HEAD")).toBe(before);
+    expect(await git.changedPaths(dir)).toEqual(["main.tex"]);
+
+    run(dir, "remote", "set-url", "origin", remoteDir);
+    expect(await sync.approve({ ...project(), kind: "git", gitUrl: remoteDir }, "edit")).toEqual({ pushed: true });
+    expect(run(remoteDir, "show", "HEAD:main.tex")).toContain("Git edit.");
+  });
+
   it("reports Git autostash conflicts even when pull exits successfully", async () => {
     const remoteDir = join(dataDir, "remote.git");
     const collaborator = join(dataDir, "collaborator");

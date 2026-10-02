@@ -73,6 +73,7 @@ try {
   assert((await page.locator("pre").allTextContents()).some(text => text.includes("The exact claim being verified.")));
   await page.getByRole("button", { name: "Hide tool details", exact: true }).first().click();
   const effort = page.getByRole("combobox", { name: "Reasoning effort", exact: true });
+  const speed = page.getByRole("combobox", { name: "Codex speed", exact: true });
   const savedSettings = async () => (await page.request.get(base + "/api/settings")).json();
   const choose = async (value: string) => {
     const saved = page.waitForResponse(r => r.url() === base + "/api/settings" && r.request().method() === "PUT");
@@ -87,15 +88,45 @@ try {
   await choose("high"); assert.equal((await savedSettings()).codexEffort, "high");
   await page.reload({ waitUntil: "networkidle" });
   await effort.waitFor(); assert.equal(await effort.inputValue(), "high");
+  const chooseSpeed = async (value: string) => {
+    const saved = page.waitForResponse(r => r.url() === base + "/api/settings" && r.request().method() === "PUT");
+    await speed.selectOption(value); await saved;
+    await page.waitForFunction(value => {
+      const select = document.querySelector<HTMLSelectElement>('select[aria-label="Codex speed"]');
+      return select?.value === value && !select.disabled;
+    }, value);
+  };
+  assert.equal(await speed.inputValue(), "");
+  await chooseSpeed("priority"); assert.equal((await savedSettings()).codexServiceTier, "priority");
+  await page.reload({ waitUntil: "networkidle" });
+  assert.equal(await speed.inputValue(), "priority");
+  await chooseSpeed("default"); assert.equal((await savedSettings()).codexServiceTier, "default");
+  await chooseSpeed(""); assert.equal((await savedSettings()).codexServiceTier, "");
+  await chooseSpeed("priority");
+  for (const invalid of ["turbo", 1.5, null, true]) {
+    const response = await page.request.put(base + "/api/settings", { data: { codexServiceTier: invalid } });
+    assert.equal(response.status(), 400);
+    assert.equal((await savedSettings()).codexServiceTier, "priority");
+  }
   // A connection recheck must replace both the settings and chat model caches.
   await page.getByRole("button", { name: "Open settings", exact: true }).click();
   const settingsDialog = page.getByRole("dialog", { name: "Settings", exact: true });
   await settingsDialog.getByRole("tab", { name: "Agent", exact: true }).click();
+  const settingsSpeed = settingsDialog.getByRole("combobox", { name: "Codex speed", exact: true });
+  assert.equal(await settingsSpeed.inputValue(), "priority");
+  await settingsSpeed.selectOption("default");
+  await settingsDialog.getByRole("button", { name: "Save settings", exact: true }).click();
+  await settingsDialog.getByText("Saved.", { exact: true }).waitFor();
+  assert.equal((await savedSettings()).codexServiceTier, "default");
+  await settingsDialog.screenshot({ path: "/tmp/blattbot-codex-speed-settings.png" });
   await settingsDialog.locator('#blattbot-codex-models option[value="fixture-codex"]').waitFor({ state: "attached" });
   assert.equal(await settingsDialog.locator('#blattbot-codex-models option[value="fixture-codex-latest"]').count(), 0);
   await settingsDialog.getByRole("button", { name: "Check again", exact: true }).click();
   await settingsDialog.locator('#blattbot-codex-models option[value="fixture-codex-latest"]').waitFor({ state: "attached" });
   await settingsDialog.getByRole("button", { name: "Close settings", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector<HTMLSelectElement>('select[aria-label="Codex speed"]')?.value === "default");
+  assert.equal(await speed.inputValue(), "default");
+  await chooseSpeed("priority");
   await page.getByRole("button", { name: "Agent model", exact: true }).click();
   await page.getByRole("button", { name: /^fixture-codex-latest/ }).waitFor();
   await page.getByRole("button", { name: /^fixture-codex-latest/ }).press("Escape");
@@ -134,6 +165,10 @@ try {
   await effort.selectOption("ultra");
   await page.getByText("Fixture save failure", { exact: false }).waitFor();
   assert.equal(await effort.inputValue(), "high");
+  await speed.selectOption("default");
+  await page.waitForFunction(() => !document.querySelector<HTMLSelectElement>('select[aria-label="Codex speed"]')?.disabled);
+  assert.equal(await speed.inputValue(), "priority");
+  assert.equal((await savedSettings()).codexServiceTier, "priority");
   await page.unroute("**/api/settings");
   // Effort choices follow the project's effective model, including overrides.
   const overridden = await page.request.put(`${base}/api/projects/${project.id}/settings`, { data: { model: "fixture-limited" } });
@@ -146,13 +181,16 @@ try {
   await page.request.put(base + "/api/settings", { data: { backend: "claude", model: "claude-sonnet-5", effort: "" } });
   await page.reload({ waitUntil: "networkidle" });
   await effort.locator('option[value="max"]').waitFor({ state: "attached" });
+  assert.equal(await speed.count(), 0);
   await choose("max"); assert.equal((await savedSettings()).effort, "max");
   assert.equal((await savedSettings()).codexEffort, "");
+  assert.equal((await savedSettings()).codexServiceTier, "priority");
   await page.request.put(base + "/api/settings", { data: { backend: "openai", openaiModel: "fixture" } });
   await page.reload({ waitUntil: "networkidle" });
   assert.equal(await effort.count(), 0);
+  assert.equal(await speed.count(), 0);
   assert.deepEqual(errors, []);
-  console.log("Chat model refresh, usage limits, expandable citation evidence, and reasoning effort passed: shared catalog refresh, catalog levels, save/reload, failed save, project override, defaults, Codex/Claude isolation, unsupported backend.");
+  console.log("Chat model refresh, usage limits, citation evidence, reasoning effort, and Codex speed passed: save/reload, shared settings, failed save, invalid tiers, project override, defaults, backend isolation, narrow panes.");
 } finally {
   await browser?.close(); server.kill("SIGTERM");
   await new Promise(resolve => { if (server.exitCode !== null) resolve(undefined); else server.once("exit", resolve); });

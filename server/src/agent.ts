@@ -387,7 +387,6 @@ export async function runTurn(
   attachments: TurnAttachment[] = [],
 ): Promise<void> {
   const controller = new AbortController();
-  activeControllers.set(project.id, controller);
   const dir = projectDir(project.id);
   const settings = loadSettings();
   const modeInfo = AGENT_MODES.find((m) => m.id === mode) ?? AGENT_MODES[0];
@@ -440,6 +439,10 @@ export async function runTurn(
     },
   };
 
+  // Registered only now, right before the try whose finally removes it: a
+  // throw during the (synchronous) setup above must not leave the project
+  // marked busy forever.
+  activeControllers.set(project.id, controller);
   try {
     await backend.runTurn(ctx);
   } catch (err: any) {

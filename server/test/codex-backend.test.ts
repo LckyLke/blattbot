@@ -135,6 +135,36 @@ describe("Codex background harness", () => {
     expect(start.config["features.shell_tool"]).toBe(false);
     expect(start.dynamicTools.some((t: any) => t.name === "verify_citation_support")).toBe(true);
     expect(start.model).toBeUndefined(); // inherit Codex's configured model
+    expect(start.serviceTier).toBeNull(); // inherit standard speed when no CLI tier is configured
+    expect(log().find(m => m.method === "turn/start").params.serviceTier).toBeNull();
+  });
+
+  it.each(["start", "resume"])("applies speed changes and restores the CLI default on thread/%s", async (method) => {
+    vi.stubEnv("BLATTBOT_TEST_CODEX_TIER", "priority");
+    const { codexBackend, recordCodexToolset } = await import("../src/backends/codex.js");
+    if (method === "resume") {
+      ctx.session.sessionId = "codex-01900000-0000-7000-8000-000000000001";
+      recordCodexToolset(ctx.session.sessionId.slice(6));
+    }
+    for (const tier of ["priority", "default", ""] as const) {
+      ctx.settings.codexServiceTier = tier;
+      await codexBackend.runTurn(ctx);
+    }
+    const threads = log().filter(m => m.method === `thread/${method}`);
+    const turns = log().filter(m => m.method === "turn/start");
+    expect(threads.map(m => m.params.serviceTier)).toEqual(["priority", "default", "priority"]);
+    expect(turns.map(m => m.params.serviceTier)).toEqual(["priority", "default", "priority"]);
+    expect(threads[0].params.config["features.fast_mode"]).toBe(true);
+  });
+
+  it("clears a resumed chat's previous Fast tier when the CLI has no speed override", async () => {
+    const { codexBackend, recordCodexToolset } = await import("../src/backends/codex.js");
+    ctx.session.sessionId = "codex-01900000-0000-7000-8000-000000000001";
+    recordCodexToolset(ctx.session.sessionId.slice(6));
+    ctx.settings.codexServiceTier = "";
+    await codexBackend.runTurn(ctx);
+    expect(log().find(m => m.method === "thread/resume").params.serviceTier).toBeNull();
+    expect(log().find(m => m.method === "turn/start").params.serviceTier).toBeNull();
   });
 
   it("resumes Codex sessions and counts only this turn's tokens", async () => {
@@ -260,10 +290,14 @@ describe("Codex background harness", () => {
 
   it("uses Codex for ephemeral, tool-less one-shot calls too", async () => {
     vi.stubEnv("BLATTBOT_TEST_CODEX_SCENARIO", "oneshot");
+    const { saveSettings } = await import("../src/settings.js");
+    saveSettings({ codexServiceTier: "priority" });
     const { runOneShot } = await import("../src/agent.js");
     expect(await runOneShot("Summarize this paper")).toBe("All done.");
     expect(log().find((m) => m.method === "thread/start").params).toMatchObject({ ephemeral: true, dynamicTools: [] });
     expect(log().find((m) => m.method === "turn/start").params.sandboxPolicy).toEqual({ type: "readOnly", networkAccess: false });
+    expect(log().find(m => m.method === "thread/start").params.serviceTier).toBe("priority");
+    expect(log().find(m => m.method === "turn/start").params.serviceTier).toBe("priority");
   });
 
   it("checks installation, login, and the model catalog without starting a turn", async () => {

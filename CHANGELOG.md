@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added Codex Fast mode in the chat toolbar and Settings → Agent, with persistent Standard/Fast/CLI-default choices for new chats, resumed turns, and background helpers.
+- Fixed: when a push to Overleaf failed partway through an approval, the approved edits stayed committed locally and the next sync could overwrite them with Overleaf's versions. They now stay pending — approve again to retry. A single file that fails to upload stays pending while the rest of the approval is committed. Git-bridge projects un-commit the same way when the pull or push fails, and are never left mid-rebase.
+- Fixed: an error outside the agent backend during a turn (turn setup, the post-turn compile) could stop the server. The turn now ends with an error message.
+- Security: `add_citation` writes only to `.bib` files inside the project, on every backend. The Claude backend's file tools can no longer read `.git`, matching the other backends.
+
 - Updated the website with Research walkthroughs recorded from a real sample project, captions, transcripts and a responsive video player.
 - Fixed live source search selecting the whole query after every keystroke. Codex startup now disables external MCP servers through nested configuration and omits null options, compatible with the current CLI.
 

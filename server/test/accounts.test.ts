@@ -129,4 +129,17 @@ describe("settings store", () => {
     s.saveSettings({ apiKey: "" });
     expect(s.publicSettings().hasApiKey).toBe(false);
   });
+
+  it("keeps existing settings compatible and persists the Codex speed choice", async () => {
+    const s = await loadSettingsModule();
+    s.saveSettings({ model: "opus" });
+    expect(s.loadSettings().codexServiceTier).toBe("");
+    s.saveSettings({ codexServiceTier: "priority" });
+    expect(s.publicSettings().codexServiceTier).toBe("priority");
+    s.saveSettings({ codexServiceTier: "default" });
+    expect(s.loadSettings().codexServiceTier).toBe("default");
+    s.saveSettings({ codexServiceTier: "" });
+    expect(s.loadSettings().codexServiceTier).toBe("");
+    expect(s.loadSettings().model).toBe("opus");
+  });
 });

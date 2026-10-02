@@ -4,8 +4,9 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Match the browser's canonical paths (macOS /var symlink; Windows 8.3 temp paths).
-const root = realpathSync(mkdtempSync(join(tmpdir(), "blattbot-git-evidence-")));
+// Match the browser's canonical paths (macOS /var symlink; Windows 8.3 temp
+// paths — only the native realpath expands RUNNER~1 to its long name).
+const root = realpathSync.native(mkdtempSync(join(tmpdir(), "blattbot-git-evidence-")));
 const source = join(root, "source");
 let repos: typeof import("../src/repositories.js");
 let evidence: typeof import("../src/research/code-evidence.js");

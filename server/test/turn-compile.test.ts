@@ -87,3 +87,37 @@ it("detects added and deleted files, but ignores Git bookkeeping", async () => {
   await turn(() => writeFileSync(join(dir, ".git", "description"), "Bookkeeping only"));
   expect(mocks.compile).not.toHaveBeenCalled();
 });
+
+async function settle() {
+  for (let i = 0; i < 100; i++) {
+    if (!(await call(`/api/projects/${id}`)).json().turnActive) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error("Turn did not settle");
+}
+
+/** Transcript events since the most recent user message. */
+async function lastTurnEvents(): Promise<any[]> {
+  const { activeChatId } = (await call(`/api/projects/${id}/chats`)).json();
+  const events: any[] = (await call(`/api/projects/${id}/chats/${activeChatId}/transcript`)).json().events;
+  return events.slice(events.map(e => e.type).lastIndexOf("user_message"));
+}
+
+it("ends the turn visibly when the pipeline throws, instead of crashing the server", async () => {
+  mocks.turn.mockImplementationOnce(async () => { throw new Error("backend setup failed"); });
+  expect((await call(`/api/projects/${id}/chat`, { message: "Failing turn" })).statusCode).toBe(200);
+  await settle();
+  const events = await lastTurnEvents();
+  expect(events).toContainEqual(expect.objectContaining({ type: "notice", tone: "error", text: "backend setup failed" }));
+  expect(events.filter(e => e.type === "turn_end")).toEqual([expect.objectContaining({ isError: true })]);
+  // Still serving, and the project takes the next turn.
+  await turn(() => {});
+});
+
+it("reports a throwing post-turn compile without a second turn_end", async () => {
+  mocks.compile.mockRejectedValueOnce(new Error("engine vanished"));
+  await turn(() => writeFileSync(join(dir, "main.tex"), original + "\n% compile throws\n"));
+  const events = await lastTurnEvents();
+  expect(events).toContainEqual(expect.objectContaining({ type: "notice", tone: "error", text: "engine vanished" }));
+  expect(events.filter(e => e.type === "turn_end")).toHaveLength(1);
+});

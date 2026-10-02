@@ -187,6 +187,11 @@ describe("canUseTool fence", () => {
     const r = checkToolPaths("Write", { file_path: ".git/config" }, projectDir, []);
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/\.git directory is off-limits/);
+    // Reads too: a git-bridge clone's .git/config holds the remote's access token.
+    for (const tool of ["Read", "Grep", "Glob"]) {
+      expect(checkToolPaths(tool, { file_path: join(projectDir, ".git", "config"), path: ".git" }, projectDir, []).ok).toBe(false);
+    }
+    expect(checkToolPaths("Read", { file_path: "main.tex" }, projectDir, []).ok).toBe(true);
   });
 
   it("leaves non-file tools alone", async () => {

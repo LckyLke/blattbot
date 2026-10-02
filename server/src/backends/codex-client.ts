@@ -151,6 +151,9 @@ export class CodexClient {
   async threadConfig(): Promise<Record<string, unknown>> {
     const { config } = await this.request("config/read", { includeLayers: false });
     const overrides = { ...CODEX_CONFIG };
+    // Carry the CLI's current tier so a resumed chat can return to that default
+    // after a BlattBot speed override, instead of retaining its previous tier.
+    if (typeof config?.service_tier === "string") overrides.service_tier = config.service_tier;
     // thread/start accepts nested JSON tables. Quoted dotted paths create a
     // literal quoted server name in current CLIs, leaving it without a transport.
     // Drop null optionals: converting JSON null to TOML otherwise produces "".

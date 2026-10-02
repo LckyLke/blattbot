@@ -1,6 +1,7 @@
 import { semanticScholarGet, openAlexHeaders } from "./research-providers.js";
 import { readFileSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { assertNoSymlinkPath, isInside } from "./backends/paths.js";
 import {
   ensureUniqueKey,
   findDuplicate,
@@ -721,11 +722,25 @@ export function exportBibliography(projectPath: string): string {
 }
 
 /**
+ * `bibFile` comes from the agent, so it is untrusted: it must name a .bib file
+ * inside the project — never a path that climbs out (e.g. into BlattBot's own
+ * data directory), into .git, or through a symlink.
+ */
+function checkBibTarget(projectPath: string, bibFile: string): void {
+  const abs = resolve(projectPath, bibFile);
+  if (abs === projectPath || !isInside(abs, projectPath)) throw new Error(`bibFile must stay inside the project: ${bibFile}`);
+  if (isInside(abs, join(projectPath, ".git"))) throw new Error("the .git directory is off-limits");
+  if (!abs.toLowerCase().endsWith(".bib")) throw new Error(`bibFile must be a .bib file: ${bibFile}`);
+  assertNoSymlinkPath(projectPath, abs);
+}
+
+/**
  * Fetch BibTeX for a reference (DOI, dblp:<key>, or arxiv:<id>), dedupe
  * against the project's bibliography, normalize the key and the entry,
  * and append to a .bib file.
  */
 export async function addCitation(projectPath: string, ref: string, bibFile?: string): Promise<AddCitationResult> {
+  if (bibFile) checkBibTarget(projectPath, bibFile);
   const raw = await fetchBibtexByRef(ref);
   const parsed = parseBib(raw)[0];
   if (!parsed) throw new Error("Fetched BibTeX could not be parsed.");
@@ -744,7 +759,7 @@ export async function addCitation(projectPath: string, ref: string, bibFile?: st
   }
 
   const target = bibFile ?? findBibFiles(projectPath)[0] ?? "references.bib";
-  const targetPath = join(projectPath, target);
+  const targetPath = resolve(projectPath, target);
 
   const existingKeys = new Set(all.map((x) => x.entry.key));
   const desired = normalizeKey(parsed.fields.author, parsed.fields.year, parsed.fields.title);

@@ -59,6 +59,17 @@ export async function applySnapshot(dir: string, snapshot: Map<string, Buffer>, 
 
 export type RemoteChangeKind = "modified" | "added" | "deleted";
 
+/** True when the worktree holds exactly `remote` at `rel` (both absent counts too). */
+function sameAsWorktree(dir: string, rel: string, remote: Buffer | undefined): boolean {
+  let local: Buffer | undefined;
+  try {
+    local = readFileSync(join(dir, rel));
+  } catch {
+    /* absent locally */
+  }
+  return local && remote ? local.equals(remote) : !local && !remote;
+}
+
 /** Which remote snapshot paths differ from HEAD, and how. */
 export async function scanRemoteDrift(
   dir: string,
@@ -128,7 +139,14 @@ export async function syncIn(
   const merged: string[] = [];
   const drift: string[] = [];
   for (const rel of remote.keys()) {
-    (local.has(rel) ? drift : merged).push(rel);
+    if (!local.has(rel)) {
+      merged.push(rel);
+      continue;
+    }
+    // Already identical on both sides (e.g. pushed before a failed approve
+    // was rolled back) — pending locally, but not drift.
+    if (sameAsWorktree(dir, rel, snapshot.get(rel))) continue;
+    drift.push(rel);
   }
   const changed = merged.length > 0 ? await mergeRemotePaths(dir, snapshot, merged) : false;
   return {
@@ -169,6 +187,8 @@ export interface PushResult {
   /** Subset of uploaded that was edited in place — entity ids preserved. */
   updatedInPlace: string[];
   deleted: string[];
+  /** Paths that did NOT reach Overleaf (each also carries a warning). */
+  failed: string[];
   warnings: string[];
 }
 
@@ -217,7 +237,7 @@ async function applyChanges(
   dir: string,
   changes: PushChange[],
 ): Promise<PushResult> {
-  const result: PushResult = { uploaded: [], updatedInPlace: [], deleted: [], warnings: [] };
+  const result: PushResult = { uploaded: [], updatedInPlace: [], deleted: [], failed: [], warnings: [] };
   if (changes.length === 0) return result;
 
   let tree: ProjectTree | null = null;
@@ -355,7 +375,10 @@ async function applyChanges(
           }
         }
         if (res.ok) result.uploaded.push(change.path);
-        else result.warnings.push(`${change.path}: upload failed (duplicate could not be replaced)`);
+        else {
+          result.failed.push(change.path);
+          result.warnings.push(`${change.path}: upload failed (duplicate could not be replaced) — still pending, approve again to retry`);
+        }
       }
     }
   } finally {

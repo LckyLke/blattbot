@@ -47,7 +47,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   switch (m.method) {
     case "initialize": reply({ userAgent: "codex/mock" }); break;
     case "initialized": break;
-    case "config/read": reply({ config: { model: "codex-test-model", mcp_servers: { "private.server": { command: "unused", url: null, tool_timeout_sec: null } } } }); break;
+    case "config/read": reply({ config: { model: "codex-test-model", service_tier: process.env.BLATTBOT_TEST_CODEX_TIER ?? null,
+      mcp_servers: { "private.server": { command: "unused", url: null, tool_timeout_sec: null } } } }); break;
     case "account/rateLimits/read": reply({ rateLimits: { primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 1800000000 } } }); break;
     case "account/read": reply({ account: scenario === "loggedout" ? null : { type: "chatgpt" }, requiresOpenaiAuth: true }); break;
     case "model/list": reply({ data: [{ model: "codex-test-model", displayName: "Test Codex", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], nextCursor: null }); break;

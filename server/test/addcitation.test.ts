@@ -121,6 +121,20 @@ describe("normalizeEntryBibtex", () => {
 });
 
 describe("addCitation", () => {
+  it("rejects bibFile targets outside the project, in .git, or not .bib — before fetching anything", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    for (const [bibFile, error] of [
+      ["../../projects.json", /inside the project/],
+      [join(tmpdir(), "elsewhere.bib"), /inside the project/],
+      [".git/refs.bib", /\.git directory/],
+      ["main.tex", /must be a \.bib file/],
+    ]) {
+      await expect(addCitation(dir, "10.1038/nature14539", bibFile as string)).rejects.toThrow(error);
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("refuses a DOI already in the bibliography and names the matching field", async () => {
     writeFileSync(join(dir, "refs.bib"), EXISTING);
     stubFetch({

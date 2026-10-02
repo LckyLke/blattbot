@@ -34,6 +34,8 @@ export interface Settings {
   codexModel: string;
   /** Empty uses Codex's configured reasoning effort. */
   codexEffort: "" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  /** Codex speed: "" inherits the CLI setting, "default" is Standard, "priority" is Fast. */
+  codexServiceTier: "" | "default" | "priority";
   /** OpenAI-compatible endpoint base URL, e.g. http://127.0.0.1:11434/v1 (llama.cpp, Ollama, vLLM, OpenRouter, …). */
   openaiBaseUrl: string;
   /** API key for the OpenAI-compatible endpoint. "" = none (fine for most local servers). */
@@ -63,6 +65,7 @@ export const DEFAULT_SETTINGS: Settings = {
   backend: "",
   codexModel: "",
   codexEffort: "",
+  codexServiceTier: "",
   openaiBaseUrl: "",
   openaiApiKey: "",
   openaiModel: "",

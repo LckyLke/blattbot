@@ -191,6 +191,11 @@ export function checkToolPaths(
     if (isInside(abs, projectDir) && !isInside(abs, join(projectDir, ".git"))) {
       return null;
     }
+    // Reads too, like the openai backend's resolveReadPath: for git-bridge
+    // projects .git/config holds the remote URL with its access token.
+    if (isInside(abs, join(projectDir, ".git"))) {
+      return { ok: false, message: "The .git directory is off-limits — BlattBot owns version control." };
+    }
     if (secrets.some((s) => isInside(abs, s))) {
       return {
         ok: false,
@@ -203,9 +208,6 @@ export function checkToolPaths(
           ok: false,
           message: `Writing to ${raw} is blocked: edits must stay inside the project working tree (attached context is read-only).`,
         };
-      }
-      if (isInside(abs, join(projectDir, ".git"))) {
-        return { ok: false, message: "The .git directory is off-limits — BlattBot owns version control." };
       }
       return null;
     }

@@ -121,6 +121,8 @@ export interface ApproveResult {
   warnings?: string[];
   /** Remote-only changes absorbed into the mirror after the push. */
   absorbedRemote?: string[];
+  /** Approved paths that did not reach the remote; they stay pending. */
+  pending?: string[];
 }
 
 export interface ApproveOptions {
@@ -220,15 +222,31 @@ export async function approve(
       };
     }
     const head = await git.revParse(dir, "HEAD");
-    const result = await withSession(project, (client) =>
-      pushChanges(client, project.overleafProjectId!, dir, base, head),
-    );
+    // Whatever did not reach Overleaf must not stay committed: the next sync
+    // would see a clean tree and write Overleaf's versions over those edits.
+    // Un-committing keeps them pending; approving again re-pushes them (paths
+    // that did land already match the remote and pass the conflict check).
+    let result: PushResult;
+    try {
+      result = await withSession(project, (client) =>
+        pushChanges(client, project.overleafProjectId!, dir, base, head),
+      );
+    } catch (err: any) {
+      await git.resetSoft(dir, base);
+      throw new Error(`Push to Overleaf failed (${err?.message ?? err}) — your changes are still pending; approve again to retry`, { cause: err });
+    }
+    const { failed, ...pushed } = result;
+    if (failed.length > 0) {
+      await git.resetSoft(dir, base);
+      await git.commitStagedExcept(dir, message, failed);
+    }
     const absorbWarn = await absorb();
     return {
       pushed: true,
-      ...result,
+      ...pushed,
       warnings: [...warnings, ...result.warnings, ...(absorbWarn ? [absorbWarn] : [])],
       ...(absorbed.length > 0 ? { absorbedRemote: absorbed } : {}),
+      ...(failed.length > 0 ? { pending: failed } : {}),
     };
   }
   return git.commitAndPush(dir, message);

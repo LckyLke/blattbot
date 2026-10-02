@@ -466,7 +466,7 @@ button:hover > .tex-logo .down,
   align-items: center;
   gap: 8px;
 }
-@container (max-width: 440px) {
+@container (max-width: 600px) {
   .chat-composer-toolbar { grid-template-columns: minmax(0, 1fr) auto; }
   .usage-trigger { padding-inline: 6px; }
   .usage-trigger-label, .usage-trigger-chevron { display: none; }

@@ -310,6 +310,9 @@ app.put<{ Body: Partial<Settings> }>("/api/settings", async (req, reply) => {
   if (body.codexEffort !== undefined && body.codexEffort !== "" && !(CODEX_EFFORT_LEVELS as readonly unknown[]).includes(body.codexEffort)) {
     return reply.code(400).send({ error: `codexEffort must be one of ${CODEX_EFFORT_LEVELS.join(", ")} or empty` });
   }
+  if (body.codexServiceTier !== undefined && !["", "default", "priority"].includes(body.codexServiceTier)) {
+    return reply.code(400).send({ error: "codexServiceTier must be default (Standard), priority (Fast), or empty" });
+  }
   if (body.effort !== undefined && body.effort !== "" && !isEffortLevel(body.effort)) {
     return reply.code(400).send({ error: `effort must be one of ${EFFORT_LEVELS.join(", ")} or empty` });
   }
@@ -1089,6 +1092,10 @@ app.post<{ Params: { id: string }; Body: { message?: string; force?: boolean } }
         warnings: result.warnings,
         absorbedRemote: result.absorbedRemote,
       });
+      // "approved" clears the review; files that failed to upload are still pending.
+      if (result.pending) {
+        broadcast(project.id, { type: "diff", diff: await git.workingDiff(projectDir(project.id)), changed: false });
+      }
       return { ok: true, ...result };
     } catch (err: any) {
       // Remote drift touching locally edited files: nothing was committed or
@@ -1840,6 +1847,7 @@ app.post<{
     // is still touching the same working tree.
     beginTurnPipeline(project.id);
     void (async () => {
+      let turnEnded = false;
       try {
         broadcast(project.id, { type: "turn_start" });
         const beforeTurn = await projectFingerprint(projectDir(project.id));
@@ -1878,6 +1886,7 @@ app.post<{
           },
           attachments,
         );
+        turnEnded = true;
         // No live-diff timer may fire past this point; the broadcast below is authoritative.
         await turnSink.close();
         const changed = beforeTurn !== await projectFingerprint(projectDir(project.id));
@@ -1895,6 +1904,18 @@ app.post<{
           const result = await compileProject(project.id, projectDir(project.id), project.mainTex);
           lastCompile.set(project.id, result);
           broadcast(project.id, { type: "compile", ...compilePublic(result) });
+        }
+      } catch (err: any) {
+        // Anything thrown outside runTurn's own error handling (turn setup,
+        // fingerprinting, the diff/recompile tail) must end the turn visibly —
+        // escaping as an unhandled rejection would stop the whole server.
+        const error = { type: "error", message: String(err?.message ?? err) };
+        broadcast(project.id, error);
+        persist(error);
+        if (!turnEnded) {
+          const end = { type: "turn_end", isError: true };
+          broadcast(project.id, end);
+          persist(end);
         }
       } finally {
         endTurnPipeline(project.id);

@@ -17,12 +17,16 @@ try {
   client = new CodexClient();
   await client.initialize();
   const config = await client.threadConfig();
-  const result = await client.request("thread/start", {
-    cwd: codexWorkspace(), sandbox: "read-only", approvalPolicy: "never", ephemeral: true,
-    config, baseInstructions: CODEX_SYSTEM_PROMPT, dynamicTools: codexTools(),
-  });
-  if (!result.thread?.id) throw new Error("Codex did not create the diagnostic thread");
-  console.log("Codex accepted the thread configuration and BlattBot tool schemas. No agent turn was started.");
+  for (const serviceTier of [null, "default", "priority"]) {
+    const result = await client.request("thread/start", {
+      cwd: codexWorkspace(), sandbox: "read-only", approvalPolicy: "never", ephemeral: true,
+      serviceTier, config: { ...config, ...(serviceTier === "priority" ? { "features.fast_mode": true } : {}) },
+      baseInstructions: CODEX_SYSTEM_PROMPT, dynamicTools: codexTools(),
+    });
+    if (!result.thread?.id) throw new Error("Codex did not create the diagnostic thread");
+    if (serviceTier && result.serviceTier !== serviceTier) throw new Error(`Codex did not accept the ${serviceTier} speed tier`);
+  }
+  console.log("Codex accepted the thread configuration, BlattBot tool schemas, and Default/Standard/Fast speeds. No agent turn was started.");
 } finally {
   await client?.close();
   rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });

@@ -77,6 +77,8 @@ export interface Settings {
   backend: "" | BackendId;
   codexModel: string;
   codexEffort: "" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  /** Empty inherits the CLI speed; priority selects Codex Fast mode. */
+  codexServiceTier: "" | "default" | "priority";
   openaiBaseUrl: string;
   openaiModel: string;
   hasOpenaiApiKey: boolean;

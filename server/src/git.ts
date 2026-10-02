@@ -132,6 +132,22 @@ export async function discard(dir: string): Promise<void> {
   await git(dir, "clean", "-fd");
 }
 
+/** Move HEAD back to `ref`, keeping the undone commits' changes staged and in the worktree. */
+export async function resetSoft(dir: string, ref: string): Promise<void> {
+  await git(dir, "reset", "--soft", ref);
+}
+
+/**
+ * Commit what is staged, except `paths`: those are unstaged first and stay as
+ * pending worktree changes. Returns false when nothing else was staged.
+ */
+export async function commitStagedExcept(dir: string, message: string, paths: string[]): Promise<boolean> {
+  if (paths.length > 0) await gitLiteral(dir, "reset", "-q", "--", ...paths);
+  if (!(await git(dir, "diff", "--cached", "--name-only")).trim()) return false;
+  await git(dir, "commit", "-m", message);
+  return true;
+}
+
 /**
  * Diff of one file against HEAD. Brand-new untracked files (invisible to
  * `git diff HEAD` until intent-to-add) get a synthesized all-added diff.
@@ -198,9 +214,18 @@ export async function commitAndPush(dir: string, message: string): Promise<{ pus
   await git(dir, "add", "--all");
   if (!(await hasChanges(dir))) return { pushed: false };
   await git(dir, "commit", "-m", message);
-  // Pick up anything collaborators pushed while the agent was working.
-  await git(dir, "pull", "--rebase");
-  await git(dir, "push", "origin", "HEAD");
+  try {
+    // Pick up anything collaborators pushed while the agent was working.
+    await git(dir, "pull", "--rebase");
+    await git(dir, "push", "origin", "HEAD");
+  } catch (err) {
+    // Never leave a half-done rebase, or an unpushed commit that later
+    // approvals would report as "nothing to push": un-commit so the changes
+    // stay pending. HEAD~1 is the parent of our commit, rebased or not.
+    await git(dir, "rebase", "--abort").catch(() => {});
+    await resetSoft(dir, "HEAD~1");
+    throw err;
+  }
   return { pushed: true };
 }
 

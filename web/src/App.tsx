@@ -1160,7 +1160,7 @@ function AppShell() {
     [selectedId, pushChat],
   );
 
-  const changeEffort = useCallback(async (patch: Partial<Pick<Settings, "codexEffort" | "effort">>) => {
+  const changeEffort = useCallback(async (patch: Partial<Pick<Settings, "codexEffort" | "effort" | "codexServiceTier">>) => {
     try {
       setAppSettings(await api.saveSettings(patch));
     } catch (err: any) {
