@@ -207,10 +207,15 @@ export async function discardPath(dir: string, relPath: string): Promise<void> {
 
 /** Reverse-apply a unified patch (e.g. one reconstructed hunk) to the working tree. */
 export async function applyReverse(dir: string, patch: string): Promise<void> {
+  await applyPatch(dir, patch, ["--reverse"]);
+}
+
+/** `git apply <flags> -` with the patch on stdin (e.g. --cached to stage one hunk). */
+export async function applyPatch(dir: string, patch: string, flags: string[]): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const child = execFile(
       "git",
-      ["apply", "--reverse", "-"],
+      ["apply", ...flags, "-"],
       {
         cwd: dir,
         maxBuffer: 64 * 1024 * 1024,
@@ -222,7 +227,7 @@ export async function applyReverse(dir: string, patch: string): Promise<void> {
             new GitError(
               `git apply failed: ${String(stderr ?? err.message).trim()}`,
               String(stderr ?? ""),
-              "git apply --reverse -",
+              `git apply ${flags.join(" ")} -`,
             ),
           );
         } else {
@@ -234,15 +239,15 @@ export async function applyReverse(dir: string, patch: string): Promise<void> {
   });
 }
 
-/** Stage everything, commit, rebase on the remote, and push. */
-export async function commitAndPush(dir: string, message: string, token?: string): Promise<{ pushed: boolean }> {
-  await git(dir, "add", "--all");
-  if (!(await hasChanges(dir))) return { pushed: false };
-  await git(dir, "commit", "-m", message);
+/**
+ * Rebase the commit just made onto the remote and push it. Changes still
+ * pending in the worktree (a partial approval) ride along in the autostash.
+ */
+export async function pushHead(dir: string, token?: string): Promise<{ pushed: true; warnings?: string[] }> {
   const auth = remoteAuth(token);
   try {
     // Pick up anything collaborators pushed while the agent was working.
-    await gitWithEnv(dir, auth.env, [...auth.args, "pull", "--rebase"]);
+    await gitWithEnv(dir, auth.env, [...auth.args, "pull", "--rebase", "--autostash"]);
     await gitWithEnv(dir, auth.env, [...auth.args, "push", "origin", "HEAD"]);
   } catch (err) {
     // Never leave a half-done rebase, or an unpushed commit that later
@@ -252,7 +257,45 @@ export async function commitAndPush(dir: string, message: string, token?: string
     await resetSoft(dir, "HEAD~1");
     throw err;
   }
-  return { pushed: true };
+  const conflicted = await unmergedPaths(dir);
+  return conflicted.length > 0
+    ? { pushed: true, warnings: [`Pushed. Your other pending edits conflict with the remote's changes in: ${conflicted.join(", ")} — resolve the conflict markers there.`] }
+    : { pushed: true };
+}
+
+/** Clear the index back to HEAD (staged leftovers, intent-to-add entries); the worktree is untouched. */
+export async function resetIndex(dir: string): Promise<void> {
+  await git(dir, "reset", "-q");
+}
+
+/** Stage the whole worktree, like `git add --all` (ignored files stay out). */
+export async function stageAll(dir: string): Promise<void> {
+  await git(dir, "add", "--all");
+}
+
+/** Stage these paths exactly as they are in the worktree (deletions included). */
+export async function stagePaths(dir: string, paths: string[]): Promise<void> {
+  if (paths.length > 0) await gitLiteral(dir, "add", "-A", "--", ...paths);
+}
+
+/** Paths staged relative to HEAD; a rename counts as its two paths. */
+export async function stagedPaths(dir: string): Promise<string[]> {
+  return (await git(dir, "diff", "--cached", "--name-only", "--no-renames", "-z")).split("\0").filter(Boolean);
+}
+
+/** A file's bytes at `rev` (null = the index), or null when it has no such file. */
+export async function readBlob(dir: string, rev: string | null, path: string): Promise<Buffer | null> {
+  try {
+    const { stdout } = await execFileP("git", ["show", `${rev ?? ""}:${path}`], {
+      cwd: dir,
+      maxBuffer: 256 * 1024 * 1024,
+      encoding: "buffer",
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "true" },
+    });
+    return stdout;
+  } catch {
+    return null;
+  }
 }
 
 /** Initialize a fresh local-only repository (cookie-mode mirror). */

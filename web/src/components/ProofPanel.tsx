@@ -1,8 +1,8 @@
 import { InlineDiffContext } from "./InlineDiffEdit";
-import { Suspense, lazy, useMemo, useState, useSyncExternalStore } from "react";
+import { Suspense, lazy, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { tabStripKeyDown } from "../a11y";
 import { buildHunkPatch, parseDiff, type DiffFile, type DiffHunk } from "../diff";
-import type { CompileInfo, SyncConflict } from "../api";
+import type { ApproveSelection, CompileInfo, SyncConflict } from "../api";
 import { useDialog } from "./Dialog";
 import { HunkLines } from "./DiffView";
 import { countDrafts, draftPaths, subscribeDrafts } from "../drafts";
@@ -37,7 +37,8 @@ interface Props {
   pdfStamp: number;
   /** Ask App to recompile the working state when the preview is missing/stale. */
   onEnsureCurrentPdf: () => void;
-  onApprove: (message: string, force?: boolean) => void | Promise<void>;
+  /** Approve everything, or only `selection` (one file or one hunk); the rest stays pending. */
+  onApprove: (message: string, force?: boolean, selection?: ApproveSelection) => void | Promise<void>;
   onReject: () => void | Promise<void>;
   onRejectFile: (path: string) => void;
   onRejectHunk: (patch: string) => void;
@@ -73,6 +74,10 @@ export default function ProofPanel({
   const [mode, setMode] = useState<"text" | "rendered">("text");
   /** In-flight approve/discard — buttons lock and the footer shows a sweep. */
   const [acting, setActing] = useState<"push" | "discard" | null>(null);
+  /** The file/hunk whose partial approval is in flight (its button shows progress). */
+  const [approving, setApproving] = useState<string | null>(null);
+  /** What the last approve covered — "Overwrite Overleaf" retries exactly that. */
+  const lastPart = useRef<ApprovePart | undefined>(undefined);
   const [editing, setEditing] = useState<{ path: string; line: number } | null>(null);
   const draftCount = useSyncExternalStore(subscribeDrafts, () => countDrafts(projectId));
   const saveCount = useSyncExternalStore(subscribeFileSaves, () => countFileSaves(projectId));
@@ -89,13 +94,17 @@ export default function ProofPanel({
     { add: 0, del: 0 },
   );
 
-  async function approve(force = false) {
+  /** Approve all pending changes, or just one file / one hunk of them. */
+  async function approve(force = false, part?: ApprovePart) {
     if (actionsLocked || files.length === 0) return;
+    lastPart.current = part;
     setActing("push");
+    setApproving(part?.key ?? null);
     try {
-      await onApprove(message.trim() || "BlattBot edit", force);
+      await onApprove(message.trim() || (part ? `BlattBot edit: ${part.path}` : "BlattBot edit"), force, part?.selection);
     } finally {
       setActing(null);
+      setApproving(null);
     }
   }
 
@@ -108,7 +117,7 @@ export default function ProofPanel({
       confirmLabel: "Overwrite Overleaf",
       danger: true,
     });
-    if (ok) await approve(true);
+    if (ok) await approve(true, lastPart.current);
   }
 
   async function discard() {
@@ -269,6 +278,8 @@ export default function ProofPanel({
               file={file}
               busy={actionsLocked}
               canEdit={!busy && acting === null}
+              approving={approving}
+              onApprovePart={(part) => void approve(false, part)}
               onEdit={edit}
               onRejectFile={onRejectFile}
               onRejectHunk={onRejectHunk}
@@ -354,6 +365,33 @@ export default function ProofPanel({
   );
 }
 
+/** One file or one hunk to approve on its own. */
+interface ApprovePart {
+  selection: ApproveSelection;
+  /** Identifies the control that started it. */
+  key: string;
+  path: string;
+}
+
+/** A whole file: both paths of a rename. */
+function filePart(file: DiffFile): ApprovePart {
+  return {
+    selection: { files: file.oldPath ? [file.path, file.oldPath] : [file.path] },
+    key: file.path,
+    path: file.path,
+  };
+}
+
+/**
+ * One hunk. A created or deleted file is a single change, so it is approved
+ * as a whole; a renamed file's hunks only exist relative to the new path,
+ * which HEAD does not have yet, so it is approved as a whole file too.
+ */
+function hunkPart(file: DiffFile, hunk: DiffHunk, index: number): ApprovePart {
+  if (file.status !== "modified") return { ...filePart(file), key: `${file.path}#${index}` };
+  return { selection: { patches: [buildHunkPatch(file, hunk)] }, key: `${file.path}#${index}`, path: file.path };
+}
+
 const STATUS_BADGE: Record<DiffFile["status"], { label: string; cls: string }> = {
   modified: { label: "edited", cls: "text-gold border-gold/40" },
   added: { label: "new", cls: "text-leaf border-leaf/40" },
@@ -365,6 +403,8 @@ function FileDiff({
   file,
   busy,
   canEdit,
+  approving,
+  onApprovePart,
   onEdit,
   onRejectFile,
   onRejectHunk,
@@ -373,6 +413,8 @@ function FileDiff({
   file: DiffFile;
   busy: boolean;
   canEdit: boolean;
+  approving: string | null;
+  onApprovePart: (part: ApprovePart) => void;
   onEdit: (file: string, line: number) => void;
   onRejectFile: (path: string) => void;
   onRejectHunk: (patch: string) => void;
@@ -407,6 +449,16 @@ function FileDiff({
             Edit
           </button>
         )}
+        <button
+          onClick={() => onApprovePart(filePart(file))}
+          disabled={busy}
+          aria-label={`Approve and push ${file.path} only`}
+          title={`Approve all changes to ${file.path} now; the other files stay pending`}
+          className="flex items-center gap-1 rounded-lg border border-leaf/40 px-1.5 text-[11px] text-leaf transition-colors hover:border-leaf hover:bg-leaf/10 disabled:opacity-50"
+        >
+          {approving === file.path && <span className="working-dot inline-block h-1.5 w-1.5 rounded-full bg-leaf" />}
+          approve file
+        </button>
         {confirmFile ? (
           <button
             onClick={() => {
@@ -440,7 +492,18 @@ function FileDiff({
       </div>
       {!collapsed &&
         file.hunks.map((hunk, hi) => (
-          <HunkBlock key={hi} file={file} hunk={hunk} busy={busy} canEdit={canEdit} onEdit={onEdit} onRejectHunk={onRejectHunk} onJump={onJump} />
+          <HunkBlock
+            key={hi}
+            file={file}
+            hunk={hunk}
+            busy={busy}
+            canEdit={canEdit}
+            approving={approving === `${file.path}#${hi}`}
+            onApprove={() => onApprovePart(hunkPart(file, hunk, hi))}
+            onEdit={onEdit}
+            onRejectHunk={onRejectHunk}
+            onJump={onJump}
+          />
         ))}
     </section>
   );
@@ -481,6 +544,8 @@ function HunkBlock({
   hunk,
   busy,
   canEdit,
+  approving,
+  onApprove,
   onEdit,
   onRejectHunk,
   onJump,
@@ -489,6 +554,9 @@ function HunkBlock({
   hunk: DiffHunk;
   busy: boolean;
   canEdit: boolean;
+  /** This hunk's approval is in flight. */
+  approving: boolean;
+  onApprove: () => void;
   onEdit: (file: string, line: number) => void;
   onRejectHunk: (patch: string) => void;
   onJump?: (file: string, line: number) => void;
@@ -525,6 +593,17 @@ function HunkBlock({
               ↗
             </button>
           )}
+          <button
+            onClick={onApprove}
+            disabled={busy}
+            aria-label={`Approve and push this change in ${file.path}`}
+            title={file.status === "modified"
+              ? "Approve just this change now; the rest stays pending"
+              : `Approve ${file.path} now (a ${file.status} file is one change); the rest stays pending`}
+            className="flex items-center rounded px-2 py-1 text-[15px] leading-none text-leaf/80 transition-colors hover:bg-ink-3 hover:text-leaf disabled:opacity-50"
+          >
+            {approving ? <span className="working-dot inline-block h-1.5 w-1.5 rounded-full bg-leaf" /> : "✓"}
+          </button>
           {confirm ? (
             <button
               onClick={() => {

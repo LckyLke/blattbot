@@ -108,7 +108,9 @@ it.skipIf(process.platform === "win32")("clones, pulls and pushes through an aut
     await git.pull(dir, "olp_live_token");
     const { writeFileSync } = await import("node:fs");
     writeFileSync(join(dir, "main.tex"), "Hello\n");
-    expect(await git.commitAndPush(dir, "edit", "olp_live_token")).toEqual({ pushed: true });
+    await git.stageAll(dir);
+    await git.commitStagedExcept(dir, "edit", []);
+    expect(await git.pushHead(dir, "olp_live_token")).toEqual({ pushed: true });
     expect(run(join(served, "paper.git"), "show", "main:main.tex")).toBe("Hello\n");
     expect(readFileSync(join(dir, ".git", "config"), "utf8")).not.toContain("olp_live_token");
   } finally {

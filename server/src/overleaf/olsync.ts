@@ -205,7 +205,14 @@ export async function pushChanges(
   checkedSnapshot?: Map<string, Buffer>,
 ): Promise<PushResult> {
   const nameStatus = await git.diffNameStatus(dir, fromRef, toRef);
-  return applyChanges(client, remoteProjectId, dir, parseNameStatus(nameStatus), checkedSnapshot);
+  // Content comes from the commit, not the worktree: after a partial approval
+  // the worktree still holds edits that were not approved.
+  const read = async (path: string) => {
+    const content = await git.readBlob(dir, toRef, path);
+    if (!content) throw new Error(`${path} is missing from the approved commit`);
+    return content;
+  };
+  return applyChanges(client, remoteProjectId, read, parseNameStatus(nameStatus), checkedSnapshot);
 }
 
 /** Upload the entire working tree (used when publishing a local project). */
@@ -215,7 +222,7 @@ export async function pushAll(
   dir: string,
 ): Promise<PushResult> {
   const changes: PushChange[] = listFiles(dir).map((path) => ({ status: "upload", path }));
-  return applyChanges(client, remoteProjectId, dir, changes);
+  return applyChanges(client, remoteProjectId, async (path) => readFileSync(join(dir, path)), changes);
 }
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -249,7 +256,7 @@ function decodeUtf8(buf: Buffer): string | null {
 async function applyChanges(
   client: OverleafClient,
   remoteProjectId: string,
-  dir: string,
+  read: (path: string) => Promise<Buffer>,
   changes: PushChange[],
   checkedSnapshot?: Map<string, Buffer>,
 ): Promise<PushResult> {
@@ -363,7 +370,7 @@ async function applyChanges(
         await client.deleteEntity(remoteProjectId, entity.type, entity.id);
         result.deleted.push(change.path);
       } else {
-        const content = readFileSync(join(dir, change.path));
+        const content = await read(change.path);
         // Existing text docs are edited in place over the websocket — never
         // delete-and-reupload them, which would orphan comments and history.
         const entity = (await getTree())?.entities.get(change.path);

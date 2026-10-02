@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { startMockOverleaf, type MockOverleaf } from "../scripts/mock-overleaf.js";
 import { OverleafClient } from "../src/overleaf/olclient.js";
 import type { Project } from "../src/config.js";
+import { buildHunkPatch, parseDiff } from "../../web/src/diff.js";
 
 const PORT = 4656;
 const REMOTE_ID = "aaaa1111bbbb2222cccc3333";
@@ -414,6 +415,94 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Merged edit."));
     expect(await sync.approve(gitProject, "resolve")).toEqual({ pushed: true });
     expect(run(remoteDir, "show", "HEAD:main.tex")).toContain("Merged edit.");
+  });
+
+  describe("partial approval", () => {
+    // Long enough that edits at the top and bottom become two separate hunks.
+    const LONG = Array.from({ length: 24 }, (_, i) => `Line ${i + 1}.`).join("\n") + "\n";
+    const edited = LONG.replace("Line 2.", "Line 2, revised.").replace("Line 23.", "Line 23, revised.");
+    const hunkPatches = async (path: string) => {
+      const file = parseDiff(await git.workingDiff(dir)).find((f) => f.path === path)!;
+      return file.hunks.map((h) => buildHunkPatch(file, h));
+    };
+
+    beforeEach(async () => {
+      seed("chapter.tex", LONG);
+      await git.commitAll(dir, "add chapter");
+      writeFileSync(join(dir, "chapter.tex"), edited);
+      writeFileSync(join(dir, "notes.tex"), "New notes.\n");
+    });
+
+    it("pushes one hunk, then one file, leaving the rest pending each time", async () => {
+      const [top, bottom] = await hunkPatches("chapter.tex");
+      expect(bottom).toBeDefined();
+
+      const first = await sync.approve(project(), "top edit", { selection: { patches: [top] } });
+      expect(first.pushed).toBe(true);
+      expect(mock.files.get("chapter.tex")?.toString()).toBe(LONG.replace("Line 2.", "Line 2, revised."));
+      expect(readFileSync(join(dir, "chapter.tex"), "utf8")).toBe(edited); // worktree untouched
+      expect(atHead("chapter.tex")).toContain("Line 23.\n");
+      let pending = parseDiff(await git.workingDiff(dir));
+      expect(pending.map((f) => f.path).sort()).toEqual(["chapter.tex", "notes.tex"]);
+      expect(pending.find((f) => f.path === "chapter.tex")!.hunks).toHaveLength(1);
+
+      await sync.approve(project(), "notes", { selection: { files: ["notes.tex"] } });
+      expect(mock.files.get("notes.tex")?.toString()).toBe("New notes.\n");
+      pending = parseDiff(await git.workingDiff(dir));
+      expect(pending.map((f) => f.path)).toEqual(["chapter.tex"]);
+
+      await sync.approve(project(), "rest");
+      expect(mock.files.get("chapter.tex")?.toString()).toBe(edited);
+      expect(await git.hasChanges(dir)).toBe(false);
+    });
+
+    it("refuses a hunk the file no longer contains, committing nothing", async () => {
+      const [top] = await hunkPatches("chapter.tex");
+      writeFileSync(join(dir, "chapter.tex"), edited.replace("Line 2, revised.", "Line 2, rewritten again."));
+      const before = await git.revParse(dir, "HEAD");
+      await expect(sync.approve(project(), "stale", { selection: { patches: [top] } })).rejects.toMatchObject({
+        name: "SelectionError",
+      });
+      await expect(sync.approve(project(), "gone", { selection: { files: ["missing.tex"] } })).rejects.toThrow(/no pending changes/);
+      expect(await git.revParse(dir, "HEAD")).toBe(before);
+      expect(await git.stagedPaths(dir)).toEqual([]);
+      expect(mock.files.get("chapter.tex")?.toString()).toBe(LONG);
+    });
+
+    it("checks conflicts only for what is approved; other drift stays pending", async () => {
+      mock.files.set("chapter.tex", Buffer.from(LONG.replace("Line 12.", "Co-author line 12.")));
+      const [top] = await hunkPatches("chapter.tex");
+      await expect(sync.approve(project(), "top", { selection: { patches: [top] } })).rejects.toMatchObject({
+        name: "ApproveConflictError",
+        conflicts: [{ path: "chapter.tex", kind: "modified" }],
+      });
+      expect(await git.stagedPaths(dir)).toEqual([]);
+
+      const notes = await sync.approve(project(), "notes", { selection: { files: ["notes.tex"] } });
+      expect(notes.pushed).toBe(true);
+      expect(notes.absorbedRemote).toBeUndefined(); // chapter.tex still has pending local edits
+      expect(mock.files.get("chapter.tex")?.toString()).toContain("Co-author line 12.");
+      expect(readFileSync(join(dir, "chapter.tex"), "utf8")).toBe(edited);
+    });
+
+    it("commits only the selection in local and git-bridge projects", async () => {
+      const [top] = await hunkPatches("chapter.tex");
+      expect(await sync.approve({ ...project(), kind: "local" }, "local top", { selection: { patches: [top] } })).toEqual({ pushed: false });
+      expect(atHead("chapter.tex")).toContain("Line 2, revised.");
+      expect(atHead("chapter.tex")).toContain("Line 23.\n");
+
+      const remoteDir = join(dataDir, "remote.git");
+      const run = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
+      run(dir, "clone", "--bare", dir, remoteDir);
+      run(dir, "remote", "add", "origin", remoteDir);
+      run(dir, "fetch", "origin");
+      run(dir, "branch", `--set-upstream-to=origin/${run(dir, "branch", "--show-current").trim()}`);
+      const gitProject = { ...project(), kind: "git" as const, gitUrl: remoteDir };
+      expect(await sync.approve(gitProject, "notes", { selection: { files: ["notes.tex"] } })).toEqual({ pushed: true });
+      expect(run(remoteDir, "show", "HEAD:notes.tex")).toBe("New notes.\n");
+      expect(run(remoteDir, "show", "HEAD:chapter.tex")).toContain("Line 23.\n");
+      expect(readFileSync(join(dir, "chapter.tex"), "utf8")).toBe(edited); // survived the autostash
+    });
   });
 
   it("git.log returns the commit history", async () => {

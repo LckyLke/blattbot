@@ -393,6 +393,12 @@ export interface SyncConflict {
 }
 
 /** Approve was refused (HTTP 409): remote edits overlap the local ones. */
+/** Part of the pending changes: whole files and/or single-hunk patches of the working diff. */
+export interface ApproveSelection {
+  files?: string[];
+  patches?: string[];
+}
+
 export class ApproveConflictError extends Error {
   constructor(
     message: string,
@@ -620,12 +626,13 @@ export const api = {
    * local tree also edited) throws ApproveConflictError so the Proof view can
    * offer per-file discard or a forced overwrite; other errors throw plainly.
    */
-  approve: async (id: string, message: string, force = false) => {
+  /** Approve all pending changes, or only `selection` (whole files and/or single-hunk patches). */
+  approve: async (id: string, message: string, force = false, selection?: ApproveSelection) => {
     await ensureAuth();
     const res = await fetch(appUrl(`/api/projects/${id}/approve`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, force }),
+      body: JSON.stringify({ message, force, ...(selection ? { selection } : {}) }),
     });
     if (!res.ok) {
       let body: any = null;

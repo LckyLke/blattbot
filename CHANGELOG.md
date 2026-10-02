@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Approve part of a diff in Proof: **✓** on a change pushes just that passage, **approve file** a whole file, and everything else stays pending for later review. Partial approvals get the same Overleaf conflict check (limited to what is approved), backups on overwrite and rollback on a failed push as a full approval; a change the file no longer contains is refused instead of pushed.
 - Added Codex Fast mode in the chat toolbar and Settings → Agent, with persistent Standard/Fast/CLI-default choices for new chats, resumed turns, and background helpers.
 - Fixed: when a push to Overleaf failed partway through an approval, the approved edits stayed committed locally and the next sync could overwrite them with Overleaf's versions. They now stay pending — approve again to retry. A single file that fails to upload stays pending while the rest of the approval is committed. Git-bridge projects un-commit the same way when the pull or push fails, and are never left mid-rebase.
 - Fixed: an error outside the agent backend during a turn (turn setup, the post-turn compile) could stop the server. The turn now ends with an error message.

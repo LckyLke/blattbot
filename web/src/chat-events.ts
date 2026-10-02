@@ -246,7 +246,11 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
         notice(
           uid,
           "ok",
-          opts.projectKind === "local" ? "Committed locally." : ev.pushed ? "Changes pushed to Overleaf." : "Nothing to push.",
+          opts.projectKind === "local"
+            ? ev.partial ? "Committed the approved part locally." : "Committed locally."
+            : ev.pushed
+              ? ev.partial ? "Approved part pushed — the rest stays in Proof." : "Changes pushed to Overleaf."
+              : "Nothing to push.",
         ),
       ];
       // Safety-relevant push warnings must reach the user: the OT-fallback

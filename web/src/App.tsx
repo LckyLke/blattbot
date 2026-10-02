@@ -22,6 +22,7 @@ import {
   ensureAuth,
   ApproveConflictError,
   type Account,
+  type ApproveSelection,
   type ChatMeta,
   type FileMention,
   type ChatTranscriptEvent,
@@ -514,7 +515,8 @@ function AppShell() {
           }
           break;
         case "approved":
-          setDiff("");
+          // A partial approval is followed by a diff event with what is left.
+          if (!ev.partial) setDiff("");
           setApproveConflicts(null);
           setSourceStamp((s) => s + 1);
           // The push also absorbed collaborator edits to files we hadn't
@@ -1053,12 +1055,12 @@ function AppShell() {
   // being the one acted on (the same stale-async rule send() follows) — a
   // conflict banner, a diff, or an error must never land in another project.
   const approve = useCallback(
-    async (message: string, force = false) => {
+    async (message: string, force = false, selection?: ApproveSelection) => {
       const id = selectedId;
       if (!id) return;
       const stale = () => selectedRef.current?.id !== id;
       try {
-        await api.approve(id, message, force);
+        await api.approve(id, message, force, selection);
         if (stale()) return;
         setApproveConflicts(null);
       } catch (err: any) {

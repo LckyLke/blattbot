@@ -1204,6 +1204,50 @@ async function main() {
     });
     await shot("25d-proof-hunk-discarded");
 
+    // ---- Partial approval: push one hunk, then the rest of the file ----
+    const putMain = async (content: string) => {
+      const res = await afetch(`${apiBase}/projects/${mockProjectId}/file`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "main.tex", content }),
+      });
+      if (!res.ok) throw new Error(`PUT main.tex failed: ${res.status}`);
+    };
+    const remoteMain = () => mock.files.get("main.tex")?.toString();
+    const visibleText = (text: string) => page.getByText(text).filter({ visible: true }).count();
+    const settle = async (done: () => Promise<boolean>) => {
+      for (let i = 0; i < 100 && !(await done()); i++) await page.waitForTimeout(100);
+      return done();
+    };
+    // Edits far enough apart to be two hunks.
+    const topApproved = MAIN_TEX.replace("\\title{BlattBot Demo Thesis}", "\\title{BlattBot Demo Thesis, approved hunk}");
+    const bothEdits = topApproved.replace("The approach compiles reliably.", "The approach compiles reliably, pending hunk.");
+    await putMain(bothEdits);
+    await page.reload();
+    await page.getByRole("button", { name: "Back to dashboard" }).waitFor({ timeout: 10_000 });
+    const approveHunk = page.getByRole("button", { name: "Approve and push this change in main.tex" }).filter({ visible: true });
+    await approveHunk.nth(1).waitFor({ timeout: 10_000 });
+    await shot("25e-proof-two-hunks");
+    await approveHunk.first().click();
+    const partialHunkOk =
+      (await settle(async () => remoteMain() === topApproved)) &&
+      (await settle(async () => (await visibleText("approved hunk")) === 0)) &&
+      (await visibleText("pending hunk")) > 0 &&
+      (await getFile("main.tex")) === bothEdits;
+    await shot("25f-proof-hunk-approved");
+    await page.getByRole("button", { name: "Approve and push main.tex only" }).filter({ visible: true }).click();
+    await page.getByText("No pending changes").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+    const partialFileOk = remoteMain() === bothEdits;
+    // Back to the original text, approved, for the steps below.
+    await putMain(MAIN_TEX);
+    const restored = await afetch(`${apiBase}/projects/${mockProjectId}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "ui-verify: restore main.tex" }),
+    });
+    if (!restored.ok || remoteMain() !== MAIN_TEX) throw new Error("could not restore main.tex after the partial-approval check");
+    await page.getByText("No pending changes").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
+
     // ---- References: cited entry renders leaf-green with a line-numbered jump ----
     await aside().getByRole("tab", { name: "References", exact: true }).click();
     const refChip = aside().getByRole("button", { name: "vaswani2017attention", exact: true });
@@ -2446,6 +2490,8 @@ async function main() {
         proofSharedDraftOk,
         proofSharedSaveOk,
         rejectHunkContentOk,
+        partialHunkOk,
+        partialFileOk,
         leaveWarnShownOk,
         leaveWarnStayOk,
         leaveWarnLeaveOk,
@@ -2704,6 +2750,10 @@ async function main() {
       throw new Error("reject-file did not revert the discarded file (or clobbered the other one)");
     }
     if (!rejectHunkContentOk) throw new Error("reject-hunk did not revert the hunk's change on disk");
+    if (!partialHunkOk) {
+      throw new Error("approving one hunk did not push only that hunk while keeping the other pending in Proof");
+    }
+    if (!partialFileOk) throw new Error("approving the rest of the file did not push it");
     if (!leaveWarnShownOk) {
       throw new Error(
         "leaving with unapproved changes did not open the confirm naming the project and file count",

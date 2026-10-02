@@ -1099,18 +1099,33 @@ app.post<{ Params: { id: string }; Body: { accountId?: string } }>(
   },
 );
 
-app.post<{ Params: { id: string }; Body: { message?: string; force?: boolean } }>(
+app.post<{
+  Params: { id: string };
+  Body: { message?: string; force?: boolean; selection?: { files?: unknown; patches?: unknown } };
+}>(
   "/api/projects/:id/approve",
   async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
     if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
     const message = req.body?.message?.trim() || "BlattBot edit";
+    // Partial approval: whole files and/or single hunks of the working diff.
+    let selection: sync.ApproveSelection | undefined;
+    if (req.body?.selection !== undefined) {
+      const strings = (v: unknown) => Array.isArray(v) && v.length <= 500 && v.every((x) => typeof x === "string" && x.length > 0);
+      const { files = [], patches = [] } = req.body.selection ?? {};
+      if (!strings(files) || !strings(patches)) {
+        return reply.code(400).send({ error: "selection must list files and/or patches" });
+      }
+      selection = { files: files as string[], patches: patches as string[] };
+    }
+    const dir = projectDir(project.id);
     try {
-      const dir = projectDir(project.id);
-      const { result, pendingDiff } = await withProjectLock(project.id, async () => {
-        const result = await sync.approve(project, message, { force: req.body?.force === true });
-        return { result, pendingDiff: result.pending ? await git.workingDiff(dir) : null };
+      const { result, remaining } = await withProjectLock(project.id, async () => {
+        const result = await sync.approve(project, message, { force: req.body?.force === true, selection });
+        // What is still pending: the unapproved rest, or files that failed to upload.
+        const remaining = selection || result.pending ? await git.workingDiff(dir) : null;
+        return { result, remaining };
       });
       broadcast(project.id, {
         type: "approved",
@@ -1119,16 +1134,18 @@ app.post<{ Params: { id: string }; Body: { message?: string; force?: boolean } }
         deleted: result.deleted,
         warnings: result.warnings,
         absorbedRemote: result.absorbedRemote,
+        ...(selection ? { partial: true } : {}),
       });
-      // "approved" clears the review; files that failed to upload are still pending.
-      if (pendingDiff !== null) broadcast(project.id, { type: "diff", diff: pendingDiff, changed: false });
-      return { ok: true, ...result };
+      // "approved" clears the review; whatever is left stays in it.
+      if (remaining !== null) broadcast(project.id, { type: "diff", diff: remaining, changed: false });
+      return { ok: true, ...result, ...(remaining !== null ? { diff: remaining } : {}) };
     } catch (err: any) {
       // Remote drift touching locally edited files: nothing was committed or
       // pushed — the UI offers per-file discard or an explicit force.
       if (err instanceof sync.ApproveConflictError) {
         return reply.code(409).send({ error: err.message, conflicts: err.conflicts });
       }
+      if (err instanceof sync.SelectionError) return reply.code(409).send({ error: err.message });
       return reply.code(422).send({ error: err.message });
     }
   },

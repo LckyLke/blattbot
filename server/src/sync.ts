@@ -11,7 +11,7 @@
  * we silently try to revive it from the user's browser cookies; only if that
  * fails does the account flip to "disconnected" (it is never removed).
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { projectDir, updateProject, type Project } from "./config.js";
 import * as git from "./git.js";
@@ -129,29 +129,41 @@ export interface ApproveResult {
 export interface ApproveOptions {
   /** Overwrite conflicting remote edits (their versions are backed up first). */
   force?: boolean;
+  /**
+   * Approve only part of the pending changes: whole files and/or single hunks
+   * (unified patches of the working diff). Everything else stays pending.
+   */
+  selection?: ApproveSelection;
+}
+
+export interface ApproveSelection {
+  files?: string[];
+  patches?: string[];
+}
+
+/** The selection no longer matches the pending changes (or is empty). */
+export class SelectionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SelectionError";
+  }
 }
 
 /**
- * Conflicts = paths both sides changed relative to HEAD — unless the remote
- * already holds exactly the local bytes (or both sides deleted the path).
+ * Conflicts = approved paths both sides changed relative to HEAD — unless the
+ * remote already holds exactly the bytes being approved (or both deleted it).
+ * `approved` maps each path to its approved content (null = deleted).
  */
 function findConflicts(
-  dir: string,
   snapshot: Map<string, Buffer>,
-  localPaths: string[],
+  approved: Map<string, Buffer | null>,
   remote: Map<string, "modified" | "added" | "deleted">,
 ): RemoteConflict[] {
   const conflicts: RemoteConflict[] = [];
-  for (const path of localPaths) {
+  for (const [path, localContent] of approved) {
     const kind = remote.get(path);
     if (!kind) continue;
     const remoteContent = snapshot.get(path);
-    let localContent: Buffer | null = null;
-    try {
-      localContent = readFileSync(join(dir, path));
-    } catch {
-      /* locally deleted */
-    }
     if (remoteContent && localContent && remoteContent.equals(localContent)) continue;
     if (!remoteContent && !localContent) continue;
     conflicts.push({ path, kind: kind === "deleted" ? "deleted-remote" : "modified" });
@@ -159,27 +171,91 @@ function findConflicts(
   return conflicts;
 }
 
-/** Commit the reviewed changes and propagate them to the remote. */
+/** Paths a unified patch touches (both sides of its `diff --git` headers). */
+function patchPaths(patch: string): string[] {
+  const paths = new Set<string>();
+  for (const m of patch.matchAll(/^diff --git a\/(.*) b\/(.*)$/gm)) {
+    paths.add(m[1]);
+    paths.add(m[2]);
+  }
+  return [...paths];
+}
+
+/**
+ * Put exactly what is being approved into the index: everything for a full
+ * approval, otherwise the selected files and hunks on top of HEAD. Returns
+ * the staged paths. A hunk must still be in the worktree (so nothing the
+ * user is no longer looking at gets pushed) and apply cleanly to HEAD.
+ */
+async function stageApproval(dir: string, selection?: ApproveSelection): Promise<string[]> {
+  if (!selection) {
+    await git.stageAll(dir);
+    return git.stagedPaths(dir);
+  }
+  const pending = new Set(await git.changedPaths(dir));
+  const stale = (path: string) =>
+    new SelectionError(`${path} has no pending changes any more — refresh the proof`);
+  await git.resetIndex(dir);
+  try {
+    const files = selection.files ?? [];
+    for (const path of files) if (!pending.has(path)) throw stale(path);
+    await git.stagePaths(dir, files);
+    for (const patch of selection.patches ?? []) {
+      const paths = patchPaths(patch);
+      if (paths.length === 0) throw new SelectionError("not a git patch");
+      for (const path of paths) if (!pending.has(path)) throw stale(path);
+      try {
+        await git.applyPatch(dir, patch, ["--reverse", "--check"]);
+        await git.applyPatch(dir, patch, ["--cached"]);
+      } catch {
+        throw new SelectionError("That change no longer matches the file — refresh the proof");
+      }
+    }
+    const staged = await git.stagedPaths(dir);
+    if (staged.length === 0) throw new SelectionError("Nothing to approve in that selection — refresh the proof");
+    return staged;
+  } catch (err) {
+    await git.resetIndex(dir);
+    throw err;
+  }
+}
+
+/**
+ * Commit the reviewed changes and propagate them to the remote — all pending
+ * changes, or only `opts.selection` (the rest stays pending in the worktree).
+ */
 export async function approve(
   project: Project,
   message: string,
   opts: ApproveOptions = {},
 ): Promise<ApproveResult> {
   const dir = projectDir(project.id);
+  // Everything still pending before this approval (for the absorb rule).
+  const local = await git.changedPaths(dir);
+  const approvedPaths = await stageApproval(dir, opts.selection);
   if (project.kind === "local") {
     // No remote — approval is just the local commit.
-    await git.commitAll(dir, message);
+    await git.commitStagedExcept(dir, message, []);
     return { pushed: false };
   }
   if (project.kind === "overleaf") {
     // Drift check: a collaborator may have edited on Overleaf since our last
     // sync — never silently clobber those edits with a whole-file upload.
-    const zip = await withSession(project, (client) => client.downloadZip(project.overleafProjectId!));
-    const snapshot = unpackZip(zip);
-    const local = await git.changedPaths(dir);
-    const remote = await scanRemoteDrift(dir, snapshot);
-    const conflicts = findConflicts(dir, snapshot, local, remote);
-    if (conflicts.length > 0 && !opts.force) throw new ApproveConflictError(conflicts);
+    let snapshot: Map<string, Buffer>;
+    let remote: Map<string, "modified" | "added" | "deleted">;
+    let conflicts: RemoteConflict[];
+    try {
+      const zip = await withSession(project, (client) => client.downloadZip(project.overleafProjectId!));
+      snapshot = unpackZip(zip);
+      remote = await scanRemoteDrift(dir, snapshot);
+      const approved = new Map<string, Buffer | null>();
+      for (const path of approvedPaths) approved.set(path, await git.readBlob(dir, null, path));
+      conflicts = findConflicts(snapshot, approved, remote);
+      if (conflicts.length > 0 && !opts.force) throw new ApproveConflictError(conflicts);
+    } catch (err) {
+      await git.resetIndex(dir);
+      throw err;
+    }
     const warnings: string[] = [];
     if (conflicts.length > 0) {
       // Forced: keep the remote's versions recoverable before overwriting them.
@@ -194,8 +270,9 @@ export async function approve(
       }
       warnings.push(`Overleaf's versions of the overwritten files were backed up to ${backupDir}`);
     }
-    // Remote changes to paths we did NOT touch are absorbed after the push.
-    const localSet = new Set(local);
+    // Remote changes to paths with NO pending local edits are absorbed after
+    // the push — not just unapproved ones: a pending path stays drift.
+    const localSet = new Set([...local, ...approvedPaths]);
     const absorbed = [...remote.keys()].filter((p) => !localSet.has(p));
     // Reconcile: the remote-only changes become a normal sync commit. The
     // snapshot predates our push, so only those untouched paths may come
@@ -212,7 +289,7 @@ export async function approve(
       }
     };
     const base = await git.revParse(dir, "HEAD");
-    const committed = await git.commitAll(dir, message);
+    const committed = await git.commitStagedExcept(dir, message, []);
     if (!committed) {
       const absorbWarn = await absorb();
       const allWarnings = [...warnings, ...(absorbWarn ? [absorbWarn] : [])];
@@ -250,20 +327,20 @@ export async function approve(
       ...(failed.length > 0 ? { pending: failed } : {}),
     };
   }
-  // An autostash conflict from the last sync leaves <<<<<<< markers in the
-  // files; `git add --all` would commit and push them as content.
-  const conflicted = (await git.unmergedPaths(dir)).filter((path) => {
-    try {
-      return /^<{7}(?: |$)/m.test(readFileSync(join(dir, path), "utf8"));
-    } catch {
-      return false;
-    }
-  });
+  // An autostash conflict from a sync leaves <<<<<<< markers in the files;
+  // committing them would push them as content. Judged on what is staged.
+  const conflicted: string[] = [];
+  for (const path of approvedPaths) {
+    const content = (await git.readBlob(dir, null, path))?.toString("utf8") ?? "";
+    if (/^<{7}(?: |$)/m.test(content) && /^>{7}(?: |$)/m.test(content)) conflicted.push(path);
+  }
   if (conflicted.length > 0) {
+    await git.resetIndex(dir);
     throw new Error(`Resolve the Git conflicts in ${conflicted.join(", ")} first — they still contain <<<<<<< conflict markers.`);
   }
   await moveRemoteCredentials(project);
-  return git.commitAndPush(dir, message, project.token);
+  if (!(await git.commitStagedExcept(dir, message, []))) return { pushed: false };
+  return git.pushHead(dir, project.token);
 }
 
 /**
