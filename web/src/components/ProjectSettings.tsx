@@ -232,9 +232,10 @@ export default function ProjectSettings({ project, onClose, onSaved, onMainFileC
                       Push changes to Overleaf as tracked changes{" "}
                       <span className="rounded border border-gold/40 px-1 text-[10px] uppercase tracking-wide text-gold">experimental</span>
                       <span className="mt-0.5 block text-[11px] leading-snug text-graphite">
-                        Co-authors can then accept or reject each approved edit in Overleaf's review panel. Needs review
-                        permission on the project; new files, uploads and deletions cannot be tracked. Not every Overleaf
-                        instance records them — BlattBot checks after each push and warns if it did not.
+                        Co-authors can then accept or reject each approved edit in Overleaf's review panel. Needs Overleaf's
+                        review features (overleaf.com or Server Pro; Community Edition has none) and review permission on the
+                        project; new files, uploads and deletions cannot be tracked. BlattBot checks after each push and warns
+                        when the changes were not recorded or cannot be reviewed.
                       </span>
                     </span>
                   </label>

@@ -22,6 +22,18 @@ export function registerReviewRoutes(app: FastifyInstance): void {
     return { diff };
   });
 
+  // The client's minute check: has Overleaf changed since the last sync or
+  // push? Read-only on the mirror, so it takes no project lock.
+  app.get<{ Params: { id: string } }>("/api/projects/:id/remote-status", async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    try {
+      return await sync.remoteStatus(project);
+    } catch (err: any) {
+      return reply.code(422).send({ error: err?.message ?? String(err) });
+    }
+  });
+
   app.post<{ Params: { id: string } }>("/api/projects/:id/sync", async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });

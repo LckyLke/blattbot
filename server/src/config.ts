@@ -84,6 +84,12 @@ export interface Project {
    * co-author (or the user, on Overleaf) changed something since.
    */
   remoteLastUpdated?: string;
+  /**
+   * Overleaf projects: Overleaf's project-history version as of the last
+   * successful sync or push. It moves with every edit, so a newer one means
+   * someone changed the project on Overleaf since.
+   */
+  remoteVersion?: number;
   /** The compiler set in the Overleaf project (read on sync and push; see overleaf/metadata.ts). */
   overleafCompiler?: "pdflatex" | "xelatex" | "lualatex" | "latex";
   /** The blattbot.md version the user confirmed (see shared-instructions.ts). */

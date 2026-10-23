@@ -1,38 +1,12 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import {
-  changeTime,
-  isLater,
-  laterOf,
-  remoteChangeAction,
-  remoteChangedAt,
-  syncConflicts,
-} from "../../web/src/remote-change.js";
+import { changeTime, remoteChangeAction, syncConflicts } from "../../web/src/remote-change.js";
 import { applyChatEvent } from "../../web/src/chat-events.js";
 import ConflictBanner from "../../web/src/components/ConflictBanner.js";
 
-const ID = "aaaa1111bbbb2222cccc3333";
-const listing = (lastUpdated?: string) => [
-  { id: "ffff0000ffff0000ffff0000", name: "Other", lastUpdated: "2030-01-01T00:00:00.000Z" },
-  { id: ID, name: "Paper", ...(lastUpdated ? { lastUpdated } : {}) },
-];
-
 describe("Overleaf change detection", () => {
   const seen = "2026-10-23T10:00:00.000Z";
-
-  it("reports Overleaf's lastUpdated only when it is later than what the mirror saw", () => {
-    expect(remoteChangedAt(listing("2026-10-23T10:05:00.000Z"), ID, seen)).toBe("2026-10-23T10:05:00.000Z");
-    expect(remoteChangedAt(listing(seen), ID, seen)).toBeNull();
-    expect(remoteChangedAt(listing("2026-10-23T09:59:00.000Z"), ID, seen)).toBeNull();
-  });
-
-  it("treats anything unknown as no evidence of a change", () => {
-    expect(remoteChangedAt(listing(), ID, seen)).toBeNull(); // the list has no lastUpdated
-    expect(remoteChangedAt(listing("2026-10-23T10:05:00.000Z"), ID, undefined)).toBeNull(); // never synced
-    expect(remoteChangedAt(listing("2026-10-23T10:05:00.000Z"), undefined, seen)).toBeNull();
-    expect(remoteChangedAt(listing("2026-10-23T10:05:00.000Z").slice(0, 1), ID, seen)).toBeNull(); // not listed
-  });
 
   it("syncs on its own only when nothing local is pending", () => {
     expect(remoteChangeAction("2026-10-23T10:05:00.000Z", true)).toBe("sync");
@@ -41,15 +15,7 @@ describe("Overleaf change detection", () => {
     expect(remoteChangeAction(null, false)).toBeNull();
   });
 
-  it("compares timestamps by time, and unparsable ones by inequality", () => {
-    expect(isLater("2026-10-23T10:00:01.000Z", "2026-10-23T10:00:00.999Z")).toBe(true);
-    expect(isLater("2026-10-23T10:00:00Z", "2026-10-23T10:00:00.000Z")).toBe(false);
-    expect(isLater("v2", "v1")).toBe(true);
-    expect(isLater(undefined, seen)).toBe(false);
-    expect(isLater(seen, undefined)).toBe(true);
-    expect(laterOf(seen, "2026-10-23T09:00:00.000Z")).toBe(seen);
-    expect(laterOf(seen, "2026-10-23T11:00:00.000Z")).toBe("2026-10-23T11:00:00.000Z");
-    expect(laterOf(undefined, seen)).toBe(seen);
+  it("formats the time a change was noticed", () => {
     expect(changeTime(seen)).toMatch(/\d{1,2}.\d{2}/);
     expect(changeTime("garbage")).toBe("");
   });

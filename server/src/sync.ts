@@ -17,7 +17,7 @@ import { projectDir, updateProject, type Project } from "./config.js";
 import * as git from "./git.js";
 import { CONFLICT_LABELS, describeConflict, hasConflictMarkers, type RemoteConflict } from "./conflicts.js";
 import { looksBinary, mergeText } from "./merge.js";
-import { OverleafAuthError, OverleafClient, type RemoteCompileResult } from "./overleaf/olclient.js";
+import { OverleafAuthError, OverleafClient, OverleafFeatureError, type RemoteCompileResult } from "./overleaf/olclient.js";
 import { labelPush } from "./overleaf/labels.js";
 import {
   applyRemoteVersions,
@@ -79,15 +79,16 @@ export interface SyncResult {
   conflicts?: RemoteConflict[];
   /** Quick sync only: Overleaf showed no change since the last full sync, so nothing was downloaded. */
   skipped?: boolean;
-  /** overleaf kind: when the last full sync ran, and Overleaf's lastUpdated it saw. */
+  /** overleaf kind: when the last full sync ran, and Overleaf's lastUpdated and history version it saw. */
   lastSyncAt?: string;
   remoteLastUpdated?: string;
+  remoteVersion?: number;
 }
 
 export interface SyncOptions {
   /**
-   * Skip the snapshot download when Overleaf's project list shows no change
-   * since the last full sync (one small request instead of a project zip).
+   * Skip the snapshot download when Overleaf's project history shows no
+   * change since the last full sync (two small requests instead of a zip).
    */
   quick?: boolean;
 }
@@ -96,12 +97,12 @@ export interface SyncOptions {
 export const FULL_SYNC_MAX_AGE_MS = 10 * 60_000;
 
 /**
- * What the last full sync left behind: Overleaf's lastUpdated it saw, and
- * HEAD's tree once it held Overleaf's version of every file. Lives under
+ * What the last full sync left behind: Overleaf's history version it saw,
+ * and HEAD's tree once it held Overleaf's version of every file. Lives under
  * .git, outside the worktree and the diff.
  */
 interface SyncState {
-  lastUpdated: string;
+  version: number;
   tree: string;
 }
 
@@ -110,7 +111,7 @@ const syncStatePath = (dir: string) => join(dir, ".git", "blattbot", "sync-state
 function readSyncState(dir: string): SyncState | null {
   try {
     const state = JSON.parse(readFileSync(syncStatePath(dir), "utf8"));
-    return typeof state?.lastUpdated === "string" && typeof state?.tree === "string" ? state : null;
+    return Number.isSafeInteger(state?.version) && typeof state?.tree === "string" ? state : null;
   } catch {
     return null;
   }
@@ -141,16 +142,33 @@ async function listedLastUpdated(client: OverleafClient, remoteProjectId: string
 }
 
 /**
- * True when a full sync would change nothing: Overleaf reports the same
- * lastUpdated as the last full sync, that sync is recent, and HEAD still is
- * the tree it left. Any doubt means false.
+ * Overleaf's newest project-history version, after asking Overleaf to move
+ * pending edits into its history; undefined when the instance does not say
+ * (no history API). Unlike the project list's lastUpdated, which moves only
+ * when Overleaf writes documents back to its database (minutes later, or not
+ * at all while someone keeps editing), this moves with every edit. An
+ * expired session still throws, so withSession can refresh it.
  */
-async function remoteUnchanged(project: Project, dir: string, listed: string | undefined): Promise<boolean> {
-  if (!listed || listed !== project.remoteLastUpdated) return false;
+async function remoteHistoryVersion(client: OverleafClient, remoteProjectId: string): Promise<number | undefined> {
+  try {
+    return (await client.latestHistoryVersion(remoteProjectId)) ?? undefined;
+  } catch (err) {
+    if (err instanceof OverleafAuthError) throw err;
+    return undefined;
+  }
+}
+
+/**
+ * True when a full sync would change nothing: Overleaf reports the same
+ * history version as the last full sync, that sync is recent, and HEAD
+ * still is the tree it left. Any doubt means false.
+ */
+async function remoteUnchanged(project: Project, dir: string, version: number | undefined): Promise<boolean> {
+  if (version === undefined || version !== project.remoteVersion) return false;
   const age = Date.now() - Date.parse(project.lastSyncAt ?? "");
   if (!(age >= 0 && age < FULL_SYNC_MAX_AGE_MS)) return false;
   const state = readSyncState(dir);
-  if (!state || state.lastUpdated !== listed) return false;
+  if (!state || state.version !== version) return false;
   try {
     return state.tree === (await git.revParse(dir, "HEAD^{tree}"));
   } catch {
@@ -159,9 +177,36 @@ async function remoteUnchanged(project: Project, dir: string, listed: string | u
 }
 
 /** Persist what we know about the remote, and keep the caller's copy current. */
-function recordRemote(project: Project, patch: Pick<Project, "lastSyncAt" | "remoteLastUpdated">): void {
+function recordRemote(project: Project, patch: Partial<Pick<Project, "lastSyncAt" | "remoteLastUpdated" | "remoteVersion">>): void {
   updateProject(project.id, patch);
   Object.assign(project, patch);
+}
+
+export interface RemoteStatus {
+  /** Overleaf changed since the last full sync or push. */
+  changed: boolean;
+  /** How it was judged: Overleaf's history version, the project list's lastUpdated, or not at all. */
+  via: "history" | "lastUpdated" | "none";
+}
+
+/**
+ * Has the Overleaf project changed since the mirror last caught up? Uses the
+ * history version (moves with every edit); instances without a history API
+ * fall back to the project list's lastUpdated, which can lag live edits.
+ */
+export async function remoteStatus(project: Project): Promise<RemoteStatus> {
+  if (project.kind !== "overleaf") return { changed: false, via: "none" };
+  const remoteId = project.overleafProjectId!;
+  return withSession(project, async (client) => {
+    const version = await remoteHistoryVersion(client, remoteId);
+    if (version !== undefined) {
+      return { changed: project.remoteVersion !== undefined && version > project.remoteVersion, via: "history" };
+    }
+    const listed = await listedLastUpdated(client, remoteId);
+    if (!listed || !project.remoteLastUpdated) return { changed: false, via: "none" };
+    const later = Date.parse(listed) > Date.parse(project.remoteLastUpdated);
+    return { changed: later, via: "lastUpdated" };
+  });
 }
 
 /** Bring the working tree up to date with the remote (before an agent turn, on open, on demand). */
@@ -173,19 +218,30 @@ export async function syncIn(project: Project, opts: SyncOptions = {}): Promise<
     const outcome = await withSession(project, async (client) => {
       // Read BEFORE the snapshot: an edit landing during the download then
       // reads as newer next time, never as already seen.
+      const version = await remoteHistoryVersion(client, remoteId);
+      if (opts.quick && (await remoteUnchanged(project, dir, version))) return { version, listed: undefined, result: null };
       const listed = await listedLastUpdated(client, remoteId);
-      if (opts.quick && (await remoteUnchanged(project, dir, listed))) return { listed, result: null };
-      return { listed, result: await olSyncIn(client, remoteId, dir) };
+      return { version, listed, result: await olSyncIn(client, remoteId, dir) };
     });
     const result = outcome.result;
     if (!result) {
-      return { ok: true, skipped: true, lastSyncAt: project.lastSyncAt, remoteLastUpdated: project.remoteLastUpdated };
+      return {
+        ok: true,
+        skipped: true,
+        lastSyncAt: project.lastSyncAt,
+        remoteLastUpdated: project.remoteLastUpdated,
+        remoteVersion: project.remoteVersion,
+      };
     }
     // A later quick sync may skip the download only while HEAD still is
-    // this tree and Overleaf reports the same lastUpdated.
-    const tree = result.inSync && outcome.listed ? await git.revParse(dir, "HEAD^{tree}") : null;
-    writeSyncState(dir, tree ? { lastUpdated: outcome.listed!, tree } : null);
-    recordRemote(project, { lastSyncAt: new Date().toISOString(), remoteLastUpdated: outcome.listed });
+    // this tree and Overleaf reports the same history version.
+    const tree = result.inSync && outcome.version !== undefined ? await git.revParse(dir, "HEAD^{tree}") : null;
+    writeSyncState(dir, tree ? { version: outcome.version!, tree } : null);
+    recordRemote(project, {
+      lastSyncAt: new Date().toISOString(),
+      remoteLastUpdated: outcome.listed,
+      remoteVersion: outcome.version,
+    });
     // Overleaf review state and project settings (compiler, root document):
     // separate from the file sync, throttled, never fatal (see overleaf/metadata.ts).
     invalidateOverleafReview(project.id);
@@ -214,6 +270,7 @@ export async function syncIn(project: Project, opts: SyncOptions = {}): Promise<
       conflicts: result.conflicts,
       lastSyncAt: project.lastSyncAt,
       remoteLastUpdated: project.remoteLastUpdated,
+      remoteVersion: project.remoteVersion,
     };
   }
   await moveRemoteCredentials(project);
@@ -305,6 +362,8 @@ export interface ApproveResult {
   pending?: string[];
   /** Overleaf's lastUpdated re-read after the push. */
   remoteLastUpdated?: string;
+  /** Overleaf's history version re-read after the push. */
+  remoteVersion?: number;
   /** The label added to Overleaf's history for this push (Project settings → label pushes). */
   historyLabel?: string;
 }
@@ -616,6 +675,20 @@ export async function approve(
       await git.commitStagedExcept(dir, message, failed, await git.approverIdentity());
     }
     const absorbWarn = await absorb();
+    // Tracked changes need Overleaf's review features to be useful. Community
+    // Edition stores them but has no review API (and no review panel), so
+    // co-authors there cannot accept or reject them: say so.
+    if (project.settings?.trackChanges === true && pushed.updatedInPlace.length > 0) {
+      try {
+        await withSession(project, (client) => client.getThreads(project.overleafProjectId!));
+      } catch (err) {
+        if (err instanceof OverleafFeatureError) {
+          warnings.push(
+            "This Overleaf instance has no review features (probably Community Edition): the tracked changes are stored, but co-authors cannot accept or reject them there. Turn off \"Push changes to Overleaf as tracked changes\" in Project settings to push normal edits.",
+          );
+        }
+      }
+    }
     // Opt-in: name the pushed version in Overleaf's history for co-authors.
     let historyLabel: string | undefined;
     if (project.settings?.labelPushes === true && (pushed.uploaded.length > 0 || pushed.deleted.length > 0)) {
@@ -626,15 +699,24 @@ export async function approve(
       }
     }
     // Our own push must not read as a co-author's change: re-read Overleaf's
-    // lastUpdated now. (The next quick sync still downloads in full: HEAD
-    // moved, so the recorded tree no longer matches.)
+    // history version and lastUpdated now. A co-author edit landing in the
+    // same seconds is then marked as seen too; the next quick sync still
+    // downloads in full (HEAD moved, so the recorded tree no longer matches),
+    // so it reaches the mirror before the next agent turn.
     let remoteLastUpdated: string | undefined;
+    let remoteVersion: number | undefined;
     try {
-      remoteLastUpdated = await withSession(project, (client) => listedLastUpdated(client, project.overleafProjectId!));
+      [remoteVersion, remoteLastUpdated] = await withSession(project, async (client) => [
+        await remoteHistoryVersion(client, project.overleafProjectId!),
+        await listedLastUpdated(client, project.overleafProjectId!),
+      ]);
     } catch {
-      /* keep the old value: the UI then offers a sync it did not need */
+      /* keep the old values: the UI then offers a sync it did not need */
     }
-    if (remoteLastUpdated) recordRemote(project, { remoteLastUpdated });
+    recordRemote(project, {
+      ...(remoteLastUpdated ? { remoteLastUpdated } : {}),
+      ...(remoteVersion !== undefined ? { remoteVersion } : {}),
+    });
     return {
       pushed: true,
       ...pushed,
@@ -642,6 +724,7 @@ export async function approve(
       ...remoteOutcome(),
       ...(failed.length > 0 ? { pending: failed } : {}),
       ...(remoteLastUpdated ? { remoteLastUpdated } : {}),
+      ...(remoteVersion !== undefined ? { remoteVersion } : {}),
       ...(historyLabel ? { historyLabel } : {}),
     };
   }
@@ -739,6 +822,7 @@ export async function publishTree(
   client: OverleafClient,
   name: string,
   dir: string,
+  mainTex?: string,
 ): Promise<PublishTreeResult> {
   const remoteProjectId = await client.createProject(name);
   // Fresh projects come with template docs/files ("example" template) —
@@ -748,6 +832,17 @@ export async function publishTree(
     await client.deleteEntity(remoteProjectId, entity.type, entity.id);
   }
   const result = await pushAll(client, remoteProjectId, dir);
+  // Deleting the template's main.tex left the project without a main
+  // document; point Overleaf at ours so its compiler builds the right file.
+  if (mainTex) {
+    try {
+      const doc = (await client.joinProjectTree(remoteProjectId)).entities.get(mainTex);
+      if (doc?.type !== "doc") throw new Error(`${mainTex} is not a document on Overleaf`);
+      await client.setRootDoc(remoteProjectId, doc.id);
+    } catch (err: any) {
+      result.warnings.push(`Could not make ${mainTex} the main document on Overleaf (${err?.message ?? err}); set it in Overleaf's menu`);
+    }
+  }
   return { remoteProjectId, ...result };
 }
 
@@ -765,7 +860,7 @@ export async function publishLocal(project: Project, account: OlAccount): Promis
   // Commit any pending edits so the published state matches a commit.
   await git.commitAll(dir, "Publish to Overleaf", await git.approverIdentity());
   const client = new OverleafClient(account.baseUrl, account.cookie);
-  const { remoteProjectId, ...result } = await publishTree(client, project.name, dir);
+  const { remoteProjectId, ...result } = await publishTree(client, project.name, dir, project.mainTex);
   const updated = updateProject(project.id, {
     kind: "overleaf",
     accountId: account.id,

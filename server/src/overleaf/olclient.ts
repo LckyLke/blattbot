@@ -208,6 +208,18 @@ function looksLikeLoginRedirect(res: Response): boolean {
   return res.ok && ct.includes("text/html") && res.url.includes("/login");
 }
 
+/** How long downloadZip waits out Overleaf's download rate limit in total. */
+export const ZIP_RATE_LIMIT_WAIT_MS = 65_000;
+
+/** A Retry-After header (seconds or an HTTP date) in milliseconds, capped at 30 s; undefined when absent or unreadable. */
+export function retryAfterMs(header: string | null, now = Date.now()): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - now;
+  if (!Number.isFinite(ms)) return undefined;
+  return Math.min(Math.max(ms, 250), 30_000);
+}
+
 export class OverleafClient {
   private csrfToken: string | null = null;
 
@@ -267,7 +279,7 @@ export class OverleafClient {
     const res = await this.fetchReview(`/project/${projectId}/threads`, { headers: { Accept: "application/json" } });
     if (res.status === 404) {
       throw new OverleafFeatureError(
-        "This Overleaf instance has no comment-threads API (probably an older version), so comment messages cannot be shown",
+        "This Overleaf instance has no comment-threads API (Community Edition and older versions have none), so comment messages cannot be shown",
       );
     }
     if (res.status === 403) {
@@ -445,10 +457,30 @@ export class OverleafClient {
     }
   }
 
+  /**
+   * The project as a zip. Overleaf allows 10 project downloads per minute per
+   * project (HTTP 429 beyond that); BlattBot downloads on every sync, approve
+   * and conflict resolution, so a burst of small approvals can reach it. Wait
+   * as Overleaf asks (Retry-After, capped) for up to ZIP_RATE_LIMIT_WAIT_MS
+   * in total before giving up with a clear message.
+   */
   async downloadZip(projectId: string): Promise<Buffer> {
-    const res = await this.fetchChecked(`/project/${projectId}/download/zip`, {
-      headers: { Accept: "application/zip, */*" },
-    });
+    const deadline = Date.now() + ZIP_RATE_LIMIT_WAIT_MS;
+    let res: Response;
+    for (let attempt = 0; ; attempt++) {
+      res = await this.fetchChecked(`/project/${projectId}/download/zip`, {
+        headers: { Accept: "application/zip, */*" },
+      });
+      if (res.status !== 429) break;
+      await res.arrayBuffer().catch(() => undefined);
+      const wait = retryAfterMs(res.headers.get("retry-after")) ?? Math.min(2000 * 2 ** attempt, 15_000);
+      if (Date.now() + wait > deadline) {
+        throw new Error(
+          "Overleaf limits project downloads to 10 per minute and BlattBot reached that limit; wait a minute, then try again",
+        );
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, wait));
+    }
     if (!res.ok) throw new Error(`zip download failed: HTTP ${res.status}`);
     const buf = Buffer.from(await res.arrayBuffer());
     // A login page instead of a zip means the cookie died between checks.
@@ -586,6 +618,18 @@ export class OverleafClient {
       throw new Error(`create folder ${name} failed: HTTP ${res.status} ${JSON.stringify(data)}`);
     }
     return String(id);
+  }
+
+  /** Make `docId` the project's main document (POST /project/:id/settings {rootDocId}). */
+  async setRootDoc(projectId: string, docId: string): Promise<void> {
+    if (!SAFE_ID.test(docId)) throw new Error("invalid doc id");
+    const token = await this.csrf();
+    const res = await this.fetchChecked(`/project/${projectId}/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Csrf-Token": token },
+      body: JSON.stringify({ rootDocId: docId }),
+    });
+    if (!res.ok && res.status !== 204) throw new Error(`setting the main document failed: HTTP ${res.status}`);
   }
 
   async deleteEntity(projectId: string, type: "doc" | "file" | "folder", entityId: string): Promise<void> {

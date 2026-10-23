@@ -1274,7 +1274,7 @@ function AppShell() {
   remoteSeenRef.current = projectSync.noteRemote;
   // The project detail carries the Overleaf state the server last saw.
   const noteRemote = projectSync.noteRemote;
-  const detailSeen = detail && detail.id === selectedId ? detail.remoteLastUpdated : undefined;
+  const detailSeen = detail && detail.id === selectedId ? (detail.remoteVersion ?? detail.remoteLastUpdated) : undefined;
   useEffect(() => { if (detailSeen) noteRemote(detailSeen); }, [detailSeen, noteRemote]);
 
   /**

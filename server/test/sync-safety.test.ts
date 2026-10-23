@@ -644,6 +644,7 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
       expect(first.skipped).toBeUndefined();
       expect(mock.zipDownloads).toBe(start + 1);
       expect(p.remoteLastUpdated).toBe(mock.lastUpdated());
+      expect(p.remoteVersion).toBe(mock.project.history.version);
       expect(Date.now() - Date.parse(p.lastSyncAt!)).toBeLessThan(60_000);
 
       const second = await sync.syncIn(p, { quick: true });
@@ -678,13 +679,13 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
       // The last full sync is more than ten minutes old.
       p.lastSyncAt = new Date(Date.now() - sync.FULL_SYNC_MAX_AGE_MS - 1000).toISOString();
       await expectFull();
-      // The project list carries no lastUpdated.
-      mock.omitLastUpdated = true;
+      // The instance has no project-history API.
+      mock.historyApi = false;
       try {
         await expectFull();
         await expectFull();
       } finally {
-        mock.omitLastUpdated = false;
+        mock.historyApi = true;
       }
       await expectFull(); // the record was cleared above, so once more in full
       expect((await sync.syncIn(p, { quick: true })).skipped).toBe(true);
@@ -711,6 +712,113 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
       expect(result.remoteLastUpdated).not.toBe(before);
       expect(result.remoteLastUpdated).toBe(mock.lastUpdated());
       expect(p.remoteLastUpdated).toBe(result.remoteLastUpdated);
+      expect(result.remoteVersion).toBe(mock.project.history.version);
+      expect(p.remoteVersion).toBe(result.remoteVersion);
+      expect(await sync.remoteStatus(p)).toEqual({ changed: false, via: "history" });
+    });
+
+    it("sees a live co-author edit that leaves Overleaf's lastUpdated where it was", async () => {
+      // Real Overleaf moves lastUpdated only when it writes documents back to
+      // its database; the history version moves with every edit.
+      const p = project();
+      await sync.syncIn(p);
+      mock.freezeLastUpdated = true;
+      try {
+        const start = mock.zipDownloads;
+        expect((await sync.syncIn(p, { quick: true })).skipped).toBe(true);
+        mock.files.set("main.tex", Buffer.from(MAIN.replace("Body.", "Typed live by a co-author.")));
+        expect(await sync.remoteStatus(p)).toEqual({ changed: true, via: "history" });
+        const quick = await sync.syncIn(p, { quick: true });
+        expect(quick.skipped).toBeUndefined();
+        expect(mock.zipDownloads).toBe(start + 1);
+        expect(readFileSync(join(dir, "main.tex"), "utf8")).toContain("Typed live by a co-author.");
+        expect(await sync.remoteStatus(p)).toEqual({ changed: false, via: "history" });
+      } finally {
+        mock.freezeLastUpdated = false;
+      }
+    });
+
+    it("falls back to lastUpdated for the remote status without a history API", async () => {
+      const p = project();
+      await sync.syncIn(p);
+      mock.historyApi = false;
+      try {
+        expect(await sync.remoteStatus(p)).toEqual({ changed: false, via: "lastUpdated" });
+        mock.files.set("main.tex", Buffer.from(MAIN.replace("Body.", "Changed.")));
+        expect(await sync.remoteStatus(p)).toEqual({ changed: true, via: "lastUpdated" });
+      } finally {
+        mock.historyApi = true;
+      }
+      expect(await sync.remoteStatus({ ...p, kind: "local" })).toEqual({ changed: false, via: "none" });
+    });
+  });
+
+  describe("Overleaf's download rate limit", () => {
+    it("waits as Overleaf asks and then syncs", async () => {
+      mock.zipRateLimited = 2;
+      mock.zipRetryAfter = "1";
+      const started = Date.now();
+      try {
+        const r = await sync.syncIn(project());
+        expect(r.ok).toBe(true);
+      } finally {
+        mock.zipRateLimited = 0;
+      }
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
+    });
+
+    it("gives up with a clear message when the limit lasts too long", async () => {
+      const { OverleafClient } = await import("../src/overleaf/olclient.js");
+      const client = new OverleafClient(BASE, COOKIE);
+      // Overleaf keeps refusing and asks for 30 s each time. Waits run at once
+      // here, while the clock moves 30 s per wait: after about a minute of
+      // (simulated) waiting, downloadZip gives up.
+      mock.zipRateLimited = 1000;
+      mock.zipRetryAfter = "30";
+      let clock = Date.now();
+      const realTimeout = globalThis.setTimeout;
+      vi.spyOn(Date, "now").mockImplementation(() => clock);
+      vi.stubGlobal("setTimeout", ((fn: () => void, ms?: number) => {
+        clock += ms ?? 0;
+        return realTimeout(fn, 0);
+      }) as typeof setTimeout);
+      try {
+        await expect(client.downloadZip(REMOTE_ID)).rejects.toThrow(/limits project downloads to 10 per minute/);
+        expect(1000 - mock.zipRateLimited).toBeLessThanOrEqual(4);
+      } finally {
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+        mock.zipRateLimited = 0;
+        mock.zipRetryAfter = "1";
+      }
+    });
+
+    it("reads Retry-After as seconds or a date, capped", async () => {
+      const { retryAfterMs } = await import("../src/overleaf/olclient.js");
+      expect(retryAfterMs("2")).toBe(2000);
+      expect(retryAfterMs("600")).toBe(30_000);
+      expect(retryAfterMs(new Date(10_000).toUTCString(), 5_000)).toBe(5000);
+      expect(retryAfterMs(null)).toBeUndefined();
+      expect(retryAfterMs("soon")).toBeUndefined();
+    });
+  });
+
+  describe("tracked changes without review features", () => {
+    it("warns that co-authors cannot review them when the instance has no review API", async () => {
+      const p = { ...project(), settings: { trackChanges: true } };
+      mock.threadsApi = false;
+      try {
+        writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Tracked edit."));
+        const result = await sync.approve(p, "tracked");
+        expect(result.pushed).toBe(true);
+        expect(result.warnings?.some((w) => /no review features \(probably Community Edition\)/.test(w))).toBe(true);
+      } finally {
+        mock.threadsApi = true;
+      }
+      // With review features, no such warning.
+      writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Tracked edit two."));
+      const again = await sync.approve(p, "tracked again");
+      expect(again.warnings?.some((w) => /no review features/.test(w)) ?? false).toBe(false);
     });
   });
 

@@ -98,12 +98,14 @@ describe("labelling pushes in Overleaf's history", () => {
     expect(result.warnings ?? []).toEqual([]);
   });
 
-  it("adds no label and asks for no flush when the setting is off", async () => {
+  it("adds no label when the setting is off", async () => {
     writeFileSync(join(dir, "main.tex"), MAIN.replace("Body.", "Edited body."));
     const result = await sync.approve(project(), "Plain push");
     expect(result.pushed).toBe(true);
     expect(result.historyLabel).toBeUndefined();
-    expect(mock.project.history).toEqual({ version: 0, labels: [] });
+    expect(mock.project.history.labels).toEqual([]);
+    // Every push still reads the history version, so it does not read as a co-author's change.
+    expect(result.remoteVersion).toBe(mock.project.history.version);
   });
 
   it("keeps the push and warns when the instance has no history API", async () => {

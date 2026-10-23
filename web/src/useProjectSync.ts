@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, HttpError, type Project } from "./api";
-import { isLater, laterOf, remoteChangeAction, remoteChangedAt } from "./remote-change";
+import { remoteChangeAction } from "./remote-change";
 
 type SyncResult = Awaited<ReturnType<typeof api.sync>>;
 export interface SyncIssue {
@@ -18,8 +18,9 @@ function failure(error: unknown): SyncIssue {
 
 /** One lifecycle per visit: ignore late results after navigation, share pending
  * syncs across visits, and check authentication without pulling every minute.
- * The same minute check notices Overleaf changes: it syncs right away when
- * nothing local is pending, otherwise it reports `remoteChangedAt`. */
+ * The same minute check asks the server whether Overleaf changed (its history
+ * version moves with every edit): it syncs right away when nothing local is
+ * pending, otherwise it reports `remoteChangedAt`. */
 export function useProjectSync(project: Project | null, reconnectVersion: number, callbacks: {
   onSynced: (id: string, result: SyncResult, manual: boolean) => void;
   onAccountChanged: () => void;
@@ -32,7 +33,7 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
   const projectRef = useRef(project);
   projectRef.current = project;
   const syncs = useRef(new Map<string, Promise<SyncResult>>());
-  const actions = useRef({ sync: () => {}, reconnect: (_mode: "import" | "browser") => {}, warn: (_message: string, _paths?: string[]) => {}, seen: (_at?: string) => {} });
+  const actions = useRef({ sync: () => {}, reconnect: (_mode: "import" | "browser") => {}, warn: (_message: string, _paths?: string[]) => {}, seen: () => {} });
   const id = project?.id, kind = project?.kind, accountId = project?.accountId, remoteId = project?.overleafProjectId;
 
   useEffect(() => {
@@ -44,16 +45,49 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
     let revision = 0;
     let issue: SyncIssue | null = null;
     let lastNotice = "";
-    // Overleaf's lastUpdated the mirror last caught up with, and a later one
-    // the minute check saw while a sync had to wait.
-    let seen = projectRef.current?.remoteLastUpdated;
+    // When the minute check first saw an Overleaf change that a sync had to
+    // wait for (pending edits or a running turn); null when there is none.
+    // The server compares Overleaf's history version with what the mirror
+    // last caught up with, so the client never compares timestamps itself.
     let changedAt: string | null = null;
-    const noteSeen = (at?: string) => {
-      seen = laterOf(seen, at);
-      if (changedAt && !isLater(changedAt, seen)) {
-        changedAt = null;
-        if (!cancelled) setState(prev => prev?.id === id ? { ...prev, remoteChangedAt: null } : prev);
+    let remoteChecking = false;
+    let lastRemoteCheck = 0;
+    const checkRemote = async () => {
+      if (cancelled || kind !== "overleaf" || syncing || reconnecting || remoteChecking) return;
+      remoteChecking = true;
+      lastRemoteCheck = Date.now();
+      const checkedRevision = revision;
+      try {
+        const status = await api.remoteStatus(id);
+        if (cancelled || checkedRevision !== revision) return;
+        if (!status.changed) {
+          if (changedAt) {
+            changedAt = null;
+            setState(prev => prev?.id === id ? { ...prev, remoteChangedAt: null } : prev);
+          }
+          return;
+        }
+        const at = changedAt ?? new Date().toISOString();
+        const action = remoteChangeAction(at, Boolean(callbacksRef.current.canAutoSync?.()));
+        if (action === "sync") {
+          remoteChecking = false;
+          await run();
+        } else if (action === "notice" && at !== changedAt) {
+          changedAt = at;
+          setState(prev => prev?.id === id ? { ...prev, remoteChangedAt: at } : prev);
+        }
+      } catch (error) {
+        const next = failure(error);
+        if (!cancelled && checkedRevision === revision && next.kind === "session") report(next);
+      } finally {
+        remoteChecking = false;
       }
+    };
+    // The mirror caught up elsewhere (a push, a pre-turn sync, another tab):
+    // ask the server again rather than wait for the next minute.
+    const noteSeen = () => {
+      if (!changedAt || Date.now() - lastRemoteCheck < 2000) return;
+      void checkRemote();
     };
     const report = (next: SyncIssue) => {
       if (cancelled) return;
@@ -86,7 +120,6 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
         if (!result.ok) throw new Error(result.output || "Sync did not complete. Try again.");
         // The mirror now holds Overleaf's latest state: no notice for it.
         changedAt = null;
-        noteSeen(result.remoteLastUpdated);
         callbacksRef.current.onSynced(id, result, manual);
         if (result.drift?.length) {
           report({ kind: "conflict", title: "Sync needs your attention", message: kind === "git"
@@ -108,22 +141,15 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
       checking = true;
       const checkedRevision = revision;
       try {
-        const listing = await api.accountProjects(accountId);
+        // The account's project list doubles as the session check.
+        await api.accountProjects(accountId);
         if (cancelled || checkedRevision !== revision) return;
         if (issue?.kind === "session") {
           await run();
           return;
         }
-        // The list carries Overleaf's lastUpdated: later than what the mirror
-        // last saw means someone changed the project on Overleaf.
-        const at = remoteChangedAt(listing.projects, remoteId, seen);
-        const action = remoteChangeAction(at, Boolean(callbacksRef.current.canAutoSync?.()));
-        if (action === "sync") {
-          await run();
-        } else if (action === "notice" && at !== changedAt) {
-          changedAt = at;
-          setState(prev => prev?.id === id ? { ...prev, remoteChangedAt: at } : prev);
-        }
+        checking = false;
+        await checkRemote();
       } catch (error) {
         // A failed connection check does not imply an expired session. Keep
         // sync/conflict errors until a successful sync actually resolves them.
@@ -176,7 +202,7 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
   const reconnect = useCallback((mode: "import" | "browser") => actions.current.reconnect(mode), []);
   const reportWarning = useCallback((message: string, paths?: string[]) => actions.current.warn(message, paths), []);
   const dismiss = useCallback(() => setState(prev => prev ? { ...prev, popup: false } : prev), []);
-  /** Overleaf state the mirror caught up with elsewhere (a push, a pre-turn sync, another tab). */
-  const noteRemote = useCallback((at?: string) => actions.current.seen(at), []);
+  /** The mirror caught up with Overleaf elsewhere (a push, a pre-turn sync, another tab). */
+  const noteRemote = useCallback((_at?: unknown) => actions.current.seen(), []);
   return { ...(state?.id === id ? state : null), syncNow, reconnect, reportWarning, dismiss, noteRemote };
 }

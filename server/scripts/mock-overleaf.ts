@@ -108,8 +108,17 @@ export interface MockOverleaf {
   wsConnections: number;
   /** Project zip downloads served (all projects). */
   zipDownloads: number;
+  /** Test hook: answer this many next zip downloads with HTTP 429 (Retry-After: `zipRetryAfter`). */
+  zipRateLimited: number;
+  zipRetryAfter: string;
   /** Test hook: when true, the dashboard list carries no lastUpdated (older instances). */
   omitLastUpdated: boolean;
+  /**
+   * Test hook: when true, lastUpdated stays where it is although files
+   * change — like real Overleaf, which moves it only when documents are
+   * written back to its database, minutes after live edits or later.
+   */
+  freezeLastUpdated: boolean;
   /** The primary project's dashboard lastUpdated, as the next listing reports it. */
   lastUpdated: () => string;
   /** The primary project (review state: ranges, threads, historyDocs, compiler, rootDocPath). */
@@ -249,7 +258,10 @@ export async function startMockOverleaf(
     conflictNextOtUpdate: false,
     wsConnections: 0,
     zipDownloads: 0,
+    zipRateLimited: 0,
+    zipRetryAfter: "1",
     omitLastUpdated: false,
+    freezeLastUpdated: false,
     lastUpdated: () => lastUpdatedFor(primary),
     project: primary,
     threadsApi: true,
@@ -344,6 +356,7 @@ export async function startMockOverleaf(
   }
 
   function lastUpdatedFor(proj: MockProject): string {
+    if (state.freezeLastUpdated && proj.lastUpdated) return proj.lastUpdated;
     const fingerprint = filesFingerprint(proj);
     if (fingerprint !== proj.fingerprint || !proj.lastUpdated) {
       const previous = proj.lastUpdated ? Date.parse(proj.lastUpdated) : 0;
@@ -467,6 +480,13 @@ export async function startMockOverleaf(
     }
 
     if (proj && req.method === "GET" && sub === "/download/zip") {
+      if (state.zipRateLimited > 0) {
+        // Like Overleaf's zip-download limiter (10 per minute per project).
+        state.zipRateLimited--;
+        res.writeHead(429, { "Content-Type": "text/plain", "Retry-After": state.zipRetryAfter });
+        res.end("Too Many Requests");
+        return;
+      }
       state.zipDownloads++;
       const entries: Record<string, Uint8Array> = {};
       for (const [p, buf] of proj.files) entries[p] = new Uint8Array(buf);
@@ -616,6 +636,26 @@ export async function startMockOverleaf(
         return;
       }
       respond(404, JSON.stringify({ error: "not found", path: url.pathname }));
+      return;
+    }
+
+    // Project settings: the main document (rootDocId) only.
+    if (proj && req.method === "POST" && sub === "/settings") {
+      if (!csrfOk()) {
+        respond(403, JSON.stringify({ message: "invalid csrf token" }));
+        return;
+      }
+      const body = await jsonBody(req);
+      if (typeof body.rootDocId === "string") {
+        const path = [...proj.entityIds].find(([, eid]) => eid === body.rootDocId)?.[0];
+        if (!path || !proj.files.has(path) || !isDoc(path)) {
+          respond(400, JSON.stringify({ error: "not a document" }));
+          return;
+        }
+        proj.rootDocPath = path;
+      }
+      res.writeHead(204);
+      res.end();
       return;
     }
 

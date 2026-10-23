@@ -23,6 +23,8 @@ export interface Project {
   lastSyncAt?: string;
   /** Overleaf projects: Overleaf's lastUpdated as of the last sync or push. */
   remoteLastUpdated?: string;
+  /** Overleaf projects: Overleaf's history version as of the last sync or push. */
+  remoteVersion?: number;
   /** The compiler set in the Overleaf project (read on sync and push). */
   overleafCompiler?: "pdflatex" | "xelatex" | "lualatex" | "latex";
 }
@@ -989,6 +991,9 @@ export const api = {
     request<{ labels: { name: string; file: string; line: number }[] }>(
       `/api/projects/${id}/labels`,
     ),
+  /** Has Overleaf changed since the last sync or push? (judged by the server) */
+  remoteStatus: (id: string) =>
+    request<{ changed: boolean; via: "history" | "lastUpdated" | "none" }>(`/api/projects/${id}/remote-status`),
   projectSettings: (id: string) => request<ProjectSettings>(`/api/projects/${id}/settings`),
   saveProjectSettings: (
     id: string,

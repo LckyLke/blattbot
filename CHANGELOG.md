@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Checked against a real Overleaf Community Edition (new `npm run test:overleaf-ce --workspace=server` and a weekly CI job that starts CE in Docker). It found and fixed:
+  - Overleaf's project list "last modified" time does not move while a co-author types (not even minutes later), so the "Overleaf changed" notice and the pre-turn sync shortcut could miss live edits. Both now use Overleaf's project-history version, which moves with every edit.
+  - Overleaf allows 10 project downloads per minute; a burst of syncs and approvals failed with "HTTP 429". BlattBot now waits as Overleaf asks (up to about a minute) and then explains the limit.
+  - Publishing a local project left it without a main document on Overleaf; BlattBot now sets its main file.
+  - Community Edition has no comment-thread API and no review panel: the comment list says so, and pushing tracked changes to such an instance now warns that co-authors cannot accept or reject them there.
 - Website: removed the walkthrough and sections for the retired Evidence, strict-mode, literature-matrix and evaluation workflows, added a section on working with co-authors who stay in Overleaf, and corrected the Node requirement to 22.13+. The demo recorder no longer records the retired Evidence clip.
 - New option in Project settings for Overleaf projects: **Label each push in Overleaf's history**. After an approval, BlattBot adds a label with the commit message ("… (BlattBot)") to the pushed version in Overleaf's History view, so co-authors see what was pushed and can restore the version before it. A failed label is a warning; the push still counts. The Proof message field says when it becomes a label.
 - Fixed: a push to Overleaf replaced everything from the first changed character to the last in one edit, so a co-author's comment on untouched text between two of your edits could lose its anchor. Pushes now send one edit per changed region, and comments outside the changed text keep their place.
