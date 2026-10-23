@@ -87,6 +87,7 @@ The mock is hand-written, so `server/scripts/overleaf-ce-verify.ts` also runs Bl
 cd server
 eval "$(scripts/overleaf-ce-up.sh)"     # starts CE on :8090, creates a user, prints the two variables
 npm run test:overleaf-ce
+npm run build && npm run test:overleaf-ce-ui   # the app in a browser against the same server
 scripts/overleaf-ce-up.sh --down        # removes the containers
 ```
 

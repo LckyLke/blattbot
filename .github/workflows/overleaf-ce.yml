@@ -36,6 +36,12 @@ jobs:
         run: server/scripts/overleaf-ce-up.sh >> "$GITHUB_ENV"
       - name: Check sync against Overleaf
         run: npm run test:overleaf-ce --workspace=server
+      - name: Check the app against Overleaf in a browser
+        run: |
+          npm run build
+          npm run test:overleaf-ce-ui --workspace=server
+        env:
+          BLATTBOT_BROWSER_EXECUTABLE: /usr/bin/google-chrome
       - name: Overleaf logs
         if: failure()
         run: docker logs blattbot-ce 2>&1 | tail -200
