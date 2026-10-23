@@ -40,7 +40,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web-tests.json && tsc --noEmit -p tsconfig.scripts.json",
     "codex:check": "tsx scripts/codex-check.ts",
     "test:ui": "tsx scripts/ui-verify.ts",
     "test:research-ui": "tsx scripts/research-ui-verify.ts",
@@ -54,7 +54,8 @@
     "test:graph-explorer-ui": "tsx scripts/graph-explorer-verify.ts",
     "verify:ui": "tsx scripts/verify-ui.ts",
     "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.258",
@@ -71,6 +72,7 @@
   "devDependencies": {
     "@types/node": "^26.1.2",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^3.2.7",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"

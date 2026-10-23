@@ -1,0 +1,76 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": {
+    // The website's HTML and the SVG logos are not linted; docs/*.js and CSS are.
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/web-dist",
+      "!**/coverage",
+      "!docs/assets",
+      "!**/*.html",
+      "!**/*.svg"
+    ]
+  },
+  // Lint only. Formatting is not enforced, so nothing gets mass-reformatted.
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "css": { "parser": { "tailwindDirectives": true } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      // Recommended rules turned off. Most would need large rewrites; the rest
+      // flag patterns this codebase uses on purpose.
+      "a11y": {
+        // Intentional patterns: autofocus in dialogs, focusable tab panels and
+        // scroll regions, click-to-dismiss backdrops, click-gated links.
+        "noAutofocus": "off",
+        "noNoninteractiveElementToInteractiveRole": "off",
+        "noNoninteractiveTabindex": "off",
+        "noStaticElementInteractions": "off",
+        "useAriaPropsSupportedByRole": "off",
+        "useKeyWithClickEvents": "off",
+        "useSemanticElements": "off",
+        "useValidAnchor": "off",
+        // ~180 buttons outside forms; adding type="button" everywhere is churn.
+        "useButtonType": "off"
+      },
+      "complexity": {
+        "noImportantStyles": "off", // overrides for CodeMirror and PDF.js styles
+        "useArrowFunction": "off", // style
+        "useLiteralKeys": "off", // style
+        "useOptionalChain": "off" // style
+      },
+      "correctness": {
+        // Callback signatures keep their documented parameters.
+        "noUnusedFunctionParameters": "off",
+        // React hook dependency lists need case-by-case review, not a sweep.
+        "useExhaustiveDependencies": "off"
+      },
+      "style": {
+        "noDescendingSpecificity": "off", // CSS ordering, large rewrite
+        "noNonNullAssertion": "off", // ~300 uses, large rewrite
+        "useTemplate": "off" // style
+      },
+      "suspicious": {
+        "noArrayIndexKey": "off", // needs stable ids per list, large rewrite
+        "noAssignInExpressions": "off", // while ((m = re.exec(s))) loops
+        "noConfusingVoidType": "off", // `void | Promise<unknown>` callbacks
+        "noExplicitAny": "off", // ~470 uses at protocol boundaries
+        "noImplicitAnyLet": "off", // TypeScript narrows these `let`s
+        "noTemplateCurlyInString": "off", // CodeMirror snippets use ${} literally
+        "useIterableCallbackReturn": "off" // expression-bodied forEach callbacks
+      }
+    }
+  },
+  "overrides": [
+    {
+      // vitest compiles the .tsx tests with server/tsconfig.json, which sets
+      // no "jsx", so they use the classic runtime and need React in scope.
+      "includes": ["server/test/**"],
+      "javascript": { "jsxRuntime": "reactClassic" }
+    }
+  ]
+}

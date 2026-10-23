@@ -1,5 +1,5 @@
 import { EditorState } from "@codemirror/state";
-import { type EditorView, type Panel, type ViewUpdate } from "@codemirror/view";
+import type { EditorView, Panel, ViewUpdate } from "@codemirror/view";
 import {
   closeSearchPanel,
   findNext,

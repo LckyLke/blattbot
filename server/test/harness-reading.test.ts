@@ -32,7 +32,6 @@ describe("recoverable harness reads", () => {
     const { evidencePage, strictReportPage } = await import("../src/research/report-pages.js");
     const { saveResearchPolicy } = await import("../src/research/strict.js");
     saveResearchPolicy("p1", true);
-    const ctx = { project: { id: "p1" }, dir, contextDirs: [], signal: new AbortController().signal, emit: vi.fn() } as any;
     const run = async (name: string, args = {}) => {
       const raw = JSON.stringify(name === "list_evidence" ? evidencePage("p1", dir, args) : strictReportPage("p1", dir, args));
       expect(raw.length).toBeLessThan(40000);

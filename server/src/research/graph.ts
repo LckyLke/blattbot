@@ -7,7 +7,7 @@ import { fetchJson, openAlexWork } from "./discovery.js";
 import { digest, now, readStore, updateStore } from "./store.js";
 import { sourceFailure, type SourceFailure } from "./source-failure.js";
 
-import { type TopicRelevance } from "./relevance.js";
+import type { TopicRelevance } from "./relevance.js";
 import { collectCitationLocations, type CitationLocation } from "../usage.js";
 import { libraryStatus } from "./library.js";
 

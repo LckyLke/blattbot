@@ -11,3 +11,6 @@ server/LICENSE
 
 # Personal Claude Code settings (absolute paths, local approvals)
 .claude/settings.local.json
+
+# Test coverage reports (npm run coverage --workspace=server)
+coverage/

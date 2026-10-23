@@ -251,14 +251,11 @@ export function evaluationReport(id: string) {
           negative.length
         : null,
       results: latest,
-      confusion: scored.reduce<Record<string, number>>(
-        (m, r) => ({
-          ...m,
-          [`${r.expected} → ${r.verdict}`]:
-            (m[`${r.expected} → ${r.verdict}`] ?? 0) + 1,
-        }),
-        {},
-      ),
+      confusion: scored.reduce<Record<string, number>>((m, r) => {
+        const cell = `${r.expected} → ${r.verdict}`;
+        m[cell] = (m[cell] ?? 0) + 1;
+        return m;
+      }, {}),
     };
   });
   return {
