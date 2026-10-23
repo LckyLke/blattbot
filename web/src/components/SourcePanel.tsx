@@ -1054,6 +1054,11 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, tu
         },
         base,
       );
+      // The next queued turn started first: the draft waits for that one.
+      if (outcome.kind === "error" && /turn in progress/i.test(outcome.message)) {
+        deferSaveAgain();
+        return;
+      }
       if (outcome.kind === "error") throw new Error(outcome.message);
       if (outcome.kind === "conflict") {
         // Refused: nothing was written. Keep the draft (and the base it was
@@ -1099,6 +1104,19 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, tu
     }
   }, [projectId, armAutosave, autosaveAllowed, editorId, setDiskChanged]);
   saveRef.current = save;
+
+  /** A held-back save hit a turn that had just started: try again once it ends. */
+  function deferSaveAgain() {
+    deferredSave.current = true;
+    setSaveDeferred(true);
+    // That turn may be over already (this tab heard of neither its start nor end yet).
+    setTimeout(() => {
+      if (turnActiveRef.current || !deferredSave.current) return;
+      deferredSave.current = false;
+      setSaveDeferred(false);
+      saveRef.current();
+    }, 1_000);
+  }
 
   // The turn ended: run the save it held back. The save carries its base, so
   // when the agent changed this file the server refuses it and the draft
