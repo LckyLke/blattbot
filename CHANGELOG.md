@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `npx blattbot` no longer downloads the Claude Agent SDK and its ~230 MB Claude Code binary, since Codex is the default backend. To use the Claude backend, click **Install** in Settings → Agent (it installs the tested SDK version into the data directory), or install `@anthropic-ai/claude-agent-sdk@0.3.278` globally next to a global BlattBot. If you upgrade and already use Claude, install it once this way. Without the SDK, a Claude turn ends with an error that says how to install it. `blattbot doctor` shows whether the SDK is installed.
 - Added `search_files` for every backend: literal or regex text search across project files (or an attached context folder), with a path prefix, case option, context lines and a result cap. It uses `read_file`'s path checks and never searches `.git`. Existing Codex chats switch to a new Codex session on their next turn to pick it up; the chat keeps its messages.
 - Removed the code behind the retired Evidence, Checks, Memory and Discover workflows. Files they saved stay in the data directory, and saved tasks of those kinds are kept but no longer run. Paper details in the citation graph no longer point to the retired Memory view.
 - BlattBot's project tools are now defined once for all backends. On the Claude backend, `add_citation` gets the same write-path check as on Codex and OpenAI-compatible endpoints.

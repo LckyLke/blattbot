@@ -20,7 +20,7 @@ describe("shared tool registry", () => {
     expect(names.filter((n) => !toolDefinitions(true).some((t) => t.function.name === n)).sort())
       .toEqual(["add_citation", "edit_file", "write_file"]);
     // Claude gets everything without a native Claude Code twin.
-    const server: any = buildMcpServer(ctx);
+    const server: any = await buildMcpServer(ctx);
     const listed = await server.instance.server._requestHandlers.get("tools/list")({ method: "tools/list", params: {} }, {});
     expect(listed.tools.map((t: any) => t.name).sort()).toEqual(PROJECT_TOOLS.filter((t) => t.claude).map((t) => t.name).sort());
     expect(PROJECT_TOOLS.filter((t) => !t.claude).map((t) => t.name).sort()).toEqual(["ask_user", "edit_file", "list_files", "read_file", "write_file"]);

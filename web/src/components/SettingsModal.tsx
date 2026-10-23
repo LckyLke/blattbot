@@ -1,6 +1,6 @@
 import { invalidateModelLists, useModelList } from "../models";
 import { useEffect, useRef, useState } from "react";
-import { api, type Account, type AgentInfo, type ProjectStats, type Settings, type BackendId, type CodexStatus } from "../api";
+import { api, type Account, type AgentInfo, type ProjectStats, type Settings, type BackendId, type ClaudeSdkStatus, type CodexStatus } from "../api";
 import { tabStripKeyDown } from "../a11y";
 import AccountSignIn from "./AccountSignIn";
 import UniversityAccess from "./UniversityAccess";
@@ -35,6 +35,9 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
   const [codexServiceTier, setCodexServiceTier] = useState<Settings["codexServiceTier"]>("");
   const [codexStatus, setCodexStatus] = useState<CodexStatus | null>(null);
   const [checkingCodex, setCheckingCodex] = useState(false);
+  const [claudeSdk, setClaudeSdk] = useState<ClaudeSdkStatus | null>(null);
+  const [installingSdk, setInstallingSdk] = useState(false);
+  const [sdkError, setSdkError] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -107,6 +110,35 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
     api.codexStatus().then((status) => { if (!stale) setCodexStatus(status); })
       .catch((err) => { if (!stale) setError(err.message); })
       .finally(() => { if (!stale) setCheckingCodex(false); });
+    return () => { stale = true; };
+  }, [tab, backend]);
+
+  async function installClaudeSdk() {
+    setInstallingSdk(true);
+    setSdkError(null);
+    try {
+      setClaudeSdk(await api.installClaudeSdk());
+      invalidateModelLists();
+      api.agentInfo().then(setInfo).catch(() => {});
+    } catch (err: any) {
+      setSdkError(err.message);
+      api.claudeSdk().then(setClaudeSdk).catch(() => {});
+    } finally {
+      setInstallingSdk(false);
+    }
+  }
+
+  useEffect(() => {
+    if (tab !== "agent" || backend !== "claude") return;
+    let stale = false;
+    api.claudeSdk()
+      .then((status) => {
+        if (stale) return;
+        setClaudeSdk(status);
+        // An install started earlier (e.g. in another tab) is still running: wait for it here too.
+        if (status.installing) void installClaudeSdk();
+      })
+      .catch((err) => { if (!stale) setError(err.message); });
     return () => { stale = true; };
   }, [tab, backend]);
 
@@ -529,6 +561,28 @@ export default function SettingsModal({ onClose, onAccountsChanged, projectId, p
 
               {backend === "claude" && (
                 <>
+                  <div className="mb-3 rounded-md border border-rule bg-ink p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <p role="status" className={`text-[12px] leading-relaxed ${claudeSdk?.installed ? "text-leaf" : "text-paper-dim"}`}>
+                        {installingSdk
+                          ? `Installing the Claude Agent SDK ${claudeSdk?.pinnedVersion ?? ""} (${claudeSdk?.download ?? "a large download"}). This can take a few minutes…`
+                          : claudeSdk?.message ?? "Checking the Claude Agent SDK…"}
+                      </p>
+                      {claudeSdk && !claudeSdk.installed && (
+                        <button type="button" onClick={() => void installClaudeSdk()} disabled={installingSdk}
+                          className="shrink-0 rounded-lg border border-rule px-2 py-1 text-[11px] text-paper-dim hover:border-leaf disabled:opacity-50">
+                          {installingSdk ? "Installing…" : "Install"}
+                        </button>
+                      )}
+                    </div>
+                    {sdkError && <p role="alert" className="mt-2 whitespace-pre-wrap text-[11px] leading-snug text-pencil">{sdkError}</p>}
+                    {claudeSdk && !claudeSdk.installed && !installingSdk && (
+                      <div className="mt-2 text-[11px] leading-relaxed text-graphite">
+                        <p>Codex and OpenAI-compatible endpoints do not need it. To install it yourself next to a global BlattBot instead:</p>
+                        <pre className="mt-1 select-all rounded-lg border border-rule p-2 font-mono text-paper-dim">{`npm install -g @anthropic-ai/claude-agent-sdk@${claudeSdk.pinnedVersion}`}</pre>
+                      </div>
+                    )}
+                  </div>
                   <label className="block text-[11px] text-graphite">
                     Model{" "}
                     <span className="text-graphite/60">

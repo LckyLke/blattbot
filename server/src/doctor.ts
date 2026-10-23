@@ -1,7 +1,8 @@
 /**
  * Environment diagnostic: platform, data dir, git, TeX engine, Claude Code
- * CLI, and every browser cookie store BlattBot can see. Shared by
- * `blattbot doctor` (compiled into dist/) and server/scripts/doctor.ts.
+ * CLI, the optional Claude Agent SDK, and every browser cookie store BlattBot
+ * can see. Shared by `blattbot doctor` (compiled into dist/) and
+ * server/scripts/doctor.ts.
  */
 import { platform, arch, homedir } from "node:os";
 import { execFile } from "node:child_process";
@@ -11,7 +12,8 @@ import { discoverProfiles } from "./overleaf/browsers.js";
 import { isWsl, windowsUserHomes } from "./overleaf/wsl.js";
 import { DATA_DIR } from "./config.js";
 import { loadSettings } from "./settings.js";
-import { agentSdkVersion, describeEngine } from "./sdkinfo.js";
+import { describeEngine } from "./sdkinfo.js";
+import { claudeSdkStatus } from "./claude-sdk.js";
 import { codexStatus } from "./codexinfo.js";
 import { selectedBackend } from "./settings.js";
 
@@ -59,7 +61,15 @@ export async function runDoctor(log: (line: string) => void = console.log): Prom
   log(
     `Claude:    ${claude ? `${claude} — installed (login not checked)` : "optional — install Claude Code or set an Anthropic API key to use the Claude backend"}`,
   );
-  log(`Engine:    Agent SDK ${agentSdkVersion() ?? "not installed"} · ${describeEngine()}`);
+  const sdk = claudeSdkStatus();
+  log(
+    `Agent SDK: Claude Agent SDK ${
+      sdk.installed
+        ? `${sdk.version ?? "?"} — ${sdk.source === "managed" ? `installed by BlattBot (${short(sdk.location!)})` : "installed alongside BlattBot"}`
+        : `not installed — optional, only the Claude backend needs it. Install it from Settings → Agent (${sdk.download})`
+    }`,
+  );
+  log(`Engine:    ${describeEngine()}`);
 
   if (isWsl()) {
     const homes = windowsUserHomes();

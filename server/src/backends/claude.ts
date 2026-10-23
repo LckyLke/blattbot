@@ -3,9 +3,9 @@
  * agent.ts. Spawns the Claude Code CLI via the Agent SDK (reusing the local
  * login unless an API key is configured), exposes BlattBot's project tools
  * (backends/tools.ts) as an SDK MCP server, and maps the SDK's stream onto the
- * shared event contract.
+ * shared event contract. The SDK is optional and loaded on first use
+ * (claude-sdk.ts); only its types are imported statically.
  */
-import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool, HookCallback, OnUserDialog, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "node:fs";
 import { projectDir, updateProject } from "../config.js";
@@ -14,6 +14,7 @@ import { checkToolPaths, projectReadRoots, secretDenyRules } from "./paths.js";
 import { PROJECT_TOOLS, executeTool, summarizeToolInput } from "./tools.js";
 import { loadSettings, type Settings } from "../settings.js";
 import { executableOptions } from "../sdkinfo.js";
+import { loadClaudeSdk } from "../claude-sdk.js";
 import { currentVersion } from "../version.js";
 import { askUserQuestions, validateQuestions, type AgentQuestion } from "../questions.js";
 import {
@@ -31,7 +32,8 @@ import {
 } from "./types.js";
 
 /** The registry tools Claude Code has no native twin for, as SDK MCP tools. */
-export function buildMcpServer(ctx: BackendTurnContext) {
+export async function buildMcpServer(ctx: BackendTurnContext) {
+  const { createSdkMcpServer, tool } = await loadClaudeSdk();
   return createSdkMcpServer({
     name: "blattbot",
     version: currentVersion(),
@@ -466,6 +468,9 @@ export const claudeBackend: AgentBackend = {
 
   async runTurn(ctx: BackendTurnContext): Promise<void> {
     const { project, dir, settings, contextDirs } = ctx;
+    // A missing SDK ends the turn with an error that says how to install it.
+    const { query } = await loadClaudeSdk();
+    const mcpServer = await buildMcpServer(ctx);
     // Attached images live in DATA_DIR/chat-uploads/<projectId> — outside the
     // working tree on purpose. The CLI must be told about that directory too,
     // or a follow-up Read of the path named in the prompt is refused.
@@ -528,7 +533,7 @@ export const claudeBackend: AgentBackend = {
         includePartialMessages: true,
         abortController: controller,
         systemPrompt: { type: "preset", preset: "claude_code", append: ctx.systemAppend },
-        mcpServers: { blattbot: buildMcpServer(ctx) },
+        mcpServers: { blattbot: mcpServer },
         disallowedTools: disallowed,
         settingSources: [],
       },
@@ -650,6 +655,7 @@ export const claudeBackend: AgentBackend = {
 export async function runOneShot(prompt: string, images: string[] = [], signal?: AbortSignal): Promise<string> {
   const settings = loadSettings();
   signal?.throwIfAborted();
+  const { query } = await loadClaudeSdk();
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener("abort", abort, { once: true });

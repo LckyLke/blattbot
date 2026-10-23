@@ -134,7 +134,7 @@ describe("search_files", () => {
     const { buildMcpServer } = await import("../src/backends/claude.js");
     expect(toolDefinitions(true).some((t) => t.function.name === "search_files")).toBe(true);
     expect(codexTools().some((t) => t.name === "search_files")).toBe(true);
-    const server: any = buildMcpServer(ctx);
+    const server: any = await buildMcpServer(ctx);
     const listed = await server.instance.server._requestHandlers.get("tools/list")({ method: "tools/list", params: {} }, {});
     const claude = listed.tools.find((t: any) => t.name === "search_files");
     expect(claude.inputSchema.required).toEqual(["query"]);
