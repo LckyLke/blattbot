@@ -288,6 +288,8 @@ function AppShell() {
   const syncWarningRef = useRef<(message: string, paths?: string[]) => void>(() => {});
   // Mirrors `compiling` for use inside callbacks without stale closures.
   const compilingRef = useRef(false);
+  /** Rebuild once the running compile ends (it was started for an outdated main file). */
+  const recompileQueued = useRef(false);
   compilingRef.current = compiling;
   // True when the working tree may have changed since the last compile — the
   // PDF tab auto-compiles only then (or when nothing was compiled yet).
@@ -537,6 +539,12 @@ function AppShell() {
           setCompiling(false);
           dirtySinceCompile.current = false;
           acceptCompile(info as CompileInfo);
+          // The main file changed while this build ran: it built the old one.
+          if (recompileQueued.current) {
+            recompileQueued.current = false;
+            dirtySinceCompile.current = true;
+            setTimeout(() => void startCompileRef.current(), 0);
+          }
           break;
         }
         case "sync_warning":
@@ -1276,8 +1284,10 @@ function AppShell() {
     dirtySinceCompile.current = true;
     void refreshProjects();
     const p = panesRef.current;
-    if ((p.left === "pdf" || p.right === "pdf") && !compilingRef.current && !busyRef.current) {
-      void startCompileRef.current();
+    if ((p.left === "pdf" || p.right === "pdf") && !busyRef.current) {
+      // A build already running is of the old main file: rebuild after it.
+      if (compilingRef.current) recompileQueued.current = true;
+      else void startCompileRef.current();
     }
   }, [refreshProjects]);
 
