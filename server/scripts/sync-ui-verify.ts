@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { startMockOverleaf } from "./mock-overleaf.js";
+import { freePort } from "./free-port.js";
 
 const root = mkdtempSync(join(tmpdir(), "blattbot-sync-ui-"));
 process.env.BLATTBOT_DATA_DIR = join(root, "data");
@@ -15,8 +16,9 @@ const accounts = await import("../src/accounts.js");
 const git = await import("../src/git.js");
 config.ensureDirs();
 const remoteId = "aaaa1111bbbb2222cccc3333";
-const mock = await startMockOverleaf(4598, remoteId);
-const account = accounts.upsertAccount({ baseUrl: "http://127.0.0.1:4598", cookie: "overleaf_session2=mock-session" });
+const mockPort = await freePort();
+const mock = await startMockOverleaf(mockPort, remoteId);
+const account = accounts.upsertAccount({ baseUrl: `http://127.0.0.1:${mockPort}`, cookie: "overleaf_session2=mock-session" });
 const project = config.addProject({ name: "Sync test paper", kind: "overleaf", gitUrl: "", accountId: account.id, overleafBaseUrl: account.baseUrl, overleafProjectId: remoteId, mainTex: "main.tex" });
 const local = config.addProject({ name: "Local notes", kind: "local", gitUrl: "", mainTex: "main.tex" });
 const original = "\\documentclass{article}\n\\begin{document}\nOriginal.\n\\end{document}\n";
@@ -30,12 +32,12 @@ for (const p of [project, local]) {
 const main = join(config.projectDir(project.id), "main.tex");
 const remote = original.replace("Original.", "Incoming collaborator edit.");
 mock.files.set("main.tex", Buffer.from(remote));
-const base = "http://127.0.0.1:4597";
+const port = await freePort(), base = `http://127.0.0.1:${port}`;
 let logs = "";
 function startServer() {
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
     cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
-    env: { ...process.env, BLATTBOT_PORT: "4597" }, stdio: "pipe",
+    env: { ...process.env, BLATTBOT_PORT: String(port) }, stdio: "pipe",
   });
   child.stdout.on("data", chunk => { logs += chunk; });
   child.stderr.on("data", chunk => { logs += chunk; });

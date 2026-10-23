@@ -50,6 +50,9 @@
     "test:sidebar-ui": "tsx scripts/sidebar-ui-verify.ts",
     "test:sync-ui": "tsx scripts/sync-ui-verify.ts",
     "test:file-mentions-ui": "tsx scripts/file-mentions-ui-verify.ts",
+    "test:refs-cleanup-ui": "tsx scripts/refs-cleanup-ui-verify.ts",
+    "test:graph-explorer-ui": "tsx scripts/graph-explorer-verify.ts",
+    "verify:ui": "tsx scripts/verify-ui.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run"
   },

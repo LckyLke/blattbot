@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { freePort } from "./free-port.js";
 
 const root = mkdtempSync(join(tmpdir(), "blattbot-sidebar-"));
 process.env.BLATTBOT_DATA_DIR = join(root, "data");
@@ -37,7 +38,7 @@ chats.appendEvent(project.id, firstChat.id, { type: "text_final", text: "First c
 const secondChat = chats.createChat(project.id);
 chats.updateChat(project.id, secondChat.id, { title: "Check the references" });
 chats.appendEvent(project.id, secondChat.id, { type: "text_final", text: "Second conversation transcript." });
-const port = 4598, base = `http://127.0.0.1:${port}`;
+const port = await freePort(), base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
   cwd: join(dirname(fileURLToPath(import.meta.url)), ".."), env: { ...process.env, BLATTBOT_PORT: String(port) }, stdio: "pipe",
 });
