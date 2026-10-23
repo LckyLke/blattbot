@@ -12,7 +12,7 @@ const ffmpeg = process.env.DEMO_FFMPEG ?? "/usr/bin/ffmpeg";
 mkdirSync(output, { recursive: true });
 const run = args => execFileSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", ...args], { stdio: "inherit" });
 const stamp = seconds => new Date(Math.max(0, seconds) * 1000).toISOString().slice(11, 23);
-const shots = { workflow: "workflow-proof", evidence: "research-evidence", graph: "research-graph", writing: "editor-search" };
+const shots = { workflow: "workflow-proof", graph: "research-graph", writing: "editor-search" };
 for (const [clip, shot] of Object.entries(shots)) {
   if (process.env.DEMO_CLIP && process.env.DEMO_CLIP !== clip) continue;
   const meta = JSON.parse(readFileSync(join(input, `${clip}.json`), "utf8"));

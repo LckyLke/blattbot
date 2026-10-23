@@ -7,12 +7,6 @@
       steps: ['Open a project with the assistant beside the compiled PDF.', 'Ask for a change in plain language.', 'Watch the agent edit the LaTeX and compile the document.', 'Read the exact diff and inspect the resulting PDF.', 'Approve the change to save it to the local project history.'],
       note: 'Recorded with a real agent turn in a local project. Waiting periods are shortened. On a connected project, approval can also push the changes to Overleaf.',
     },
-    evidence: {
-      label: 'Read and verify',
-      caption: 'Follow a citation back to the paper, then find relevant passages across your library.',
-      steps: ['Inspect the status of cited passages in the draft.', 'Expand an assessment and open its quoted source passage with the PDF page number.', 'Search the indexed library for passages from your papers.', 'Use strict mode to keep unresolved passages open before approval.'],
-      note: 'Evidence assessments are prepared before recording. Model checks remain fallible; read the source and review the result.',
-    },
     graph: {
       label: 'Connect your sources',
       caption: 'See which papers connect, then discover shared references missing from your project.',

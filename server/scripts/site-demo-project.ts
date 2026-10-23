@@ -1,5 +1,5 @@
 /** Isolated, reusable demo project. Uses public papers and the configured Codex login.
- * Run with --prepare to retrieve sources and perform real evidence checks before recording.
+ * Run with --prepare to retrieve sources, build the citation graph and index the library before recording.
  * No private project data, fabricated model replies or fabricated citation edges.
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
