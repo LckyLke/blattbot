@@ -68,6 +68,12 @@ export interface MockProject {
   compiler: string;
   /** Path of the root document (joinProject `rootDoc_id`), if any. */
   rootDocPath?: string;
+  /**
+   * Project history: `version` grows when a flush finds the files changed
+   * since the last flush (like project-history, edits reach the history only
+   * when flushed); `labels` as POST /project/:id/labels stored them.
+   */
+  history: { version: number; flushedFingerprint?: string; labels: { id: string; comment: string; version: number }[] };
 }
 
 export interface MockOverleaf {
@@ -110,6 +116,8 @@ export interface MockOverleaf {
   project: MockProject;
   /** Test hook: when false, the threads/message/resolve endpoints 404 (older instances). */
   threadsApi: boolean;
+  /** Test hook: when false, the history flush/updates/labels endpoints 404 (older instances). */
+  historyApi: boolean;
   /** Test hook: when true, posting/resolving comments answers 403 (no comment permission). */
   reviewForbidden: boolean;
   /** Test hook: when true, `meta.tc` is ignored — edits land, but no tracked change is recorded. */
@@ -213,6 +221,7 @@ export async function startMockOverleaf(
     threads: new Map(),
     historyDocs: new Map(),
     compiler: "pdflatex",
+    history: { version: 0, labels: [] },
   });
 
   const primary = newProject(projectId, projectName, "rootfolder0");
@@ -244,6 +253,7 @@ export async function startMockOverleaf(
     lastUpdated: () => lastUpdatedFor(primary),
     project: primary,
     threadsApi: true,
+    historyApi: true,
     reviewForbidden: false,
     ignoreTrackChanges: false,
     otUpdates: [],
@@ -327,10 +337,14 @@ export async function startMockOverleaf(
    * files changed — however they changed (uploads, OT, or a test editing
    * `files` directly) — as seen at the next listing.
    */
-  function lastUpdatedFor(proj: MockProject): string {
+  function filesFingerprint(proj: MockProject): string {
     const hash = createHash("sha1");
     for (const path of [...proj.files.keys()].sort()) hash.update(path).update("\0").update(proj.files.get(path)!).update("\0");
-    const fingerprint = hash.digest("hex");
+    return hash.digest("hex");
+  }
+
+  function lastUpdatedFor(proj: MockProject): string {
+    const fingerprint = filesFingerprint(proj);
     if (fingerprint !== proj.fingerprint || !proj.lastUpdated) {
       const previous = proj.lastUpdated ? Date.parse(proj.lastUpdated) : 0;
       proj.lastUpdated = new Date(Math.max(Date.now(), previous + 1)).toISOString();
@@ -602,6 +616,52 @@ export async function startMockOverleaf(
         return;
       }
       respond(404, JSON.stringify({ error: "not found", path: url.pathname }));
+      return;
+    }
+
+    // Project history: flush, updates and labels. Older instances lack it.
+    if (proj && (sub === "/flush" || sub === "/updates" || sub === "/labels")) {
+      if (!state.historyApi) {
+        respond(404, "<html><body>Not found</body></html>", "text/html");
+        return;
+      }
+      const history = proj.history;
+      if (req.method === "GET" && sub === "/updates") {
+        const v = history.version;
+        const update = { fromV: v - 1, toV: v, meta: { users: [], start_ts: Date.now(), end_ts: Date.now() }, labels: [], pathnames: [], project_ops: [] };
+        respond(200, JSON.stringify({ updates: v > 0 ? [update] : [], nextBeforeTimestamp: null }));
+        return;
+      }
+      if (req.method === "GET" && sub === "/labels") {
+        respond(200, JSON.stringify(history.labels));
+        return;
+      }
+      if (req.method !== "POST") {
+        respond(405, JSON.stringify({ error: "method not allowed" }));
+        return;
+      }
+      if (!csrfOk() || (sub === "/labels" && state.reviewForbidden)) {
+        respond(403, JSON.stringify({ message: "Forbidden" }));
+        return;
+      }
+      if (sub === "/flush") {
+        const fingerprint = filesFingerprint(proj);
+        if (fingerprint !== history.flushedFingerprint) {
+          history.version++;
+          history.flushedFingerprint = fingerprint;
+        }
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const body = await jsonBody(req);
+      if (typeof body.comment !== "string" || !Number.isInteger(body.version) || body.version < 0 || body.version > history.version) {
+        respond(400, JSON.stringify({ error: "invalid label" }));
+        return;
+      }
+      const label = { id: newObjectId(), comment: body.comment, version: body.version };
+      history.labels.push(label);
+      respond(200, JSON.stringify(label));
       return;
     }
 

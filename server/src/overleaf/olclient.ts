@@ -315,6 +315,51 @@ export class OverleafClient {
     );
   }
 
+  /**
+   * The project's newest history version, after asking Overleaf to move
+   * pending edits into its history (POST /project/:id/flush, then GET
+   * /project/:id/updates). Null when the history has no update yet.
+   */
+  async latestHistoryVersion(projectId: string): Promise<number | null> {
+    const token = await this.csrf();
+    const flush = await this.fetchReview(`/project/${projectId}/flush`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Csrf-Token": token },
+      body: "{}",
+    });
+    if (flush.status === 404) {
+      throw new OverleafFeatureError("this Overleaf instance has no project history API (probably an older version)");
+    }
+    if (flush.status === 403) throw new OverleafPermissionError("Overleaf does not let this account read the project history");
+    if (!flush.ok) throw new Error(`moving recent edits into the project history failed: HTTP ${flush.status}`);
+    const res = await this.fetchReview(`/project/${projectId}/updates?min_count=1`, { headers: { Accept: "application/json" } });
+    if (res.status === 403) throw new OverleafPermissionError("Overleaf does not let this account read the project history");
+    if (!res.ok) throw new Error(`reading the project history failed: HTTP ${res.status}`);
+    const data: any = await res.json().catch(() => null);
+    if (!data || !Array.isArray(data.updates)) throw new Error("reading the project history failed: unexpected response");
+    let latest: number | null = null;
+    for (const u of data.updates) {
+      const v = u?.toV;
+      if (Number.isSafeInteger(v) && v >= 0 && (latest === null || v > latest)) latest = v;
+    }
+    return latest;
+  }
+
+  /** Add a named label at `version` of the project history (POST /project/:id/labels). */
+  async addHistoryLabel(projectId: string, comment: string, version: number): Promise<void> {
+    const token = await this.csrf();
+    const res = await this.fetchReview(`/project/${projectId}/labels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Csrf-Token": token },
+      body: JSON.stringify({ comment, version }),
+    });
+    if (res.ok) return;
+    if (res.status === 404) throw new OverleafFeatureError("this Overleaf instance does not support history labels");
+    if (res.status === 403) throw new OverleafPermissionError("Overleaf does not let this account add history labels to the project");
+    const text = await res.text().catch(() => "");
+    throw new Error(`adding the history label failed: HTTP ${res.status}${text ? ` ${text.slice(0, 200)}` : ""}`);
+  }
+
   private async reviewPost(path: string, body: unknown, what: string): Promise<void> {
     const token = await this.csrf();
     const res = await this.fetchReview(path, {

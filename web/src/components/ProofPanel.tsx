@@ -34,6 +34,8 @@ interface Props {
   drift?: SyncConflict[] | null;
   /** Overleaf projects can keep or overwrite a version; Git-bridge conflicts are edited by hand. */
   projectKind?: "git" | "overleaf" | "local";
+  /** Overleaf projects: each push gets a label with the commit message in Overleaf's history. */
+  labelsPushes?: boolean;
   /** Scroll this file's diff into view (each new nonce once). */
   reveal?: { path: string; nonce: number };
   projectId: string;
@@ -78,6 +80,7 @@ export default function ProofPanel({
   conflicts,
   drift,
   projectKind,
+  labelsPushes,
   reveal,
   projectId,
   sourceStamp,
@@ -96,7 +99,12 @@ export default function ProofPanel({
   defaultMessage,
 }: Props) {
   const fallbackMessage = defaultMessage?.trim() || FALLBACK_MESSAGE;
-  const messageLabel = projectKind === "overleaf" ? "Commit message (local history only)" : "Commit message";
+  const messageLabel =
+    projectKind !== "overleaf"
+      ? "Commit message"
+      : labelsPushes
+        ? "Commit message (also labels the push in Overleaf's history)"
+        : "Commit message (local history only)";
   const files = useMemo(() => parseDiff(diff), [diff]);
   const [message, setMessage] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);

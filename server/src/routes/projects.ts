@@ -305,7 +305,7 @@ export function registerProjectRoutes(app: FastifyInstance): void {
 
   app.put<{
     Params: { id: string };
-    Body: { styleAppend?: string; model?: string; defaultMode?: string; trackChanges?: boolean };
+    Body: { styleAppend?: string; model?: string; defaultMode?: string; trackChanges?: boolean; labelPushes?: boolean };
   }>("/api/projects/:id/settings", async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });

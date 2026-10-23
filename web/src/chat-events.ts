@@ -308,6 +308,9 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
       if (Array.isArray(ev.drift) && ev.drift.length > 0) {
         next.push(notice(`${uid}:drift`, "warn", `Overleaf also changed ${ev.drift.join(", ")} where you have pending edits — see Proof.`));
       }
+      if (typeof ev.historyLabel === "string" && ev.historyLabel) {
+        next.push(notice(`${uid}:label`, "info", `Labelled in Overleaf's history: "${ev.historyLabel}"`));
+      }
       return next;
     }
     case "rejected":
