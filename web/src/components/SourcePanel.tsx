@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Compartment, EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -40,7 +40,8 @@ import {
 } from "@codemirror/autocomplete";
 import { tags as t } from "@lezer/highlight";
 import { bibtexLanguage, latexLanguage, latexTags } from "../latex-language";
-import { api, type FileContent } from "../api";
+import { api, type FileContent, type FileOpResult } from "../api";
+import { FileMenu, PathField, type FileMenuItem, type FileMenuTarget } from "./SourceFileActions";
 import {
   countDrafts,
   dropDraft,
@@ -53,8 +54,10 @@ import {
   subscribeDrafts,
 } from "../drafts";
 import { merge3 } from "../merge3";
+import { CONFLICT_MARK, CONFLICT_MESSAGE, saveBase, saveWithBase, shouldAutosave } from "../source-save";
 import { isFileSaving, notifyEditors, startFileSave, subscribeEditors } from "../editor-sync";
 import { useDialog } from "./Dialog";
+import OverleafComments from "./OverleafComments";
 
 interface Props {
   projectId: string;
@@ -62,8 +65,14 @@ interface Props {
   mainTex?: string;
   /** Changes when the working tree may have changed — refetches the open file. */
   stamp: number;
-  /** True while an agent turn runs — manual editing is disabled then. */
+  /** True while the working tree is locked (an approve or discard runs) — editing is disabled then. */
   busy: boolean;
+  /**
+   * True while an agent turn runs: typing stays a draft and saving waits for
+   * the turn to end; then the draft is saved, or — when the agent changed the
+   * same file — merged first through the changed-on-disk flow.
+   */
+  turnActive?: boolean;
   /** Receives the fresh working diff after a manual save, with the project it was saved to. */
   onDiff: (projectId: string, diff: string) => void;
   /** Called after a successful save — App recompiles when the PDF pane is visible. */
@@ -76,6 +85,10 @@ interface Props {
   onQuoteToChat?: (text: string, source: string) => void;
   /** A focused editor inside Proof, without the file tree. */
   embedded?: { path: string; line: number };
+  /** An Overleaf project: the header offers the co-authors' review comments. */
+  overleaf?: boolean;
+  /** A file was created, renamed or deleted: the project's new file list. */
+  onFilesChanged?: (projectId: string, files: string[]) => void;
 }
 
 interface DirNode {
@@ -679,7 +692,6 @@ const WRAP_KEY = "blattbot.sourceWrap";
 const AUTOSAVE_KEY = "blattbot.sourceAutosave";
 /** Idle time after the last keystroke before an autosave (when enabled). */
 const AUTOSAVE_MS = 1500;
-const CONFLICT_MARK = "<<<<<<< yours";
 
 /**
  * Nonce of the last reveal request acted on. Module-level on purpose: the
@@ -688,7 +700,7 @@ const CONFLICT_MARK = "<<<<<<< yours";
  */
 let handledRevealNonce = -1;
 
-export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded }: Props) {
+export default function SourcePanel({ projectId, files, mainTex, stamp, busy, turnActive = false, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded, overleaf, onFilesChanged }: Props) {
   const dialog = useDialog();
   const tree = useMemo(() => buildTree(files), [files]);
   const [sel, setSel] = useState<string | null>(null);
@@ -699,7 +711,17 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
   /** The server copy of the open file moved under an unsaved draft. */
-  const [diskChanged, setDiskChanged] = useState(false);
+  const [diskChanged, setDiskChangedState] = useState(false);
+  // Mirrored in a ref so the autosave timer sees it at once, not a render later.
+  const diskChangedRef = useRef(false);
+  const setDiskChanged = useCallback((value: boolean) => {
+    diskChangedRef.current = value;
+    setDiskChangedState(value);
+  }, []);
+  /** The user typed into this document since it was loaded, restored, merged
+   *  or refused — autosave waits for that (a restored draft is not re-saved
+   *  on its own). */
+  const userTypedRef = useRef(false);
   const [wrap, setWrap] = useState(() => localStorage.getItem(WRAP_KEY) === "1");
   /** Save after idle typing by default; preserve an explicit opt-out. */
   const [autosave, setAutosave] = useState(() => localStorage.getItem(AUTOSAVE_KEY) !== "0");
@@ -717,6 +739,11 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  const turnActiveRef = useRef(turnActive);
+  turnActiveRef.current = turnActive;
+  /** A save (button, Mod-s or autosave) asked for during a turn: it runs when the turn ends. */
+  const deferredSave = useRef(false);
+  const [saveDeferred, setSaveDeferred] = useState(false);
   const projRef = useRef(projectId);
   projRef.current = projectId;
   const wrapRef = useRef(wrap);
@@ -727,7 +754,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   savingRef.current = saving;
   const selRef = useRef(sel);
   selRef.current = sel;
-  const saveRef = useRef<() => void>(() => {});
+  const saveRef = useRef<(opts?: { auto?: boolean }) => void>(() => {});
   const onDiffRef = useRef(onDiff);
   onDiffRef.current = onDiff;
   const onSavedRef = useRef(onSaved);
@@ -811,6 +838,9 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               projectId: projRef.current, path, origin: editorId,
               kind: "document", content: text, saved: savedRef.current,
             });
+          }
+          if (!receiving.current && u.transactions.some((tr) => tr.annotation(Transaction.userEvent) != null)) {
+            userTypedRef.current = true;
           }
           if (isDirty && !receiving.current) armAutosave();
         }
@@ -941,21 +971,31 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   /**
    * Autosave: an idle-timer save. Never while the agent holds the tree or a
-   * save is in flight (save() refuses those; the finally below re-arms), and
-   * never with unresolved merge conflict markers in the text — a manual save
-   * is the user's explicit decision there.
+   * save is in flight (save() refuses those; the finally below re-arms), never
+   * while "changed on disk" shows, never for a restored draft nobody typed in
+   * yet, and never with unresolved merge conflict markers in the text — a
+   * manual save is the user's explicit decision there (see source-save.ts).
    */
+  const autosaveAllowed = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return false;
+    return shouldAutosave({
+      enabled: autosaveRef.current,
+      text: view.state.doc.toString(),
+      saved: savedRef.current,
+      diskChanged: diskChangedRef.current,
+      userTyped: userTypedRef.current,
+      busy: busyRef.current,
+      saving: savingRef.current,
+    });
+  }, []);
   const armAutosave = useCallback(() => {
     if (!autosaveRef.current) return;
     clearTimeout(autosaveTimer.current);
     autosaveTimer.current = setTimeout(() => {
-      const view = viewRef.current;
-      if (!view || !autosaveRef.current) return;
-      const text = view.state.doc.toString();
-      if (text === savedRef.current || text.includes(CONFLICT_MARK)) return;
-      saveRef.current();
+      if (autosaveAllowed()) saveRef.current({ auto: true });
     }, AUTOSAVE_MS);
-  }, []);
+  }, [autosaveAllowed]);
   useEffect(() => () => clearTimeout(autosaveTimer.current), []);
   useEffect(() => {
     localStorage.setItem(AUTOSAVE_KEY, autosave ? "1" : "0");
@@ -963,12 +1003,34 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     else clearTimeout(autosaveTimer.current);
   }, [autosave, armAutosave]);
 
-  const save = useCallback(async () => {
+  /**
+   * Write the editor text. Every save carries the base it was typed over, so
+   * the server refuses it (409) when the file moved meanwhile; the draft then
+   * stays and "changed on disk" offers Merge / Save mine / Revert. While that
+   * notice shows, only an explicit, confirmed "Save mine" (`overwrite`, which
+   * names the disk text the user was shown as the base) may write.
+   */
+  const save = useCallback(async (opts: { auto?: boolean; overwrite?: boolean } = {}) => {
     const view = viewRef.current;
     const path = selRef.current;
-    if (!view || !path || savingRef.current || busyRef.current) return;
+    if (!view || !path) return;
+    // The agent holds the files: keep the draft and save once the turn ends.
+    if (turnActiveRef.current) {
+      if (view.state.doc.toString() !== savedRef.current && !(opts.auto && !autosaveAllowed())) {
+        deferredSave.current = true;
+        setSaveDeferred(true);
+      }
+      return;
+    }
+    if (savingRef.current || busyRef.current) return;
+    if (opts.auto && !autosaveAllowed()) return;
+    if (diskChangedRef.current && !opts.overwrite) {
+      if (!opts.auto) void saveMineRef.current();
+      return;
+    }
     const content = view.state.doc.toString();
     if (content === savedRef.current) return; // clean doc — nothing to save
+    const base = saveBase(readDraft(projectId, path)?.base, savedRef.current, Boolean(opts.overwrite));
     const finishSave = startFileSave(projectId, path, editorId);
     if (!finishSave) return;
     let live = content;
@@ -981,7 +1043,40 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     setSaving(true);
     setSaveErr(null);
     try {
-      const res = await api.saveFile(projectId, path, content);
+      const outcome = await saveWithBase(
+        {
+          save: (b) => api.saveFile(projectId, path, content, b),
+          fetchDisk: async () => {
+            const f = await api.file(projectId, path);
+            if (f.binary) throw new Error("the file is no longer text");
+            return f.content;
+          },
+        },
+        base,
+      );
+      // The next queued turn started first: the draft waits for that one.
+      if (outcome.kind === "error" && /turn in progress/i.test(outcome.message)) {
+        deferSaveAgain();
+        return;
+      }
+      if (outcome.kind === "error") throw new Error(outcome.message);
+      if (outcome.kind === "conflict") {
+        // Refused: nothing was written. Keep the draft (and the base it was
+        // typed over, which Merge needs) and show the disk version's state.
+        const draftBase = readDraft(projectId, path)?.base ?? base;
+        if (live !== outcome.disk) stashDraft(projectId, path, { content: live, base: draftBase });
+        else dropDraft(projectId, path);
+        if (projRef.current === projectId && docPathRef.current === path) {
+          savedRef.current = outcome.disk;
+          userTypedRef.current = false;
+          setDirty(live !== outcome.disk);
+          setDiskChanged(live !== outcome.disk);
+          setSaveErr(live !== outcome.disk ? CONFLICT_MESSAGE : null);
+        }
+        notifyEditors({ projectId, path, origin: editorId, kind: "document", content: live, saved: outcome.disk });
+        return;
+      }
+      const res = outcome;
       // The draft is shared: it also includes typing in the other pane and
       // survives closing this editor or selecting a different file mid-save.
       if (live !== content) stashDraft(projectId, path, { content: live, base: content });
@@ -1007,8 +1102,50 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
       // Typed on during the round-trip: the idle timer picks it up again.
       if (view.state.doc.toString() !== savedRef.current) armAutosave();
     }
-  }, [projectId, armAutosave, editorId]);
+  }, [projectId, armAutosave, autosaveAllowed, editorId, setDiskChanged]);
   saveRef.current = save;
+
+  /** A held-back save hit a turn that had just started: try again once it ends. */
+  function deferSaveAgain() {
+    deferredSave.current = true;
+    setSaveDeferred(true);
+    // That turn may be over already (this tab heard of neither its start nor end yet).
+    setTimeout(() => {
+      if (turnActiveRef.current || !deferredSave.current) return;
+      deferredSave.current = false;
+      setSaveDeferred(false);
+      saveRef.current();
+    }, 1_000);
+  }
+
+  // The turn ended: run the save it held back. The save carries its base, so
+  // when the agent changed this file the server refuses it and the draft
+  // stays, with "changed on disk" offering Merge — nothing is overwritten.
+  useEffect(() => {
+    if (turnActive || !deferredSave.current) return;
+    deferredSave.current = false;
+    setSaveDeferred(false);
+    if (diskChangedRef.current) {
+      setSaveErr("The agent changed this file during the turn — Merge your edits with its version, then save.");
+      return;
+    }
+    saveRef.current();
+  }, [turnActive]);
+
+  /** "Save mine": overwrite the changed disk version, after a confirmation. */
+  const saveMineRef = useRef<() => Promise<void>>(async () => {});
+  saveMineRef.current = async () => {
+    if (!viewRef.current || !selRef.current || savingRef.current || busyRef.current) return;
+    const ok = await dialog.confirm({
+      title: "Overwrite the changed file?",
+      body:
+        "This file changed on disk while you were editing (an agent turn, a sync or a rejected change). " +
+        "Saving yours replaces that version; Merge keeps both instead.",
+      confirmLabel: "Save mine",
+      danger: true,
+    });
+    if (ok) await save({ overwrite: true });
+  };
 
   /**
    * Three-way merge of the draft with the disk version (merge3.ts): base is
@@ -1024,6 +1161,8 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     const theirs = savedRef.current;
     const base = readDraft(projectId, path)?.base ?? theirs;
     const { text, conflicts } = merge3(base, ours, theirs);
+    // The merged text is saved by the user (or after they type on), not by the timer.
+    userTypedRef.current = false;
     if (text !== ours) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
     }
@@ -1081,6 +1220,129 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     setSaveErr(null);
     rememberOpenFile(projectId, path);
     setSel(path);
+  }
+
+  // ---- File actions: new file (folders via the path), rename, delete -------
+  // Each is a pending change like any edit — it shows in Proof and reaches
+  // the remote only when approved.
+  const [menu, setMenu] = useState<{ x: number; y: number; target: FileMenuTarget } | null>(null);
+  const [pathEdit, setPathEdit] = useState<{ mode: "new"; dir: string } | { mode: "rename"; path: string } | null>(null);
+  const [fileOpErr, setFileOpErr] = useState<string | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  useEffect(() => {
+    setMenu(null);
+    setPathEdit(null);
+    setFileOpErr(null);
+  }, [projectId]);
+
+  function applyFileOp(res: FileOpResult) {
+    onDiffRef.current(projectId, res.diff);
+    onFilesChanged?.(projectId, res.files);
+  }
+
+  function openMenu(e: React.MouseEvent<HTMLElement>, target: FileMenuTarget) {
+    e.preventDefault();
+    if (busy) {
+      setFileOpErr("File actions wait until the agent turn ends.");
+      return;
+    }
+    // The context-menu key reports no pointer position: anchor at the row.
+    const r = e.currentTarget.getBoundingClientRect();
+    const keyboard = e.clientX === 0 && e.clientY === 0;
+    setFileOpErr(null);
+    setMenu({ x: keyboard ? r.left + 12 : e.clientX, y: keyboard ? r.bottom : e.clientY, target });
+  }
+
+  async function createFile(raw: string): Promise<string | null> {
+    if (busyRef.current) return "File actions wait until the agent turn ends.";
+    if (raw.endsWith("/")) return "Add a file name after the folder, e.g. chapters/intro.tex";
+    try {
+      const res = await api.createFile(projectId, raw);
+      if (projRef.current !== projectId) return null;
+      setPathEdit(null);
+      applyFileOp(res);
+      rememberOpenFile(projectId, res.path);
+      setSaveErr(null);
+      setSel(res.path);
+      return null;
+    } catch (err: any) {
+      return err.message;
+    }
+  }
+
+  async function renameFile(from: string, raw: string): Promise<string | null> {
+    if (raw === from) {
+      setPathEdit(null);
+      return null;
+    }
+    if (busyRef.current) return "File actions wait until the agent turn ends.";
+    if (isFileSaving(projectId, from)) return "Wait for the save to finish.";
+    try {
+      const res = await api.renameFile(projectId, from, raw);
+      if (projRef.current !== projectId) return null;
+      setPathEdit(null);
+      // An unsaved draft moves with its file.
+      const draft = readDraft(projectId, from);
+      if (draft) {
+        stashDraft(projectId, res.path, draft);
+        dropDraft(projectId, from);
+      }
+      if (selRef.current === from) {
+        rememberOpenFile(projectId, res.path);
+        setSel(res.path);
+      }
+      applyFileOp(res);
+      return null;
+    } catch (err: any) {
+      return err.message;
+    }
+  }
+
+  async function deleteFile(path: string) {
+    setFileOpErr(null);
+    if (busyRef.current) return setFileOpErr("File actions wait until the agent turn ends.");
+    if (isFileSaving(projectId, path)) return setFileOpErr("Wait for the save to finish.");
+    const unsaved = hasDraft(projectId, path);
+    const ok = await dialog.confirm({
+      title: `Delete ${path}?`,
+      body: (
+        <>
+          <p>
+            The file is removed from the working copy. Like any edit this is a pending change: Proof lists it,
+            Discard there brings the file back, and only approving makes it final (and removes it from the remote).
+          </p>
+          {unsaved && <p className="mt-2 text-pencil">Its unsaved edits in the editor are discarded too.</p>}
+          {path === mainTex && <p className="mt-2">This is the main file — another one is picked for compiling.</p>}
+        </>
+      ),
+      confirmLabel: "Delete file",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const res = await api.deleteFile(projectId, path);
+      if (projRef.current !== projectId) return;
+      dropDraft(projectId, path);
+      if (selRef.current === path) {
+        rememberOpenFile(projectId, null);
+        setSel(null);
+      }
+      applyFileOp(res);
+    } catch (err: any) {
+      setFileOpErr(err.message);
+    }
+  }
+
+  function menuItems(target: FileMenuTarget): FileMenuItem[] {
+    if (target.kind === "dir") {
+      return [{ label: "New file in this folder…", run: () => setPathEdit({ mode: "new", dir: `${target.path}/` }) }];
+    }
+    const slash = target.path.lastIndexOf("/");
+    return [
+      { label: "Rename or move…", run: () => setPathEdit({ mode: "rename", path: target.path }) },
+      { label: "New file here…", run: () => setPathEdit({ mode: "new", dir: slash >= 0 ? target.path.slice(0, slash + 1) : "" }) },
+      { label: "Delete…", danger: true, run: () => void deleteFile(target.path) },
+    ];
   }
 
   // Pick a file once the list is known: the one open before (a remount after
@@ -1141,6 +1403,8 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     const pid = projRef.current;
     if (docPathRef.current !== file.path) {
       docPathRef.current = file.path;
+      // A restored draft is not autosaved until the user types in it again.
+      userTypedRef.current = false;
       savingRef.current = isFileSaving(pid, file.path);
       setSaving(savingRef.current);
       savedRef.current = file.content;
@@ -1200,19 +1464,23 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     });
   }, [wrap, comp]);
 
-  // Reveal requests: select the file (a draft in the current one stays
-  // stashed), then jump once loaded.
+  /** Select `file` (a draft in the current one stays stashed), then jump to `line` once loaded. */
+  const jumpTo = (file: string, line: number) => {
+    pendingReveal.current = { file, line };
+    if (file !== selRef.current) {
+      setSaveErr(null);
+      rememberOpenFile(projRef.current, file);
+      setSel(file);
+    } else if (viewRef.current && docPathRef.current === file) {
+      applyPendingReveal(viewRef.current);
+    }
+  };
+
+  // Reveal requests from elsewhere in the app.
   useEffect(() => {
     if (!reveal || reveal.nonce === handledRevealNonce) return;
     handledRevealNonce = reveal.nonce;
-    pendingReveal.current = { file: reveal.file, line: reveal.line };
-    if (reveal.file !== selRef.current) {
-      setSaveErr(null);
-      rememberOpenFile(projRef.current, reveal.file);
-      setSel(reveal.file);
-    } else if (viewRef.current && docPathRef.current === reveal.file) {
-      applyPendingReveal(viewRef.current);
-    }
+    jumpTo(reveal.file, reveal.line);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
 
@@ -1230,6 +1498,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                 return next;
               })
             }
+            onContextMenu={(e) => openMenu(e, { kind: "dir", path: node.path })}
             style={pad}
             className="flex w-full items-center gap-1 py-1 pr-2 text-left text-[11.5px] text-paper-dim hover:text-paper"
           >
@@ -1240,28 +1509,56 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
         {(!node.path || !collapsed.has(node.path)) && (
           <>
             {node.dirs.map((d) => renderDir(d, node.path ? depth + 1 : depth))}
-            {node.files.map((f) => (
-              <button
-                key={f.path}
-                onClick={() => void selectFile(f.path)}
-                style={{ paddingLeft: `${10 + (node.path ? depth + 1 : depth) * 12}px` }}
-                className={`flex w-full items-baseline gap-1.5 py-1 pr-2 text-left font-mono text-[11.5px] transition-colors ${
-                  sel === f.path ? "bg-ink-3 text-paper" : "text-paper-dim hover:bg-ink-3/50"
-                }`}
-              >
-                <span className="truncate">{f.name}</span>
-                {f.path !== sel && hasDraft(projectId, f.path) && (
-                  <span className="text-gold" title="Unsaved edits">
-                    ●
-                  </span>
-                )}
-                {f.path === mainTex && (
-                  <span className="rounded-sm border border-gold/40 px-1 text-[8.5px] uppercase tracking-wide text-gold">
-                    main
-                  </span>
-                )}
-              </button>
-            ))}
+            {node.files.map((f) =>
+              pathEdit?.mode === "rename" && pathEdit.path === f.path ? (
+                <PathField
+                  key={f.path}
+                  label={`New path for ${f.path}`}
+                  initial={f.path}
+                  selectName
+                  hint="Enter renames; a different folder moves it"
+                  onSubmit={(value) => renameFile(f.path, value)}
+                  onCancel={() => setPathEdit(null)}
+                />
+              ) : (
+                <div key={f.path} className="group relative">
+                  <button
+                    onClick={() => void selectFile(f.path)}
+                    onContextMenu={(e) => openMenu(e, { kind: "file", path: f.path })}
+                    style={{ paddingLeft: `${10 + (node.path ? depth + 1 : depth) * 12}px` }}
+                    className={`flex w-full items-baseline gap-1.5 py-1 pr-6 text-left font-mono text-[11.5px] transition-colors ${
+                      sel === f.path ? "bg-ink-3 text-paper" : "text-paper-dim hover:bg-ink-3/50"
+                    }`}
+                  >
+                    <span className="truncate">{f.name}</span>
+                    {f.path !== sel && hasDraft(projectId, f.path) && (
+                      <span className="text-gold" title="Unsaved edits">
+                        ●
+                      </span>
+                    )}
+                    {f.path === mainTex && (
+                      <span className="rounded-sm border border-gold/40 px-1 text-[8.5px] uppercase tracking-wide text-gold">
+                        main
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    // The name stays generic so file-name lookups find only the row itself;
+                    // the title (the accessible description) names the file.
+                    aria-label="File actions"
+                    data-file-actions={f.path}
+                    title={`Rename, move or delete ${f.path}`}
+                    aria-haspopup="menu"
+                    disabled={busy}
+                    onClick={(e) => openMenu(e, { kind: "file", path: f.path })}
+                    className="absolute right-0.5 top-1/2 -translate-y-1/2 rounded px-1 text-[12px] leading-none text-graphite opacity-0 transition-opacity hover:text-paper focus:opacity-100 group-hover:opacity-100 disabled:hidden"
+                  >
+                    ⋯
+                  </button>
+                </div>
+              ),
+            )}
           </>
         )}
       </div>
@@ -1323,11 +1620,50 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   return (
     <div className="flex h-full" data-source-panel data-selection-location={sel || "Source"} onPointerDownCapture={() => { document.documentElement.dataset.findScope = "source"; }} onFocusCapture={() => { document.documentElement.dataset.findScope = "source"; }}>
-      {!embedded && <aside className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
+      {!embedded && <aside aria-label="Project files" className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
+        <div className="flex items-center gap-1 pb-0.5 pl-2.5 pr-1">
+          <span className="text-[10px] uppercase tracking-wide text-graphite">Files</span>
+          <button
+            type="button"
+            aria-label="New file"
+            title={busy ? "File actions wait until the agent turn ends" : "New file — a path like chapters/intro.tex also creates the folder"}
+            disabled={busy}
+            onClick={() => {
+              setFileOpErr(null);
+              setPathEdit({ mode: "new", dir: "" });
+            }}
+            className="ml-auto rounded px-1.5 text-[14px] leading-none text-graphite transition-colors hover:text-leaf disabled:opacity-40"
+          >
+            +
+          </button>
+        </div>
+        {pathEdit?.mode === "new" && (
+          <PathField
+            label="New file path"
+            initial={pathEdit.dir}
+            hint="e.g. chapters/intro.tex — folders are created"
+            onSubmit={createFile}
+            onCancel={() => setPathEdit(null)}
+          />
+        )}
+        {fileOpErr && (
+          <p role="alert" className="px-2.5 py-1 text-[10.5px] leading-snug text-pencil">
+            {fileOpErr}
+          </p>
+        )}
         {files.length === 0 ? (
           <p className="px-3 py-2 text-xs text-graphite">No files.</p>
         ) : (
           renderDir(tree, 0)
+        )}
+        {menu && (
+          <FileMenu
+            x={menu.x}
+            y={menu.y}
+            label={`Actions for ${menu.target.path}`}
+            items={menuItems(menu.target)}
+            onClose={closeMenu}
+          />
         )}
       </aside>}
 
@@ -1339,11 +1675,12 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               {dirty && <span className="ml-1.5 align-middle text-gold">●</span>}
             </span>
             <span className="ml-auto flex flex-wrap items-center gap-1.5">
+              {overleaf && !embedded && <OverleafComments projectId={projectId} stamp={stamp} files={files} onJump={jumpTo} />}
               {saveErr && <span className="text-[11px] text-pencil">{saveErr}</span>}
               {dirty && diskChanged && (
                 <span
                   className="rounded-lg border border-pencil/40 bg-pencil/10 px-1.5 py-px text-[10.5px] text-pencil"
-                  title="This file changed on disk (an agent turn, a sync, or a rejected hunk) while you were editing. Save writes your version over it; Revert drops your edits and shows the disk version."
+                  title="This file changed on disk (an agent turn, a sync, or a rejected hunk) while you were editing. Autosave is paused. Merge combines both versions; Save mine writes your version over it after a confirmation; Revert drops your edits and shows the disk version."
                 >
                   changed on disk
                 </span>
@@ -1365,6 +1702,15 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                       read-only while the agent works
                     </span>
                   )}
+                  {turnActive && !busy && (
+                    <span
+                      role="status"
+                      title="The agent is editing the project: keep typing — your edits stay a draft and are saved when the turn ends (merged first if the agent changed this file too)."
+                      className="rounded-lg border border-gold/30 bg-gold/10 px-1.5 py-px text-[10.5px] text-gold"
+                    >
+                      {saveDeferred ? "saves after the turn" : "draft while the agent works"}
+                    </span>
+                  )}
                   {dirty && (
                     <button
                       onClick={() => void revert()}
@@ -1375,13 +1721,25 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                       Revert
                     </button>
                   )}
-                  <button
-                    onClick={() => void save()}
-                    disabled={!dirty || saving || busy}
-                    className="rounded-lg bg-leaf-deep px-2.5 py-0.5 text-[11.5px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
-                  >
-                    {saving ? "Saving…" : "Save"}
-                  </button>
+                  {dirty && diskChanged ? (
+                    <button
+                      onClick={() => void saveMineRef.current()}
+                      disabled={saving || busy || turnActive}
+                      title={turnActive ? "Available when the agent turn ends" : "Write your version over the changed file (asks first)"}
+                      className="rounded-lg border border-pencil/50 px-2.5 py-0.5 text-[11.5px] font-medium text-pencil transition-colors hover:bg-pencil/10 disabled:opacity-50"
+                    >
+                      {saving ? "Saving…" : "Save mine"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => void save()}
+                      disabled={!dirty || saving || busy || saveDeferred}
+                      title={turnActive ? "The agent is working: your edits are saved when the turn ends" : undefined}
+                      className="rounded-lg bg-leaf-deep px-2.5 py-0.5 text-[11.5px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+                    >
+                      {saving ? "Saving…" : turnActive ? "Saves after the turn" : "Save"}
+                    </button>
+                  )}
                 </>
               )}
             </span>
@@ -1440,7 +1798,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
             <button
               onClick={() => setAutosave((a) => !a)}
               aria-pressed={autosave}
-              title="Autosave: write the file 1.5 s after you stop typing (never while the agent works, never with unresolved conflict markers)"
+              title="Autosave: write the file 1.5 s after you stop typing (never while the agent works, never while the file changed on disk under your edits, never with unresolved conflict markers)"
               className={`ml-auto rounded-lg border px-1.5 py-px transition-colors ${
                 autosave
                   ? "border-leaf/60 text-leaf"

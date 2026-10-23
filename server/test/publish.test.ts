@@ -3,11 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMockOverleaf, type MockOverleaf } from "../scripts/mock-overleaf.js";
+import { freePort } from "../scripts/free-port.js";
 import { OverleafClient } from "../src/overleaf/olclient.js";
 import { publishTree } from "../src/sync.js";
 import * as git from "../src/git.js";
 
-const PORT = 4655;
+let PORT = 0;
 const PRIMARY_ID = "0123456789abcdef01234567";
 const COOKIE = "overleaf_session2=mock-session";
 
@@ -16,6 +17,7 @@ describe("publishTree (local → Overleaf)", () => {
   let dir: string;
 
   beforeAll(async () => {
+    PORT = await freePort();
     mock = await startMockOverleaf(PORT, PRIMARY_ID);
     dir = mkdtempSync(join(tmpdir(), "blattbot-publish-"));
     await git.initRepo(dir);
@@ -33,7 +35,7 @@ describe("publishTree (local → Overleaf)", () => {
 
   it("creates a remote project, wipes the template, and uploads the full tree", async () => {
     const client = new OverleafClient(`http://127.0.0.1:${PORT}`, COOKIE);
-    const result = await publishTree(client, "My Local Paper", dir);
+    const result = await publishTree(client, "My Local Paper", dir, "main.tex");
 
     // A fresh remote project was created with the requested name.
     expect(mock.created).toHaveLength(1);
@@ -51,9 +53,18 @@ describe("publishTree (local → Overleaf)", () => {
     expect(result.warnings).toEqual([]);
     expect(remote.files.get("main.tex")?.toString()).toContain("Local body.");
     expect(remote.files.get("sections/intro.tex")?.toString()).toContain("\\section{Intro}");
+    // Overleaf's main document is ours (the template's went with the wipe).
+    expect(remote.rootDocPath).toBe("main.tex");
 
     // The primary mock project was untouched.
     expect(mock.files.size).toBe(0);
+  });
+
+  it("warns, but still publishes, when the main document cannot be set", async () => {
+    const client = new OverleafClient(`http://127.0.0.1:${PORT}`, COOKIE);
+    const result = await publishTree(client, "No Main", dir, "missing.tex");
+    expect(result.uploaded.length).toBe(3);
+    expect(result.warnings).toEqual([expect.stringMatching(/Could not make missing\.tex the main document/)]);
   });
 
   it("requires a working session", async () => {

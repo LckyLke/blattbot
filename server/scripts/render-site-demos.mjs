@@ -12,15 +12,15 @@ const ffmpeg = process.env.DEMO_FFMPEG ?? "/usr/bin/ffmpeg";
 mkdirSync(output, { recursive: true });
 const run = args => execFileSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-y", ...args], { stdio: "inherit" });
 const stamp = seconds => new Date(Math.max(0, seconds) * 1000).toISOString().slice(11, 23);
-const shots = { workflow: "workflow-proof", evidence: "research-evidence", graph: "research-graph", writing: "editor-search" };
+const shots = { workflow: "workflow-proof", graph: "research-graph", writing: "editor-search" };
 for (const [clip, shot] of Object.entries(shots)) {
   if (process.env.DEMO_CLIP && process.env.DEMO_CLIP !== clip) continue;
   const meta = JSON.parse(readFileSync(join(input, `${clip}.json`), "utf8"));
   const segments = meta.segments ?? [{ start: meta.start, end: meta.end }];
   const filter = segments.map((segment, i) => `[0:v]trim=start=${segment.start}:end=${segment.end},setpts=PTS-STARTPTS[v${i}]`).join(";") + ";" + segments.map((_, i) => `[v${i}]`).join("") + `concat=n=${segments.length}:v=1:a=0,fps=24[out]`;
   run(["-i", meta.raw, "-filter_complex", filter, "-map", "[out]", "-an", "-c:v", "libx264", "-preset", "slow", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", join(output, `${clip}.mp4`)]);
-  run(["-i", join(input, `${shot}.png`), "-frames:v", "1", "-c:v", "libwebp", "-quality", "92", join(output, `${shot}.webp`)]);
-  copyFileSync(join(output, `${shot}.webp`), join(output, `${clip}-poster.webp`));
+  // One image per clip: the video poster, also used as the page's feature screenshot.
+  run(["-i", join(input, `${shot}.png`), "-frames:v", "1", "-c:v", "libwebp", "-quality", "92", join(output, `${clip}-poster.webp`)]);
   let elapsed = 0;
   const captions = [];
   for (const segment of segments) {
@@ -42,5 +42,4 @@ for (const [clip, shot] of Object.entries(shots)) {
 }
 copyFileSync(join(input, "workflow-proof.png"), join(output, "demo-poster.png"));
 // The README leads with the same core workflow as the website.
-copyFileSync(join(output, "workflow.mp4"), join(output, "demo.mp4"));
-run(["-i", join(output, "demo.mp4"), "-filter_complex", "fps=8,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3", "-loop", "0", join(output, "demo.gif")]);
+run(["-i", join(output, "workflow.mp4"), "-filter_complex", "fps=8,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=3", "-loop", "0", join(output, "demo.gif")]);

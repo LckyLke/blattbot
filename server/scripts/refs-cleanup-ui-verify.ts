@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { freePort } from "./free-port.js";
 
 const root = mkdtempSync(join(tmpdir(), "blattbot-cleanup-"));
 process.env.BLATTBOT_DATA_DIR = join(root, "data");
@@ -19,10 +20,10 @@ writeFileSync(join(dir, "refs.bib"), bib);
 execFileSync("git", ["-C", dir, "init", "-b", "main"]);
 execFileSync("git", ["-C", dir, "add", "."]);
 execFileSync("git", ["-C", dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-m", "Fixture"]);
-const base = "http://127.0.0.1:4597";
+const port = await freePort(), base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
   cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
-  env: { ...process.env, BLATTBOT_PORT: "4597" }, stdio: "pipe",
+  env: { ...process.env, BLATTBOT_PORT: String(port) }, stdio: "pipe",
 });
 let logs = "";
 server.stdout.on("data", c => { logs += c; }); server.stderr.on("data", c => { logs += c; });
@@ -51,7 +52,7 @@ try {
   await button.waitFor();
   await page.getByRole("button", { name: "unused (2)", exact: true }).waitFor();
   await button.click();
-  let confirm = page.getByRole("dialog", { name: "Delete 2 unused references?", exact: true });
+  const confirm = page.getByRole("dialog", { name: "Delete 2 unused references?", exact: true });
   await confirm.waitFor();
   await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
   assert.equal(readFileSync(join(dir, "refs.bib"), "utf8"), bib);

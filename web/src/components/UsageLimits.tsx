@@ -11,14 +11,14 @@ export default function UsageLimits({ backend, busy }: { backend: string; busy: 
     const outside = (event: PointerEvent) => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
-    const escape = (event: KeyboardEvent) => {
+    const onEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") { setOpen(false); trigger.current?.focus(); }
     };
     document.addEventListener("pointerdown", outside);
-    document.addEventListener("keydown", escape);
+    document.addEventListener("keydown", onEscape);
     return () => {
       document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("keydown", escape);
+      document.removeEventListener("keydown", onEscape);
     };
   }, [open]);
   const [limits, setLimits] = useState<Limits | null>(null);

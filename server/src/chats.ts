@@ -218,6 +218,21 @@ export function readTranscript(projectId: string, chatId: string): ChatEvent[] {
 }
 
 /**
+ * How many user messages a chat's transcript holds — the turn number of the
+ * newest one. Counted on the raw lines: appendEvent writes the type first.
+ */
+export function countUserMessages(projectId: string, chatId: string): number {
+  try {
+    const text = readFileSync(transcriptPath(projectId, chatId), "utf8");
+    let n = 0;
+    for (let at = text.indexOf('{"type":"user_message"'); at !== -1; at = text.indexOf('{"type":"user_message"', at + 1)) n++;
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Every chat-image id any of the project's transcripts references — the set a
  * chat-uploads sweep must keep. Cheap by construction: transcripts are already
  * read line-by-line, and only `attachments` entries are inspected. Reading is

@@ -3,6 +3,8 @@ import { RepositoryManager } from "./CodeRepositories";
 import SidebarIcon from "./SidebarIcon";
 import { useEffect, useRef, useState } from "react";
 import { api, type ChatMeta, type DirListing, type Project, type ProjectContext } from "../api";
+import { projectStatus, statusSuffix } from "../project-status";
+import { OpenInOverleaf, StatusBadges } from "./ProjectStatus";
 
 interface Props {
   /** All imported projects, for the quick switcher. */
@@ -19,11 +21,16 @@ interface Props {
   onDashboard: () => void;
   onOpenSettings: () => void;
   onOpenProjectSettings: () => void;
+  /** Show the keyboard cheat sheet. */
+  onShowShortcuts?: () => void;
   /** Pull incoming remote changes now. Absent for local-only projects. */
   onSync?: () => void;
   syncing?: boolean;
   /** A newer published version exists — the footer links the releases page. */
   update?: { current: string; latest: string } | null;
+  /** Live status of the open project: files with pending changes, a running turn. */
+  pendingChanges?: number;
+  agentWorking?: boolean;
 }
 
 /** Project navigation, persistent chat history, and attached reference material. */
@@ -40,10 +47,16 @@ export default function Sidebar({
   onDashboard,
   onOpenSettings,
   onOpenProjectSettings,
+  onShowShortcuts,
   onSync,
   syncing = false,
   update = null,
+  pendingChanges = 0,
+  agentWorking = false,
 }: Props) {
+  // The open project's status comes from the live turn state and diff; the
+  // others' from the (polled) project list.
+  const liveStatus = projectStatus(project, { working: agentWorking, pending: pendingChanges });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [chatFilter, setChatFilter] = useState("");
   useEffect(() => { setConfirmDelete(null); setChatFilter(""); }, [project.id, activeChatId]);
@@ -136,16 +149,21 @@ export default function Sidebar({
                 {projects.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
+                    {statusSuffix(p.id === project.id ? liveStatus : projectStatus(p))}
                   </option>
                 ))}
               </select>
             )}
           </div>
+          <div className="mt-0.5 flex items-center gap-2 px-1">
+            <StatusBadges status={liveStatus} kind={project.kind} />
+            <OpenInOverleaf project={project} label="Overleaf" className="ml-auto" />
+          </div>
           <div className="mt-1.5 flex items-center gap-1">
             <button
               onClick={onOpenProjectSettings}
               aria-label="Open project settings"
-              title="Writing style, model override, and default mode for this project"
+              title="Writing style, model override, main file, and default mode for this project"
               className="flex h-7 items-center gap-1.5 rounded-lg px-1.5 text-[10.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
             >
               <SidebarIcon name="settings" className="h-3.5 w-3.5" /> Project settings
@@ -183,7 +201,7 @@ export default function Sidebar({
             <div className="flex items-center">
               <button type="button" disabled={busy} onClick={() => onSelectChat(chat.id)}
                 aria-label={`Open chat ${chat.title}`} aria-current={chat.id === activeChatId ? "page" : undefined}
-                title={`${chat.title} · Updated ${new Date(chat.updatedAt).toLocaleString()}`}
+                title={busy && chat.id !== activeChatId ? `${chat.title} — you can switch chats when the current turn ends` : `${chat.title} · Updated ${new Date(chat.updatedAt).toLocaleString()}`}
                 className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-2.5 text-left text-[12px] transition-colors disabled:opacity-50 ${chat.id === activeChatId ? "text-paper" : "text-paper-dim hover:text-paper"}`}>
                 {busy && chat.id === activeChatId ? <span className="working-dot mx-1 h-1.5 w-1.5 shrink-0 rounded-full bg-leaf" /> : <SidebarIcon name="chat" className="h-3.5 w-3.5 text-graphite" />}
                 <span className="min-w-0 truncate">{chat.title}</span>
@@ -203,7 +221,7 @@ export default function Sidebar({
           </li>)}
         </ul>
         {!visibleChats.length && <p className="px-2 py-3 text-[11px] text-graphite">{chatFilter ? "No matching chats." : "Start a chat about this project."}</p>}
-        {busy && <p className="px-2 pt-3 text-[10px] leading-relaxed text-graphite">Chat switching is available when the current operation finishes.</p>}
+        {busy && <p className="px-2 pt-3 text-[10px] leading-relaxed text-graphite">Chat switching is available when the current turn ends. Messages you send now wait in the queue of this chat.</p>}
       </div>
 
       {/* External read-only context: reference material the agent may read but never edits. */}
@@ -379,13 +397,25 @@ export default function Sidebar({
       </div>
 
       <div className="px-3 pb-3 pt-1">
-        <button
-          onClick={onOpenSettings}
-          aria-label="Open settings"
-          className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[11.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
-        >
-          <SidebarIcon name="settings" /> Settings
-        </button>
+        <div className="flex items-center">
+          <button
+            onClick={onOpenSettings}
+            aria-label="Open settings"
+            className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left text-[11.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
+          >
+            <SidebarIcon name="settings" /> Settings
+          </button>
+          {onShowShortcuts && (
+            <button
+              onClick={onShowShortcuts}
+              aria-label="Keyboard shortcuts"
+              title="Keyboard shortcuts (?)"
+              className="flex h-9 shrink-0 items-center rounded-lg px-2 font-mono text-[11px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
+            >
+              ?
+            </button>
+          )}
+        </div>
         {update && (
           <a
             href="https://github.com/LckyLke/blattbot/releases"

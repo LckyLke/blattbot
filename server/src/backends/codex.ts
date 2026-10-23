@@ -1,4 +1,3 @@
-import { toolDetail } from "./types.js";
 /** Codex owns reasoning and conversation history; BlattBot owns project tools. */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -7,11 +6,9 @@ import { DATA_DIR } from "../config.js";
 import { listChats, readTranscript } from "../chats.js";
 import { loadSettings, type Settings } from "../settings.js";
 import { CodexClient, codexWorkspace } from "./codex-client.js";
-import {
-  buildOpenaiSystemPrompt, eventToolName, executeTool, OPENAI_SYSTEM_PROMPT,
-  summarizeArgs, toolDefinitions,
-} from "./openai.js";
-import { resultHead, type AgentBackend, type BackendTurnContext } from "./types.js";
+import { buildOpenaiSystemPrompt, OPENAI_SYSTEM_PROMPT, toolDefinitions } from "./openai.js";
+import { eventToolName, executeTool, summarizeToolInput } from "./tools.js";
+import { resultHead, toolDetail, type AgentBackend, type BackendTurnContext } from "./types.js";
 
 export const CODEX_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export const CODEX_SYSTEM_PROMPT = OPENAI_SYSTEM_PROMPT;
@@ -117,7 +114,7 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
       const name = eventToolName(p.tool);
       const id = p.callId;
       emit({ type: "tool_start", name });
-      emit({ type: "tool_use", id, name, input: toolDetail(p.arguments), detail: summarizeArgs(p.tool, p.arguments, ctx.dir) });
+      emit({ type: "tool_use", id, name, input: toolDetail(p.arguments), detail: summarizeToolInput(p.tool, p.arguments, ctx.dir) });
       const result = await executeTool(ctx, p.tool, p.arguments);
       signal.throwIfAborted();
       emit({ type: "tool_result", id, isError: result.isError, output: toolDetail(result.content), resultHead: resultHead(name, result.content) });
@@ -253,7 +250,7 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
 export const codexBackend: AgentBackend = {
   id: "codex", label: "Codex", description: "Runs the local Codex CLI with your existing login, persistent conversations, and BlattBot's project tools.",
   async runTurn(ctx) {
-    await run({ ctx, prompt: ctx.prompt, instructions: buildOpenaiSystemPrompt(ctx.systemAppend),
+    await run({ ctx, prompt: ctx.prompt, instructions: buildOpenaiSystemPrompt(ctx.systemAppend, { fullCatalog: true }),
       settings: ctx.settings, signal: ctx.signal, model: ctx.model });
   },
 };

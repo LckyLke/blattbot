@@ -13,12 +13,28 @@
  *   socket.io 0.9 joinDoc/applyOtUpdate/leaveDoc  in-place text-doc edits
  */
 import WebSocket from "ws";
-import { type TextOpComponent } from "./ot.js";
+import { normalizeSpans, withoutSpans, type ContentSpan, type TextOpComponent } from "./ot.js";
 
 export class OverleafAuthError extends Error {
   constructor(message = "Overleaf session rejected — the cookie has probably expired. Paste a fresh one.") {
     super(message);
     this.name = "OverleafAuthError";
+  }
+}
+
+/** The instance does not offer this feature (HTTP 404: older Overleaf, or the thread is gone). */
+export class OverleafFeatureError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OverleafFeatureError";
+  }
+}
+
+/** Overleaf refused the action for this account (HTTP 403). The session itself is fine. */
+export class OverleafPermissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "OverleafPermissionError";
   }
 }
 
@@ -103,7 +119,79 @@ export interface ProjectTree {
   entities: Map<string, TreeEntity>;
   /** folder path (no leading slash, "" = root) → folder id */
   folders: Map<string, string>;
+  /** The project's compiler setting from joinProject, when the server sends one. */
+  compiler?: string;
+  /** Entity id of the project's main document (joinProject rootDoc_id), when set. */
+  rootDocId?: string;
 }
+
+/** A review comment anchored in a doc: its thread id and the quoted text. */
+export interface DocComment {
+  /** Range id; usually the thread id. */
+  id: string;
+  threadId: string;
+  quote: string;
+  /** Character offset into the doc's (visible) text. */
+  offset: number;
+  /** history-OT docs carry the resolved flag on the range itself. */
+  resolved?: boolean;
+}
+
+/** A tracked change in a doc. */
+export interface DocChange {
+  id: string;
+  kind: "insert" | "delete";
+  text: string;
+  /** Character offset into the doc's (visible) text. */
+  offset: number;
+  userId?: string;
+  /** ISO time, when the server reports one. */
+  time?: string;
+}
+
+export interface DocRanges {
+  comments: DocComment[];
+  changes: DocChange[];
+}
+
+/** A doc as joinDoc returns it. `lines` is always the visible text. */
+export interface OlDocSnapshot {
+  lines: string[];
+  version: number;
+  /** "sharejs-text-ot" (classic) or "history-ot" (newer docs). */
+  type: "sharejs-text-ot" | "history-ot";
+  ranges: DocRanges;
+  /** history-OT only: the stored content, which also keeps tracked-deleted text. */
+  historyContent?: string;
+  /** history-OT only: the tracked-deleted spans of historyContent. */
+  hiddenSpans?: ContentSpan[];
+}
+
+export interface OlThreadUser {
+  id?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}
+
+export interface OlThreadMessage {
+  id: string;
+  content: string;
+  /** ISO time. */
+  time?: string;
+  userId?: string;
+  user?: OlThreadUser;
+}
+
+export interface OlThread {
+  messages: OlThreadMessage[];
+  resolved: boolean;
+  resolvedAt?: string;
+  resolvedBy?: OlThreadUser;
+}
+
+/** Overleaf entity/thread ids are hex ObjectIds; anything path-like is refused. */
+const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 export interface RemoteCompileResult {
   /** Overleaf's compile status, e.g. "success" or "failure". */
@@ -118,6 +206,18 @@ function looksLikeLoginRedirect(res: Response): boolean {
   if (res.status === 401 || res.status === 403) return true;
   const ct = res.headers.get("content-type") ?? "";
   return res.ok && ct.includes("text/html") && res.url.includes("/login");
+}
+
+/** How long downloadZip waits out Overleaf's download rate limit in total. */
+export const ZIP_RATE_LIMIT_WAIT_MS = 65_000;
+
+/** A Retry-After header (seconds or an HTTP date) in milliseconds, capped at 30 s; undefined when absent or unreadable. */
+export function retryAfterMs(header: string | null, now = Date.now()): number | undefined {
+  if (!header) return undefined;
+  const seconds = Number(header);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - now;
+  if (!Number.isFinite(ms)) return undefined;
+  return Math.min(Math.max(ms, 250), 30_000);
 }
 
 export class OverleafClient {
@@ -148,6 +248,148 @@ export class OverleafClient {
     });
     if (looksLikeLoginRedirect(res)) throw new OverleafAuthError();
     return res;
+  }
+
+  /**
+   * Like fetchChecked, but a 403 is NOT a dead session here: review actions
+   * answer 403 when the account lacks comment rights. Only 401 and a login
+   * page count as an expired session.
+   */
+  private async fetchReview(path: string, init?: RequestInit): Promise<Response> {
+    const res = await fetch(this.baseUrl + path, {
+      redirect: "follow",
+      ...init,
+      headers: { ...this.headers(), ...(init?.headers as Record<string, string> | undefined) },
+      signal: AbortSignal.timeout(30_000),
+    });
+    const ct = res.headers.get("content-type") ?? "";
+    if (res.status === 401 || (res.ok && ct.includes("text/html") && res.url.includes("/login"))) {
+      throw new OverleafAuthError();
+    }
+    return res;
+  }
+
+  /**
+   * All comment threads of a project with their messages (GET
+   * /project/:id/threads). Each message carries the author's name when the
+   * server includes it. Throws OverleafFeatureError on instances without the
+   * endpoint, OverleafPermissionError when the account may not read them.
+   */
+  async getThreads(projectId: string): Promise<Map<string, OlThread>> {
+    const res = await this.fetchReview(`/project/${projectId}/threads`, { headers: { Accept: "application/json" } });
+    if (res.status === 404) {
+      throw new OverleafFeatureError(
+        "This Overleaf instance has no comment-threads API (Community Edition and older versions have none), so comment messages cannot be shown",
+      );
+    }
+    if (res.status === 403) {
+      throw new OverleafPermissionError("Overleaf does not let this account read the project's comments");
+    }
+    if (!res.ok) throw new Error(`reading comment threads failed: HTTP ${res.status}`);
+    const data: unknown = await res.json().catch(() => null);
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("reading comment threads failed: unexpected response");
+    }
+    const threads = new Map<string, OlThread>();
+    for (const [id, raw] of Object.entries(data as Record<string, any>)) {
+      if (!raw || typeof raw !== "object") continue;
+      threads.set(id, {
+        messages: (Array.isArray(raw.messages) ? raw.messages : [])
+          .filter((m: any) => m && typeof m === "object")
+          .map((m: any) => ({
+            id: String(m.id ?? m._id ?? ""),
+            content: typeof m.content === "string" ? m.content : "",
+            time: isoTime(m.timestamp),
+            userId: m.user_id != null ? String(m.user_id) : (m.user?.id != null ? String(m.user.id) : undefined),
+            user: threadUser(m.user),
+          })),
+        resolved: raw.resolved === true,
+        resolvedAt: isoTime(raw.resolved_at),
+        resolvedBy: threadUser(raw.resolved_by_user),
+      });
+    }
+    return threads;
+  }
+
+  /** Reply to a comment thread. */
+  async postThreadMessage(projectId: string, threadId: string, content: string): Promise<void> {
+    if (!SAFE_ID.test(threadId)) throw new Error("invalid thread id");
+    await this.reviewPost(`/project/${projectId}/thread/${threadId}/messages`, { content }, "reply to the comment");
+  }
+
+  /** Resolve (resolved=true) or reopen a comment thread anchored in `docId`. */
+  async setThreadResolved(projectId: string, docId: string, threadId: string, resolved: boolean): Promise<void> {
+    if (!SAFE_ID.test(threadId) || !SAFE_ID.test(docId)) throw new Error("invalid thread or doc id");
+    await this.reviewPost(
+      `/project/${projectId}/doc/${docId}/thread/${threadId}/${resolved ? "resolve" : "reopen"}`,
+      undefined,
+      resolved ? "resolve the comment" : "reopen the comment",
+    );
+  }
+
+  /**
+   * The project's newest history version, after asking Overleaf to move
+   * pending edits into its history (POST /project/:id/flush, then GET
+   * /project/:id/updates). Null when the history has no update yet.
+   */
+  async latestHistoryVersion(projectId: string): Promise<number | null> {
+    const token = await this.csrf();
+    const flush = await this.fetchReview(`/project/${projectId}/flush`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Csrf-Token": token },
+      body: "{}",
+    });
+    if (flush.status === 404) {
+      throw new OverleafFeatureError("this Overleaf instance has no project history API (probably an older version)");
+    }
+    if (flush.status === 403) throw new OverleafPermissionError("Overleaf does not let this account read the project history");
+    if (!flush.ok) throw new Error(`moving recent edits into the project history failed: HTTP ${flush.status}`);
+    const res = await this.fetchReview(`/project/${projectId}/updates?min_count=1`, { headers: { Accept: "application/json" } });
+    if (res.status === 403) throw new OverleafPermissionError("Overleaf does not let this account read the project history");
+    if (!res.ok) throw new Error(`reading the project history failed: HTTP ${res.status}`);
+    const data: any = await res.json().catch(() => null);
+    if (!data || !Array.isArray(data.updates)) throw new Error("reading the project history failed: unexpected response");
+    let latest: number | null = null;
+    for (const u of data.updates) {
+      const v = u?.toV;
+      if (Number.isSafeInteger(v) && v >= 0 && (latest === null || v > latest)) latest = v;
+    }
+    return latest;
+  }
+
+  /** Add a named label at `version` of the project history (POST /project/:id/labels). */
+  async addHistoryLabel(projectId: string, comment: string, version: number): Promise<void> {
+    const token = await this.csrf();
+    const res = await this.fetchReview(`/project/${projectId}/labels`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Csrf-Token": token },
+      body: JSON.stringify({ comment, version }),
+    });
+    if (res.ok) return;
+    if (res.status === 404) throw new OverleafFeatureError("this Overleaf instance does not support history labels");
+    if (res.status === 403) throw new OverleafPermissionError("Overleaf does not let this account add history labels to the project");
+    const text = await res.text().catch(() => "");
+    throw new Error(`adding the history label failed: HTTP ${res.status}${text ? ` ${text.slice(0, 200)}` : ""}`);
+  }
+
+  private async reviewPost(path: string, body: unknown, what: string): Promise<void> {
+    const token = await this.csrf();
+    const res = await this.fetchReview(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Csrf-Token": token },
+      body: JSON.stringify(body ?? {}),
+    });
+    if (res.ok) return;
+    if (res.status === 404) {
+      throw new OverleafFeatureError(
+        `Could not ${what}: this Overleaf instance does not support it (older version), or the comment no longer exists`,
+      );
+    }
+    if (res.status === 403) {
+      throw new OverleafPermissionError(`Could not ${what}: Overleaf refused it for this account (no comment permission on this project?)`);
+    }
+    const text = await res.text().catch(() => "");
+    throw new Error(`Could not ${what}: HTTP ${res.status}${text ? ` ${text.slice(0, 200)}` : ""}`);
   }
 
   /** Fetch and cache the CSRF token from the project dashboard's meta tag. */
@@ -215,10 +457,30 @@ export class OverleafClient {
     }
   }
 
-  async downloadZip(projectId: string): Promise<Buffer> {
-    const res = await this.fetchChecked(`/project/${projectId}/download/zip`, {
-      headers: { Accept: "application/zip, */*" },
-    });
+  /**
+   * The project as a zip. Overleaf allows 10 project downloads per minute per
+   * project (HTTP 429 beyond that); BlattBot downloads on every sync, approve
+   * and conflict resolution, so a burst of small approvals can reach it. Wait
+   * as Overleaf asks (Retry-After, capped) for up to ZIP_RATE_LIMIT_WAIT_MS
+   * in total before giving up with a clear message.
+   */
+  async downloadZip(projectId: string, opts: { rateLimitWaitMs?: number } = {}): Promise<Buffer> {
+    const deadline = Date.now() + (opts.rateLimitWaitMs ?? ZIP_RATE_LIMIT_WAIT_MS);
+    let res: Response;
+    for (let attempt = 0; ; attempt++) {
+      res = await this.fetchChecked(`/project/${projectId}/download/zip`, {
+        headers: { Accept: "application/zip, */*" },
+      });
+      if (res.status !== 429) break;
+      await res.arrayBuffer().catch(() => undefined);
+      const wait = retryAfterMs(res.headers.get("retry-after")) ?? Math.min(2000 * 2 ** attempt, 15_000);
+      if (Date.now() + wait > deadline) {
+        throw new Error(
+          "Overleaf limits project downloads to 10 per minute and BlattBot reached that limit; wait a minute, then try again",
+        );
+      }
+      await new Promise((resolveWait) => setTimeout(resolveWait, wait));
+    }
     if (!res.ok) throw new Error(`zip download failed: HTTP ${res.status}`);
     const buf = Buffer.from(await res.arrayBuffer());
     // A login page instead of a zip means the cookie died between checks.
@@ -356,6 +618,18 @@ export class OverleafClient {
       throw new Error(`create folder ${name} failed: HTTP ${res.status} ${JSON.stringify(data)}`);
     }
     return String(id);
+  }
+
+  /** Make `docId` the project's main document (POST /project/:id/settings {rootDocId}). */
+  async setRootDoc(projectId: string, docId: string): Promise<void> {
+    if (!SAFE_ID.test(docId)) throw new Error("invalid doc id");
+    const token = await this.csrf();
+    const res = await this.fetchChecked(`/project/${projectId}/settings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Csrf-Token": token },
+      body: JSON.stringify({ rootDocId: docId }),
+    });
+    if (!res.ok && res.status !== 204) throw new Error(`setting the main document failed: HTTP ${res.status}`);
   }
 
   async deleteEntity(projectId: string, type: "doc" | "file" | "folder", entityId: string): Promise<void> {
@@ -561,26 +835,52 @@ export class OlRealtimeSession {
     });
   }
 
-  /** Join a doc for editing; returns its current (decoded) text lines and OT version. */
-  async joinDoc(docId: string): Promise<{ lines: string[]; version: number }> {
-    const args = await this.emit("joinDoc", [docId, { encodeRanges: true }]);
-    const lines = args?.[1];
-    const version = args?.[2];
-    if (!Array.isArray(lines) || typeof version !== "number") {
-      throw new Error(`joinDoc ${docId}: unexpected ack ${JSON.stringify(args)}`);
+  /** Docs this session has seen to be history-OT: joined with supportsHistoryOT straight away. */
+  private readonly historyOtDocs = new Set<string>();
+
+  /**
+   * Join a doc: its decoded text lines, OT version, doc type, and review
+   * ranges (comments, tracked changes). The ack is
+   * `[err, lines, version, ops, ranges, type, opts]`; older servers stop
+   * after the version. A history-OT doc refuses a plain join ("client does
+   * not support history-ot"), so that error retries with supportsHistoryOT.
+   */
+  async joinDoc(docId: string): Promise<OlDocSnapshot> {
+    const historyOpts = { encodeRanges: true, supportsHistoryOT: true };
+    let args: any[];
+    if (this.historyOtDocs.has(docId)) {
+      args = await this.emit("joinDoc", [docId, historyOpts]);
+    } else {
+      try {
+        args = await this.emit("joinDoc", [docId, { encodeRanges: true }]);
+      } catch (err: any) {
+        if (!/does not support history-ot/i.test(String(err?.message ?? err))) throw err;
+        this.historyOtDocs.add(docId);
+        args = await this.emit("joinDoc", [docId, historyOpts]);
+      }
     }
-    return { lines: lines.map((l) => decodeSocketLine(String(l))), version };
+    return parseJoinDocAck(docId, args);
   }
 
   /**
-   * Apply a sharejs text op at the given doc version. Overleaf reports
-   * failures either as an error ack or as a separate otUpdateError event —
-   * either one within the wait window rejects. NB: on real servers a success
-   * ack only means the op was ENQUEUED (document-updater applies it
+   * Apply a sharejs text op at the given doc version. With `meta.tc` (an
+   * 18-hex id seed) Overleaf records the op as a tracked change. Overleaf
+   * reports failures either as an error ack or as a separate otUpdateError
+   * event — either one within the wait window rejects. NB: on real servers a
+   * success ack only means the op was ENQUEUED (document-updater applies it
    * asynchronously) — callers must verify via a fresh joinDoc and the
    * session's otUpdateError field.
    */
-  async applyOtUpdate(docId: string, op: TextOpComponent[], version: number): Promise<void> {
+  async applyOtUpdate(docId: string, op: TextOpComponent[], version: number, meta?: { tc: string }): Promise<void> {
+    await this.sendUpdate(docId, { doc: docId, op, v: version, ...(meta ? { meta } : {}) });
+  }
+
+  /** Apply a history-OT text operation (retain/insert/delete) at the given version; same caveats. */
+  async applyHistoryOtUpdate(docId: string, textOperation: (number | string)[], version: number): Promise<void> {
+    await this.sendUpdate(docId, { doc: docId, op: [{ textOperation }], v: version });
+  }
+
+  private async sendUpdate(docId: string, update: Record<string, unknown>): Promise<void> {
     let onEvent: SessionEventListener = () => {};
     const otError = new Promise<never>((_, reject) => {
       onEvent = (name, args) => {
@@ -592,7 +892,7 @@ export class OlRealtimeSession {
     this.listeners.add(onEvent);
     try {
       // race() attaches handlers to both, so neither rejection goes unhandled.
-      await Promise.race([this.emit("applyOtUpdate", [docId, { doc: docId, op, v: version }]), otError]);
+      await Promise.race([this.emit("applyOtUpdate", [docId, update]), otError]);
     } finally {
       this.listeners.delete(onEvent);
     }
@@ -669,13 +969,16 @@ export class OlRealtimeSession {
   }
 }
 
-function buildTree(project: any): ProjectTree {
+/** The file tree (and compiler / root doc settings) of a joinProject project object. */
+export function buildTree(project: any): ProjectTree {
   const root = project?.rootFolder?.[0];
   if (!root?._id) throw new Error("project tree missing rootFolder");
   const tree: ProjectTree = {
     rootFolderId: String(root._id),
     entities: new Map(),
     folders: new Map([["", String(root._id)]]),
+    ...(typeof project.compiler === "string" && project.compiler ? { compiler: project.compiler } : {}),
+    ...(project.rootDoc_id ? { rootDocId: String(project.rootDoc_id) } : {}),
   };
   const walk = (folder: any, prefix: string) => {
     for (const doc of folder.docs ?? []) {
@@ -692,4 +995,150 @@ function buildTree(project: any): ProjectTree {
   };
   walk(root, "");
   return tree;
+}
+
+/** A timestamp (ms number, ISO string, or Date JSON) as ISO; undefined when unusable. */
+function isoTime(v: unknown): string | undefined {
+  if (typeof v !== "number" && typeof v !== "string") return undefined;
+  const ms = typeof v === "number" ? v : Date.parse(v);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+}
+
+function threadUser(u: any): OlThreadUser | undefined {
+  if (!u || typeof u !== "object") return undefined;
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const user: OlThreadUser = {
+    id: u.id != null ? String(u.id) : u._id != null ? String(u._id) : undefined,
+    firstName: str(u.first_name),
+    lastName: str(u.last_name),
+    email: str(u.email),
+  };
+  return user.id || user.firstName || user.lastName || user.email ? user : undefined;
+}
+
+/**
+ * sharejs-style ranges (`{comments: [{id, op: {c, p, t}}], changes: [{id,
+ * op: {p, i|d}, metadata: {user_id, ts}}]}`). With encodeRanges the quoted
+ * and changed text is escaped like the doc lines. Malformed entries are skipped.
+ */
+function parseShareJsRanges(raw: any, escaped: boolean): DocRanges {
+  const text = (v: unknown) => (typeof v === "string" ? (escaped ? decodeSocketLine(v) : v) : undefined);
+  const comments: DocComment[] = [];
+  for (const c of Array.isArray(raw?.comments) ? raw.comments : []) {
+    const op = c?.op;
+    if (typeof op?.p !== "number") continue;
+    const threadId = op.t != null ? String(op.t) : c.id != null ? String(c.id) : "";
+    if (!threadId) continue;
+    comments.push({ id: String(c.id ?? threadId), threadId, quote: text(op.c) ?? "", offset: op.p });
+  }
+  const changes: DocChange[] = [];
+  for (const ch of Array.isArray(raw?.changes) ? raw.changes : []) {
+    const op = ch?.op;
+    if (typeof op?.p !== "number") continue;
+    const inserted = text(op.i);
+    const deleted = text(op.d);
+    if (inserted === undefined && deleted === undefined) continue;
+    changes.push({
+      id: String(ch.id ?? ""),
+      kind: inserted !== undefined ? "insert" : "delete",
+      text: inserted ?? deleted ?? "",
+      offset: op.p,
+      userId: ch.metadata?.user_id != null ? String(ch.metadata.user_id) : undefined,
+      time: isoTime(ch.metadata?.ts),
+    });
+  }
+  return { comments, changes };
+}
+
+/**
+ * A history-OT doc's snapshot: either plain lines or the stored file data
+ * `{content, comments?: [{id, ranges: [{pos, length}], resolved?}],
+ * trackedChanges?: [{range: {pos, length}, tracking: {type, userId, ts}}]}`.
+ * Tracked deletes stay in the content; the visible text leaves them out and
+ * every offset reported here is in visible-text coordinates.
+ */
+function parseHistorySnapshot(raw: any, sharedRanges: any): Omit<OlDocSnapshot, "version" | "type"> | null {
+  let content: string;
+  if (Array.isArray(raw)) content = raw.map(String).join("\n");
+  else if (typeof raw === "string") content = raw;
+  else if (raw && typeof raw === "object" && typeof raw.content === "string") content = raw.content;
+  else return null;
+  const span = (r: any): ContentSpan | null =>
+    typeof r?.pos === "number" && typeof r?.length === "number" ? { pos: r.pos, length: r.length } : null;
+  const tracked: any[] = Array.isArray(raw?.trackedChanges) ? raw.trackedChanges : [];
+  const hidden = normalizeSpans(
+    tracked.filter((t) => t?.tracking?.type === "delete").map((t) => span(t.range)).filter((s): s is ContentSpan => s !== null),
+    content.length,
+  );
+  const visible = withoutSpans(content, hidden);
+  /** Content offset → visible offset. */
+  const toVisible = (pos: number) => {
+    let out = Math.max(0, Math.min(content.length, pos));
+    for (const h of hidden) {
+      if (h.pos >= pos) break;
+      out -= Math.min(h.length, pos - h.pos);
+    }
+    return out;
+  };
+  const visibleSlice = (s: ContentSpan) => visible.slice(toVisible(s.pos), toVisible(s.pos + s.length));
+  let ranges: DocRanges = { comments: [], changes: [] };
+  if (Array.isArray(raw?.comments) || tracked.length > 0) {
+    for (const c of Array.isArray(raw?.comments) ? raw.comments : []) {
+      const first = span(Array.isArray(c?.ranges) ? c.ranges[0] : null);
+      if (!c?.id || !first) continue;
+      ranges.comments.push({
+        id: String(c.id),
+        threadId: String(c.id),
+        quote: visibleSlice(first),
+        offset: toVisible(first.pos),
+        ...(c.resolved === true ? { resolved: true } : {}),
+      });
+    }
+    for (const t of tracked) {
+      const s = span(t?.range);
+      const type = t?.tracking?.type;
+      if (!s || (type !== "insert" && type !== "delete")) continue;
+      ranges.changes.push({
+        id: `${type}-${s.pos}-${s.length}`,
+        kind: type,
+        text: content.slice(s.pos, s.pos + s.length),
+        offset: toVisible(s.pos),
+        userId: t.tracking.userId != null ? String(t.tracking.userId) : undefined,
+        time: isoTime(t.tracking.ts),
+      });
+    }
+  } else {
+    ranges = parseShareJsRanges(sharedRanges, false);
+  }
+  return { lines: visible.split("\n"), ranges, historyContent: content, hiddenSpans: hidden };
+}
+
+/** Parse a joinDoc ack defensively: everything after the version is optional. */
+export function parseJoinDocAck(docId: string, args: any[]): OlDocSnapshot {
+  const version = args?.[2];
+  if (typeof version !== "number") throw new Error(`joinDoc ${docId}: unexpected ack ${JSON.stringify(args).slice(0, 300)}`);
+  if (args?.[5] === "history-ot") {
+    const parsed = parseHistorySnapshot(args?.[1], args?.[4]);
+    if (!parsed) throw new Error(`joinDoc ${docId}: unexpected history-ot snapshot`);
+    return { ...parsed, version, type: "history-ot" };
+  }
+  const lines = args?.[1];
+  if (!Array.isArray(lines)) throw new Error(`joinDoc ${docId}: unexpected ack ${JSON.stringify(args).slice(0, 300)}`);
+  return {
+    lines: lines.map((l) => decodeSocketLine(String(l))),
+    version,
+    type: "sharejs-text-ot",
+    ranges: parseShareJsRanges(args?.[4], true),
+  };
+}
+
+/**
+ * An 18-hex-char id seed for tracked changes (`meta.tc`): 8 hex unix seconds
+ * + 10 random hex. Overleaf appends a 6-hex counter to form each change id.
+ */
+export function generateIdSeed(): string {
+  const seconds = Math.floor(Date.now() / 1000).toString(16).padStart(8, "0").slice(-8);
+  const rand = (digits: number) =>
+    Math.floor(Math.random() * 16 ** digits).toString(16).padStart(digits, "0");
+  return seconds + rand(6) + rand(4);
 }

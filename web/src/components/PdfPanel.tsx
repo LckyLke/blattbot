@@ -202,6 +202,19 @@ interface FindHighlight {
   end: number;
 }
 
+const PROGRAM_SOURCE: Record<NonNullable<CompileInfo["programSource"]>, string> = {
+  "magic comment": "from the % !TEX program line",
+  Overleaf: "the Overleaf project's compiler",
+  log: "the document asked for it",
+  default: "default",
+};
+
+/** "latexmk · xelatex"; just the engine when it is the program itself or tectonic (XeTeX). */
+function engineLabel(c: Pick<CompileInfo, "engine" | "program">): string {
+  if (!c.program || c.engine === c.program || c.engine === "tectonic" || c.engine === "none" || c.engine === "cached") return c.engine;
+  return `${c.engine} · ${c.program}`;
+}
+
 export default function PdfPanel({
   visible,
   projectId,
@@ -735,15 +748,17 @@ export default function PdfPanel({
       {!showingRemote && compile && (
         <div
           role="status"
-          title="Local preflight: checks your edits compile locally; Overleaf's own TeX Live may differ"
+          title={`Local preflight: checks your edits compile locally; Overleaf's own TeX Live may differ${
+            compile.program ? `. TeX program: ${compile.program} (${PROGRAM_SOURCE[compile.programSource ?? "default"]})` : ""
+          }`}
           className={`flex shrink-0 items-center gap-2 border-b border-rule px-4 py-1.5 text-xs ${
             compile.ok ? "text-leaf" : "text-pencil"
           }`}
         >
           <span className={`inline-block h-1.5 w-1.5 rounded-full ${compile.ok ? "bg-leaf" : "bg-pencil"}`} />
           {compile.ok
-            ? `Local preflight (${compile.engine}) passed in ${(compile.durationMs / 1000).toFixed(1)}s`
-            : `Local preflight failed (${compile.engine})`}
+            ? `Local preflight (${engineLabel(compile)}) passed in ${(compile.durationMs / 1000).toFixed(1)}s`
+            : `Local preflight failed (${engineLabel(compile)})`}
           <span className="ml-auto font-mono text-graphite">{compile.mainTex}</span>
         </div>
       )}

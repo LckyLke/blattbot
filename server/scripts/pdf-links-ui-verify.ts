@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { freePort } from "./free-port.js";
 import { referencePdf } from "../test/fixtures/pdf-links.js";
 
 const root = mkdtempSync(join(tmpdir(), "blattbot-pdf-links-"));
@@ -20,7 +21,7 @@ writeFileSync(join(dir, "refs.bib"), "@article{example, title={Example reference
 execFileSync("git", ["-C", dir, "init", "-b", "main"], { stdio: "pipe" });
 execFileSync("git", ["-C", dir, "add", "."]);
 execFileSync("git", ["-C", dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-m", "Fixture"], { stdio: "pipe" });
-const port = 4594, base = `http://127.0.0.1:${port}`;
+const port = await freePort(), base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
   cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
   env: { ...process.env, BLATTBOT_PORT: String(port) }, stdio: "pipe",

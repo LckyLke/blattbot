@@ -8,16 +8,40 @@
  *   POST /project/:id/upload               multipart qqfile; rejects duplicates
  *   DELETE /project/:id/{doc|file|folder}/:entityId
  *   POST /project/:id/compile              {status, outputFiles} + served outputs
- *   socket.io 0.9 handshake + joinProject  file tree with entity ids
- *   socket.io 0.9 joinDoc/applyOtUpdate/leaveDoc  per-doc OT versions, in-place edits
+ *   socket.io 0.9 handshake + joinProject  file tree with entity ids, compiler, rootDoc_id
+ *   socket.io 0.9 joinDoc/applyOtUpdate/leaveDoc  per-doc OT versions, in-place edits,
+ *                                          review ranges, meta.tc tracked changes, history-OT docs
+ *   GET  /project/:id/threads              comment threads (messages with user info)
+ *   POST /project/:id/thread/:tid/messages, /doc/:did/thread/:tid/{resolve,reopen}
+ *
+ * Review state (comments, tracked changes, threads, history-OT docs) lives in
+ * mock-overleaf-review.ts; tests reach it through `project` and the helpers.
  *
  * Supports multiple projects: the primary one passed to startMockOverleaf
  * (exposed via the legacy top-level files/uploads/deletes fields) plus any
  * created through POST /project/new (exposed via `created`).
  */
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
+import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer } from "ws";
 import { zipSync } from "fflate";
+import {
+  MOCK_USER,
+  applyShareJsComponent,
+  applyTextOperation,
+  emptyRanges,
+  historyContentPos,
+  historyVisible,
+  newObjectId,
+  rangesForJoin,
+  type HistoryDoc,
+  type MockRanges,
+  type MockThread,
+  type MockUser,
+  type TrackContext,
+} from "./mock-overleaf-review.js";
+
+export { MOCK_USER, type MockUser } from "./mock-overleaf-review.js";
 
 export interface MockProject {
   id: string;
@@ -30,6 +54,26 @@ export interface MockProject {
   entityIds: Map<string, string>;
   /** path → OT version (0 until the first applyOtUpdate lands). */
   docVersions: Map<string, number>;
+  /** Dashboard `lastUpdated` (ISO); moves when the listing sees changed files. */
+  lastUpdated?: string;
+  /** Content fingerprint behind `lastUpdated`. */
+  fingerprint?: string;
+  /** path → comments and tracked changes of a sharejs doc (offsets into its text). */
+  ranges: Map<string, MockRanges>;
+  /** Comment threads by id, as GET /project/:id/threads returns them. */
+  threads: Map<string, MockThread>;
+  /** path → history-OT doc state; such docs refuse joinDoc without supportsHistoryOT. */
+  historyDocs: Map<string, HistoryDoc>;
+  /** The project's compiler setting (joinProject `compiler`). */
+  compiler: string;
+  /** Path of the root document (joinProject `rootDoc_id`), if any. */
+  rootDocPath?: string;
+  /**
+   * Project history: `version` grows when a flush finds the files changed
+   * since the last flush (like project-history, edits reach the history only
+   * when flushed); `labels` as POST /project/:id/labels stored them.
+   */
+  history: { version: number; flushedFingerprint?: string; labels: { id: string; comment: string; version: number }[] };
 }
 
 export interface MockOverleaf {
@@ -62,6 +106,51 @@ export interface MockOverleaf {
   conflictNextOtUpdate: boolean;
   /** Total websocket connections accepted (tree joins + realtime sessions). */
   wsConnections: number;
+  /** Project zip downloads served (all projects). */
+  zipDownloads: number;
+  /** Test hook: answer this many next zip downloads with HTTP 429 (Retry-After: `zipRetryAfter`). */
+  zipRateLimited: number;
+  zipRetryAfter: string;
+  /** Test hook: when true, the dashboard list carries no lastUpdated (older instances). */
+  omitLastUpdated: boolean;
+  /**
+   * Test hook: when true, lastUpdated stays where it is although files
+   * change — like real Overleaf, which moves it only when documents are
+   * written back to its database, minutes after live edits or later.
+   */
+  freezeLastUpdated: boolean;
+  /** The primary project's dashboard lastUpdated, as the next listing reports it. */
+  lastUpdated: () => string;
+  /** The primary project (review state: ranges, threads, historyDocs, compiler, rootDocPath). */
+  project: MockProject;
+  /** Test hook: when false, the threads/message/resolve endpoints 404 (older instances). */
+  threadsApi: boolean;
+  /** Test hook: when false, the history flush/updates/labels endpoints 404 (older instances). */
+  historyApi: boolean;
+  /** Test hook: when true, posting/resolving comments answers 403 (no comment permission). */
+  reviewForbidden: boolean;
+  /** Test hook: when true, `meta.tc` is ignored — edits land, but no tracked change is recorded. */
+  ignoreTrackChanges: boolean;
+  /** Every applyOtUpdate payload received, in order (path + the raw update). */
+  otUpdates: { path: string; update: any }[];
+  /**
+   * Add a comment thread on the first occurrence of `quote` in a primary
+   * project doc; returns the thread id.
+   */
+  addComment: (
+    path: string,
+    quote: string,
+    messages?: { content: string; user?: MockUser; timestamp?: number }[],
+    opts?: { resolved?: boolean },
+  ) => string;
+  /** Record `text` (already in the doc) as a co-author's tracked insertion. */
+  addTrackedInsert: (path: string, text: string, userId?: string) => void;
+  /**
+   * Turn a primary project doc into a history-OT doc (its comments move
+   * along). `trackedDeletes` adds tracked-deleted text kept in the content
+   * at the given visible offsets.
+   */
+  makeHistoryOt: (path: string, trackedDeletes?: { at: number; text: string }[]) => void;
   close: () => Promise<void>;
 }
 
@@ -137,6 +226,11 @@ export async function startMockOverleaf(
     deletes: [],
     entityIds: new Map(),
     docVersions: new Map(),
+    ranges: new Map(),
+    threads: new Map(),
+    historyDocs: new Map(),
+    compiler: "pdflatex",
+    history: { version: 0, labels: [] },
   });
 
   const primary = newProject(projectId, projectName, "rootfolder0");
@@ -163,8 +257,114 @@ export async function startMockOverleaf(
     failCompile: false,
     conflictNextOtUpdate: false,
     wsConnections: 0,
+    zipDownloads: 0,
+    zipRateLimited: 0,
+    zipRetryAfter: "1",
+    omitLastUpdated: false,
+    freezeLastUpdated: false,
+    lastUpdated: () => lastUpdatedFor(primary),
+    project: primary,
+    threadsApi: true,
+    historyApi: true,
+    reviewForbidden: false,
+    ignoreTrackChanges: false,
+    otUpdates: [],
+    addComment: (path, quote, messages = [], opts = {}) => {
+      const text = (primary.files.get(path) ?? Buffer.alloc(0)).toString("utf8");
+      const offset = text.indexOf(quote);
+      if (offset === -1) throw new Error(`mock addComment: "${quote}" is not in ${path}`);
+      const threadId = newObjectId();
+      const hist = primary.historyDocs.get(path);
+      if (hist) {
+        hist.comments.push({ id: threadId, ranges: [{ pos: historyContentPos(hist, offset), length: quote.length }] });
+      } else {
+        const ranges = primary.ranges.get(path) ?? emptyRanges();
+        ranges.comments.push({ id: threadId, op: { c: quote, p: offset, t: threadId } });
+        primary.ranges.set(path, ranges);
+      }
+      primary.threads.set(threadId, {
+        messages: messages.map((m, i) => {
+          const user = m.user ?? MOCK_USER;
+          return { id: newObjectId(), content: m.content, timestamp: m.timestamp ?? Date.now() - (messages.length - i) * 60_000, user_id: user.id, user };
+        }),
+        ...(opts.resolved ? { resolved: true, resolved_at: new Date().toISOString(), resolved_by_user_id: MOCK_USER.id, resolved_by_user: MOCK_USER } : {}),
+      });
+      return threadId;
+    },
+    addTrackedInsert: (path, inserted, userId = "5f00000000000000000000bb") => {
+      const text = (primary.files.get(path) ?? Buffer.alloc(0)).toString("utf8");
+      const offset = text.indexOf(inserted);
+      if (offset === -1) throw new Error(`mock addTrackedInsert: "${inserted}" is not in ${path}`);
+      const ranges = primary.ranges.get(path) ?? emptyRanges();
+      ranges.changes.push({ id: newObjectId(), op: { p: offset, i: inserted }, metadata: { user_id: userId, ts: new Date().toISOString() } });
+      primary.ranges.set(path, ranges);
+    },
+    makeHistoryOt: (path, trackedDeletes = []) => {
+      const text = (primary.files.get(path) ?? Buffer.alloc(0)).toString("utf8");
+      const doc: HistoryDoc = { content: "", comments: [], trackedChanges: [] };
+      let cursor = 0;
+      for (const del of [...trackedDeletes].sort((a, b) => a.at - b.at)) {
+        doc.content += text.slice(cursor, del.at);
+        doc.trackedChanges.push({
+          range: { pos: doc.content.length, length: del.text.length },
+          tracking: { type: "delete", userId: "5f00000000000000000000bb", ts: new Date().toISOString() },
+        });
+        doc.content += del.text;
+        cursor = del.at;
+      }
+      doc.content += text.slice(cursor);
+      for (const c of primary.ranges.get(path)?.comments ?? []) {
+        doc.comments.push({ id: c.op.t, ranges: [{ pos: historyContentPos(doc, c.op.p), length: c.op.c.length }] });
+      }
+      primary.ranges.delete(path);
+      primary.historyDocs.set(path, doc);
+    },
     close: async () => {},
   };
+
+  /** A history-OT doc's state, rebuilt when a test changed `files` directly (like a co-author edit). */
+  const historyDocFor = (proj: MockProject, path: string): HistoryDoc | undefined => {
+    const doc = proj.historyDocs.get(path);
+    const text = (proj.files.get(path) ?? Buffer.alloc(0)).toString("utf8");
+    if (doc && historyVisible(doc) !== text) {
+      doc.content = text;
+      doc.trackedChanges = [];
+      doc.comments = doc.comments.filter((c) => c.ranges.every((r) => r.pos + r.length <= text.length));
+    }
+    return doc;
+  };
+  /** Read a JSON request body ({} when empty or invalid). */
+  const jsonBody = async (req: IncomingMessage): Promise<any> => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    try {
+      return JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    } catch {
+      return {};
+    }
+  };
+
+  /**
+   * Like Overleaf's project list: lastUpdated moves whenever the project's
+   * files changed — however they changed (uploads, OT, or a test editing
+   * `files` directly) — as seen at the next listing.
+   */
+  function filesFingerprint(proj: MockProject): string {
+    const hash = createHash("sha1");
+    for (const path of [...proj.files.keys()].sort()) hash.update(path).update("\0").update(proj.files.get(path)!).update("\0");
+    return hash.digest("hex");
+  }
+
+  function lastUpdatedFor(proj: MockProject): string {
+    if (state.freezeLastUpdated && proj.lastUpdated) return proj.lastUpdated;
+    const fingerprint = filesFingerprint(proj);
+    if (fingerprint !== proj.fingerprint || !proj.lastUpdated) {
+      const previous = proj.lastUpdated ? Date.parse(proj.lastUpdated) : 0;
+      proj.lastUpdated = new Date(Math.max(Date.now(), previous + 1)).toISOString();
+      proj.fingerprint = fingerprint;
+    }
+    return proj.lastUpdated;
+  }
 
   const idFor = (proj: MockProject, path: string) => {
     if (!proj.entityIds.has(path)) {
@@ -223,7 +423,11 @@ export async function startMockOverleaf(
 
     if (req.method === "GET" && url.pathname === "/project") {
       const blob = JSON.stringify({
-        projects: [...projects.values()].map((p) => ({ id: p.id, name: p.name })),
+        projects: [...projects.values()].map((p) => ({
+          id: p.id,
+          name: p.name,
+          ...(state.omitLastUpdated ? {} : { lastUpdated: lastUpdatedFor(p) }),
+        })),
       })
         .replace(/&/g, "&amp;")
         .replace(/"/g, "&quot;");
@@ -276,6 +480,14 @@ export async function startMockOverleaf(
     }
 
     if (proj && req.method === "GET" && sub === "/download/zip") {
+      if (state.zipRateLimited > 0) {
+        // Like Overleaf's zip-download limiter (10 per minute per project).
+        state.zipRateLimited--;
+        res.writeHead(429, { "Content-Type": "text/plain", "Retry-After": state.zipRetryAfter });
+        res.end("Too Many Requests");
+        return;
+      }
+      state.zipDownloads++;
       const entries: Record<string, Uint8Array> = {};
       for (const [p, buf] of proj.files) entries[p] = new Uint8Array(buf);
       respond(200, Buffer.from(zipSync(entries)), "application/zip");
@@ -346,6 +558,9 @@ export async function startMockOverleaf(
         return;
       }
       proj.files.set(path, Buffer.from(content));
+      // A fresh entity: whatever review state the old one had is gone.
+      proj.ranges.delete(path);
+      proj.historyDocs.delete(path);
       proj.uploads.push({ path, size: content.length });
       respond(200, JSON.stringify({ success: true, entity_id: idFor(proj, path), entity_type: isDoc(path) ? "doc" : "file" }));
       return;
@@ -362,6 +577,8 @@ export async function startMockOverleaf(
       if (path) {
         proj.files.delete(path);
         proj.entityIds.delete(path);
+        proj.ranges.delete(path);
+        proj.historyDocs.delete(path);
         proj.deletes.push(path);
       }
       res.writeHead(204);
@@ -419,6 +636,123 @@ export async function startMockOverleaf(
         return;
       }
       respond(404, JSON.stringify({ error: "not found", path: url.pathname }));
+      return;
+    }
+
+    // Project settings: the main document (rootDocId) only.
+    if (proj && req.method === "POST" && sub === "/settings") {
+      if (!csrfOk()) {
+        respond(403, JSON.stringify({ message: "invalid csrf token" }));
+        return;
+      }
+      const body = await jsonBody(req);
+      if (typeof body.rootDocId === "string") {
+        const path = [...proj.entityIds].find(([, eid]) => eid === body.rootDocId)?.[0];
+        if (!path || !proj.files.has(path) || !isDoc(path)) {
+          respond(400, JSON.stringify({ error: "not a document" }));
+          return;
+        }
+        proj.rootDocPath = path;
+      }
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
+    // Project history: flush, updates and labels. Older instances lack it.
+    if (proj && (sub === "/flush" || sub === "/updates" || sub === "/labels")) {
+      if (!state.historyApi) {
+        respond(404, "<html><body>Not found</body></html>", "text/html");
+        return;
+      }
+      const history = proj.history;
+      if (req.method === "GET" && sub === "/updates") {
+        const v = history.version;
+        const update = { fromV: v - 1, toV: v, meta: { users: [], start_ts: Date.now(), end_ts: Date.now() }, labels: [], pathnames: [], project_ops: [] };
+        respond(200, JSON.stringify({ updates: v > 0 ? [update] : [], nextBeforeTimestamp: null }));
+        return;
+      }
+      if (req.method === "GET" && sub === "/labels") {
+        respond(200, JSON.stringify(history.labels));
+        return;
+      }
+      if (req.method !== "POST") {
+        respond(405, JSON.stringify({ error: "method not allowed" }));
+        return;
+      }
+      if (!csrfOk() || (sub === "/labels" && state.reviewForbidden)) {
+        respond(403, JSON.stringify({ message: "Forbidden" }));
+        return;
+      }
+      if (sub === "/flush") {
+        const fingerprint = filesFingerprint(proj);
+        if (fingerprint !== history.flushedFingerprint) {
+          history.version++;
+          history.flushedFingerprint = fingerprint;
+        }
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const body = await jsonBody(req);
+      if (typeof body.comment !== "string" || !Number.isInteger(body.version) || body.version < 0 || body.version > history.version) {
+        respond(400, JSON.stringify({ error: "invalid label" }));
+        return;
+      }
+      const label = { id: newObjectId(), comment: body.comment, version: body.version };
+      history.labels.push(label);
+      respond(200, JSON.stringify(label));
+      return;
+    }
+
+    // Comment threads (web's track-changes/comments API). Older instances lack it.
+    const threadRoute = proj && /^\/(?:thread\/(\w+)\/messages|doc\/(\w+)\/thread\/(\w+)\/(resolve|reopen)|threads)$/.exec(sub);
+    if (proj && threadRoute) {
+      if (!state.threadsApi) {
+        respond(404, "<html><body>Not found</body></html>", "text/html");
+        return;
+      }
+      if (req.method === "GET" && sub === "/threads") {
+        respond(200, JSON.stringify(Object.fromEntries(proj.threads)));
+        return;
+      }
+      if (req.method !== "POST") {
+        respond(405, JSON.stringify({ error: "method not allowed" }));
+        return;
+      }
+      if (!csrfOk() || state.reviewForbidden) {
+        respond(403, JSON.stringify({ message: state.reviewForbidden ? "Forbidden" : "invalid csrf token" }));
+        return;
+      }
+      const body = await jsonBody(req);
+      const [, replyThread, docId, actionThread, action] = threadRoute;
+      if (replyThread) {
+        if (typeof body.content !== "string" || !body.content) {
+          respond(400, JSON.stringify({ error: "content is required" }));
+          return;
+        }
+        const thread = proj.threads.get(replyThread) ?? { messages: [] };
+        thread.messages.push({ id: newObjectId(), content: body.content, timestamp: Date.now(), user_id: MOCK_USER.id, user: MOCK_USER });
+        proj.threads.set(replyThread, thread);
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      if (!docByEntityId(docId) || !proj.threads.has(actionThread)) {
+        respond(404, JSON.stringify({ error: "thread not found" }));
+        return;
+      }
+      const thread = proj.threads.get(actionThread)!;
+      if (action === "resolve") {
+        Object.assign(thread, { resolved: true, resolved_at: new Date().toISOString(), resolved_by_user_id: MOCK_USER.id, resolved_by_user: MOCK_USER });
+      } else {
+        delete thread.resolved;
+        delete thread.resolved_at;
+        delete thread.resolved_by_user_id;
+        delete thread.resolved_by_user;
+      }
+      res.writeHead(204);
+      res.end();
       return;
     }
 
@@ -486,7 +820,14 @@ export async function startMockOverleaf(
             if (isDoc(p)) folder.docs.push(entry);
             else folder.fileRefs.push(entry);
           }
-          const project = { _id: proj.id, name: proj.name, rootFolder: [root] };
+          const rootDocId = proj.rootDocPath && proj.files.has(proj.rootDocPath) ? idFor(proj, proj.rootDocPath) : undefined;
+          const project = {
+            _id: proj.id,
+            name: proj.name,
+            rootFolder: [root],
+            compiler: proj.compiler,
+            ...(rootDocId ? { rootDoc_id: rootDocId } : {}),
+          };
           ws.send(`6:::${msgId}+${JSON.stringify([null, project, "owner", 2])}`);
           return;
         }
@@ -497,12 +838,25 @@ export async function startMockOverleaf(
             err("doc not found");
             return;
           }
+          const options = ev.args?.[1] && typeof ev.args[1] === "object" ? ev.args[1] : {};
+          const version = hit.proj.docVersions.get(hit.path) ?? 0;
+          const hist = historyDocFor(hit.proj, hit.path);
+          if (hist) {
+            // Like real-time: history-OT docs need a client that says it supports them,
+            // and then come as the raw stored data, unescaped.
+            if (!options.supportsHistoryOT) {
+              err("client does not support history-ot");
+              return;
+            }
+            ws.send(`6:::${msgId}+${JSON.stringify([null, hist, version, [], null, "history-ot", { canSkipLeaveDoc: true }])}`);
+            return;
+          }
           const lines = (hit.proj.files.get(hit.path) ?? Buffer.alloc(0))
             .toString("utf8")
             .split("\n")
             .map(encodeForWebsockets);
-          const version = hit.proj.docVersions.get(hit.path) ?? 0;
-          ws.send(`6:::${msgId}+${JSON.stringify([null, lines, version, []])}`);
+          const ranges = rangesForJoin(hit.proj.ranges.get(hit.path), options.encodeRanges ? encodeForWebsockets : null);
+          ws.send(`6:::${msgId}+${JSON.stringify([null, lines, version, [], ranges, "sharejs-text-ot", { canSkipLeaveDoc: true }])}`);
           return;
         }
         if (ev.name === "applyOtUpdate") {
@@ -533,24 +887,58 @@ export async function startMockOverleaf(
             proj.docVersions.set(path, (proj.docVersions.get(path) ?? 0) + 1);
           }
           const update = ev.args?.[1] ?? {};
+          state.otUpdates.push({ path, update: JSON.parse(JSON.stringify(update)) });
           const version = proj.docVersions.get(path) ?? 0;
           if (update.v !== version) {
             err("Op at wrong version");
             return;
           }
-          let text = (proj.files.get(path) ?? Buffer.alloc(0)).toString("utf8");
-          for (const comp of Array.isArray(update.op) ? update.op : []) {
-            if (typeof comp?.d === "string") {
-              if (text.slice(comp.p, comp.p + comp.d.length) !== comp.d) {
-                err("Delete component does not match");
+          const ops: any[] = Array.isArray(update.op) ? update.op : [];
+          const historyOp = ops.length > 0 && ops.every((o) => Array.isArray(o?.textOperation));
+          const hist = historyDocFor(proj, path);
+          /** Like document-updater: an op of the wrong OT type is acked, then fails asynchronously. */
+          const failLater = (message: string) => {
+            ws.send(`6:::${msgId}`);
+            setTimeout(() => {
+              ws.send(`5:::${JSON.stringify({ name: "otUpdateError", args: [{ message }] })}`);
+              ws.close();
+            }, 20);
+          };
+          if (hist || historyOp) {
+            if (!hist || !historyOp) {
+              failLater(hist ? "OTTypeMismatchError: expected history-ot" : "OTTypeMismatchError: expected sharejs-text-ot");
+              return;
+            }
+            const draft: HistoryDoc = JSON.parse(JSON.stringify(hist));
+            for (const o of ops) {
+              const problem = applyTextOperation(draft, o.textOperation);
+              if (problem) {
+                failLater(problem);
                 return;
               }
-              text = text.slice(0, comp.p) + text.slice(comp.p + comp.d.length);
-            } else if (typeof comp?.i === "string") {
-              text = text.slice(0, comp.p) + comp.i + text.slice(comp.p);
             }
+            Object.assign(hist, draft);
+            proj.files.set(path, Buffer.from(historyVisible(hist)));
+            proj.docVersions.set(path, version + 1);
+            ws.send(`6:::${msgId}`);
+            return;
+          }
+          // sharejs: apply to a copy of text + ranges; nothing changes on failure.
+          let text = (proj.files.get(path) ?? Buffer.alloc(0)).toString("utf8");
+          const ranges: MockRanges = JSON.parse(JSON.stringify(proj.ranges.get(path) ?? emptyRanges()));
+          const tc = typeof update.meta?.tc === "string" && !state.ignoreTrackChanges ? update.meta.tc : null;
+          const track: TrackContext | null = tc ? { seed: tc, counter: { n: 0 }, userId: MOCK_USER.id } : null;
+          for (const comp of ops) {
+            const applied = applyShareJsComponent(text, ranges, comp, track);
+            if ("error" in applied) {
+              err(applied.error);
+              return;
+            }
+            text = applied.text;
           }
           proj.files.set(path, Buffer.from(text));
+          if (ranges.comments.length > 0 || ranges.changes.length > 0) proj.ranges.set(path, ranges);
+          else proj.ranges.delete(path);
           proj.docVersions.set(path, version + 1);
           // Real Overleaf acks applyOtUpdate success with callback() — ZERO
           // args, which socket.io 0.9 serializes as a bare `6:::<id>` frame.

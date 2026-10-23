@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ChildProcess } from "node:child_process";
 import type { BackendTurnContext, AgentEvent } from "../src/backends/types.js";
 
-vi.mock("../src/compile.js", () => ({ compileProject: vi.fn(async () => ({ ok: true, engine: "mock", durationMs: 1, mainTex: "main.tex" })) }));
+vi.mock("../src/compile.js", async (importOriginal) => ({ ...(await importOriginal<typeof import("../src/compile.js")>()), compileProject: vi.fn(async () => ({ ok: true, engine: "mock", durationMs: 1, mainTex: "main.tex", errors: [], logTail: "" })) }));
 
 let data: string;
 let ctx: BackendTurnContext;
@@ -315,7 +315,7 @@ describe("Codex background harness", () => {
 
 describe("shared Codex/OpenAI file boundary", () => {
   it("blocks symlinked reads, writes, and new files below symlinked directories", async () => {
-    const { resolveReadPath, resolveWritePath } = await import("../src/backends/openai.js");
+    const { resolveReadPath, resolveWritePath } = await import("../src/backends/paths.js");
     const outside = join(data, "outside");
     mkdirSync(outside);
     writeFileSync(join(outside, "secret.tex"), "secret");

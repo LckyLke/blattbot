@@ -533,7 +533,6 @@ button:hover > .tex-logo .down,
   color: var(--color-leaf);
 }
 .cm-editor .cm-button:active {
-  background-image: none;
   background: var(--color-ink);
 }
 .cm-editor .cm-panel.cm-search [name="close"] {
@@ -724,6 +723,7 @@ button:hover > .tex-logo .down,
   .blattbot-header { gap: 10px; padding-inline: 10px; }
   .blattbot-header > button { flex-shrink: 0; white-space: nowrap; }
   .blattbot-header > .ml-auto { display: none; }
+  .blattbot-header > .header-overleaf-link { display: none; }
   .mobile-sidebar-toggle {
     display: inline-grid; place-items: center; min-width: 38px; min-height: 38px;
     border: 1px solid var(--color-rule); border-radius: 6px; color: var(--color-paper);
@@ -765,3 +765,6 @@ button:hover > .tex-logo .down,
   .workspace-pane { margin-block: 4px; border-radius: 12px; }
   .workspace-pane:last-child { margin-right: 4px; }
 }
+
+/* Proof: the change the j/k shortcuts moved to. */
+[data-proof-hunk][data-current="true"] { outline: 1px solid var(--color-gold); outline-offset: 2px; border-radius: 8px; }

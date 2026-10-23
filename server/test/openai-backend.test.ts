@@ -189,6 +189,7 @@ function runCollected(
     mode?: import("../src/agent.js").AgentMode;
     sessionId?: string;
     attachments?: import("../src/chatimages.js").TurnAttachment[];
+    scope?: string[];
   } = {},
 ) {
   const events: Ev[] = [];
@@ -198,7 +199,7 @@ function runCollected(
     prompt,
     (e) => events.push(e),
     opts.mode ?? "edit",
-    undefined,
+    opts.scope,
     { sessionId: opts.sessionId, onSessionId: (id) => (sessionId = id) },
     opts.attachments,
   );
@@ -385,6 +386,49 @@ describe("openai backend turn loop", () => {
       expect(events.at(-1)).toMatchObject({ type: "turn_end", isError: false });
     },
   );
+
+  it("refuses writes outside the turn's scope", async () => {
+    const { agent, project, dir } = await setup();
+    writeFileSync(join(dir, "intro.tex"), "Intro.\n");
+    mock.queue = [
+      {
+        kind: "tools",
+        calls: [
+          { name: "write_file", args: { path: "main.tex", content: "replaced" } },
+          { name: "write_file", args: { path: "intro.tex", content: "New intro.\n" } },
+        ],
+      },
+      { kind: "text", text: "Done." },
+    ];
+    const { events, done } = runCollected(agent, project, "Edit the intro", { scope: ["intro.tex"] });
+    await done;
+    const results = events.filter((e) => e.type === "tool_result");
+    expect(results.map((e) => e.isError)).toEqual([true, false]);
+    expect(String(results[0].output)).toMatch(/main\.tex is outside this turn's scope/);
+    expect(readFileSync(join(dir, "main.tex"), "utf8")).toBe(MAIN_TEX);
+    expect(readFileSync(join(dir, "intro.tex"), "utf8")).toBe("New intro.\n");
+  });
+
+  it("polish mode offers no literature or repository tools and refuses them", async () => {
+    const { agent, project } = await setup();
+    mock.queue = [
+      { kind: "tools", calls: [{ name: "search_papers", args: { query: "attention" } }] },
+      { kind: "text", text: "Polished." },
+    ];
+    const { events, done } = runCollected(agent, project, "Polish the intro", { mode: "polish" });
+    await done;
+    const names = mock.requests[0].body.tools.map((t: any) => t.function.name);
+    expect(names).toEqual(expect.arrayContaining(["read_file", "edit_file", "write_file", "compile_latex", "list_citations", "read_url"]));
+    for (const name of ["search_papers", "add_citation", "read_paper", "verify_citation_support", "inspect_repository", "search_library"]) {
+      expect(names).not.toContain(name);
+    }
+    const system = mock.requests[0].body.messages[0].content as string;
+    expect(system).not.toContain("search_papers");
+    expect(system).toContain("leave the bibliography and every \\cite{...} exactly as they are");
+    const result = events.find((e) => e.type === "tool_result")!;
+    expect(result.isError).toBe(true);
+    expect(String(result.output)).toContain("not available in this mode");
+  });
 
   it("rejects path traversal in the file tools", async () => {
     const { agent, project, dir } = await setup();
@@ -819,7 +863,7 @@ describe("openai backend units", () => {
   });
 
   it("resolveReadPath allows the project and context dirs, rejects everything else", async () => {
-    const { resolveReadPath } = await import("../src/backends/openai.js");
+    const { resolveReadPath } = await import("../src/backends/paths.js");
     const dir = join(dataDir, "proj");
     const context = join(dataDir, "context-lib");
     mkdirSync(dir, { recursive: true });
@@ -835,7 +879,7 @@ describe("openai backend units", () => {
   });
 
   it("resolveWritePath confines writes to the project and shields .git and context dirs", async () => {
-    const { resolveWritePath } = await import("../src/backends/openai.js");
+    const { resolveWritePath } = await import("../src/backends/paths.js");
     const dir = join(dataDir, "proj");
     const context = join(dataDir, "ctx");
     expect(resolveWritePath(dir, [context], "new.tex")).toBe(join(dir, "new.tex"));
@@ -847,7 +891,7 @@ describe("openai backend units", () => {
   });
 
   it("edit_file demands an exact unique match", async () => {
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     const dir = join(dataDir, "proj-edit");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "a.tex"), "one two one\n");
@@ -887,7 +931,7 @@ describe("openai backend units", () => {
   });
 
   it("maps model-facing tool names onto the shared event names", async () => {
-    const { eventToolName } = await import("../src/backends/openai.js");
+    const { eventToolName } = await import("../src/backends/tools.js");
     expect(eventToolName("read_file")).toBe("Read");
     expect(eventToolName("write_file")).toBe("Write");
     expect(eventToolName("edit_file")).toBe("Edit");

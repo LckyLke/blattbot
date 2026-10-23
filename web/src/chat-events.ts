@@ -34,7 +34,15 @@ export type ChatItemData =
       input?: string;
       output?: string;
     }
-  | { kind: "notice"; tone: "info" | "warn" | "error" | "ok"; text: string; citationGroup?: string; details?: string }
+  | {
+      kind: "notice";
+      tone: "info" | "warn" | "error" | "ok";
+      text: string;
+      citationGroup?: string;
+      details?: string;
+      /** "approve": the outcome of a full approval; "approve-part": of a partial one. */
+      source?: "approve" | "approve-part";
+    }
   | {
       /** A mid-turn agent question — actionable while pending, collapsed after.
        *  "stale": restored from a transcript with no resolution but not the
@@ -56,7 +64,41 @@ export type ChatItemData =
       /** Size of the largest request this turn (≈ the conversation) and the model's window. */
       contextTokens?: number;
       contextWindow?: number;
+      /** The turn's checkpoint ("<chatId>.<n>"): Show changes and Undo turn use it. */
+      turnRef?: string;
+      /** The files the turn changed (the list may be capped; fileCount is the total). */
+      files?: TurnFile[];
+      fileCount?: number;
+      additions?: number;
+      deletions?: number;
+      interrupted?: boolean;
+      /** Set once the turn was undone (the undo's own summary line). */
+      undone?: string;
     };
+
+/** One file an agent turn changed, as its turn_end lists it. */
+export interface TurnFile {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  additions: number;
+  deletions: number;
+  binary?: boolean;
+}
+
+function turnFiles(v: unknown): TurnFile[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((f: any) =>
+    f && typeof f.path === "string"
+      ? [{
+          path: f.path,
+          status: f.status === "added" || f.status === "deleted" ? f.status : "modified",
+          additions: typeof f.additions === "number" ? f.additions : 0,
+          deletions: typeof f.deletions === "number" ? f.deletions : 0,
+          ...(f.binary ? { binary: true } : {}),
+        } as TurnFile]
+      : [],
+  );
+}
 
 /**
  * A chat entry plus `uid`, its stable list identity (the React key). Per-item
@@ -77,6 +119,13 @@ type Tone = (typeof TONES)[number];
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
+
+/** "a.tex, b.tex and 3 more" — file lists in notices stay one line. */
+function fileList(paths: string[], max = 5): string {
+  if (paths.length <= max) return paths.join(", ");
+  return `${paths.slice(0, max).join(", ")} and ${paths.length - max} more`;
+}
 
 /**
  * A question card's identity is its question id — the same in the live
@@ -211,7 +260,25 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
             ? { ...it, status: "dismissed" as const }
             : it,
       );
-      if (ev.interrupted) return [...closed, notice(uid, "warn", "Turn interrupted.")];
+      const files = turnFiles(ev.files);
+      const turnRef = str(ev.turnRef);
+      const checkpoint =
+        turnRef && files.length > 0
+          ? {
+              turnRef,
+              files,
+              fileCount: num(ev.fileCount) ?? files.length,
+              additions: num(ev.additions) ?? files.reduce((n, f) => n + f.additions, 0),
+              deletions: num(ev.deletions) ?? files.reduce((n, f) => n + f.deletions, 0),
+            }
+          : {};
+      if (ev.interrupted) {
+        const stopped = notice(uid, "warn", "Turn interrupted.");
+        // What the stopped turn already changed stays reviewable and undoable.
+        return turnRef && files.length > 0
+          ? [...closed, stopped, { uid: `${uid}:card`, kind: "turn_end", interrupted: true, ...checkpoint }]
+          : [...closed, stopped];
+      }
       return [
         ...closed,
         {
@@ -223,8 +290,27 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
           contextWindow: num(ev.contextWindow),
           inputTokens: num(ev.inputTokens),
           outputTokens: num(ev.outputTokens),
+          ...checkpoint,
         },
       ];
+    }
+    case "turn_undone": {
+      // The undo's outcome, and its turn's card shows it was undone.
+      const turnRef = str(ev.turnRef);
+      const text = str(ev.text) ?? "Turn undone.";
+      const i = turnRef ? findLast(items, (it) => it.kind === "turn_end" && it.turnRef === turnRef) : -1;
+      const marked = i < 0 ? items : replaceAt(items, i, { ...(items[i] as Extract<ChatItem, { kind: "turn_end" }>), undone: text });
+      const tone = ev.tone === "warn" ? "warn" : "ok";
+      return [...marked, notice(uid, tone, text)];
+    }
+    case "turn_redone": {
+      // The undo was reverted: the turn's changes are back.
+      const turnRef = str(ev.turnRef);
+      const i = turnRef ? findLast(items, (it) => it.kind === "turn_end" && it.turnRef === turnRef) : -1;
+      const card = i < 0 ? null : (items[i] as Extract<ChatItem, { kind: "turn_end" }>);
+      const { undone: _undone, ...restored } = card ?? {};
+      const marked = card ? replaceAt(items, i, restored as ChatItem) : items;
+      return [...marked, notice(uid, ev.tone === "warn" ? "warn" : "ok", str(ev.text) ?? "Turn restored.")];
     }
     case "notice":
       return appendChatItem(
@@ -239,30 +325,62 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
       return [...items, notice(uid, "error", String(ev.message ?? "agent error"))];
     case "sync_warning":
       return [...items, notice(uid, "warn", `Sync: ${String(ev.message ?? "")}`)];
-    // Live-only (approve/discard routes, never persisted to the transcript).
+    // The approve route broadcasts this and persists it to the transcript,
+    // so a reload shows the same outcome. Older transcripts lack it.
     case "approved": {
+      const kind = (["local", "git", "overleaf"] as const).find((k) => k === ev.projectKind) ?? opts.projectKind;
+      const files = strings(ev.files);
+      const shown = files.length > 0 ? files : [...strings(ev.uploaded), ...strings(ev.deleted)];
+      const list = shown.length > 0 ? `: ${fileList(shown)}` : "";
       const next = [
         ...items,
-        notice(
-          uid,
-          "ok",
-          opts.projectKind === "local"
-            ? ev.partial ? "Committed the approved part locally." : "Committed locally."
-            : ev.pushed
-              ? ev.partial ? "Approved part pushed — the rest stays in Proof." : "Changes pushed to Overleaf."
-              : "Nothing to push.",
-        ),
+        {
+          ...notice(
+            uid,
+            "ok",
+            kind === "local"
+              ? ev.partial ? `Committed the approved part locally${list}.` : `Committed locally${list}.`
+              : ev.pushed
+                ? ev.partial ? `Approved part pushed${list} — the rest stays in Proof.` : `Changes pushed to Overleaf${list}.`
+                : "Nothing to push.",
+          ),
+          source: ev.partial ? ("approve-part" as const) : ("approve" as const),
+        },
       ];
+      const backup = ev.backup && typeof ev.backup === "object" ? strings((ev.backup as { files?: unknown }).files) : [];
       // Safety-relevant push warnings must reach the user: the OT-fallback
       // notice (comments/tracked changes on a doc may not survive), the
       // forced-overwrite backup location, files to delete manually, …
-      if (Array.isArray(ev.warnings) && ev.warnings.length > 0) {
-        next.push(notice(`${uid}:warnings`, "warn", ev.warnings.join("\n")));
+      const warnings = strings(ev.warnings).filter(
+        // The backup notice below says where to find the backup instead.
+        (w) => !(backup.length > 0 && /^Overleaf's versions? of .+ (?:was|were) backed up to /.test(w)),
+      );
+      if (warnings.length > 0) {
+        next.push(notice(`${uid}:warnings`, "warn", warnings.join("\n")));
+      }
+      if (backup.length > 0) {
+        next.push(
+          notice(
+            `${uid}:backup`,
+            "warn",
+            `Overleaf's previous versions of ${fileList(backup)} were backed up before they were overwritten — open History → Overleaf backups to view or download them.`,
+          ),
+        );
       }
       // The push also absorbed collaborator edits to files we hadn't
       // touched — the tree changed beyond what was reviewed.
       if (Array.isArray(ev.absorbedRemote) && ev.absorbedRemote.length > 0) {
         next.push(notice(`${uid}:absorbed`, "info", `Also picked up Overleaf changes to: ${ev.absorbedRemote.join(", ")}`));
+      }
+      // Co-author edits to other lines of the same files were merged in.
+      if (Array.isArray(ev.mergedRemote) && ev.mergedRemote.length > 0) {
+        next.push(notice(`${uid}:merged`, "info", `Merged Overleaf's edits to ${ev.mergedRemote.join(", ")} with yours, line by line.`));
+      }
+      if (Array.isArray(ev.drift) && ev.drift.length > 0) {
+        next.push(notice(`${uid}:drift`, "warn", `Overleaf also changed ${ev.drift.join(", ")} where you have pending edits — see Proof.`));
+      }
+      if (typeof ev.historyLabel === "string" && ev.historyLabel) {
+        next.push(notice(`${uid}:label`, "info", `Labelled in Overleaf's history: "${ev.historyLabel}"`));
       }
       return next;
     }

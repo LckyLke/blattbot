@@ -67,7 +67,7 @@ describe("applyChatEvent", () => {
   });
 
   it("settles question cards: answers kept when the echo carries none, dismissal, no duplicate cards", () => {
-    let items = live([{ type: "question", questionId: "q1", questions: [{ question: "A or B?", header: "Pick", options: [], multiSelect: false }] }]);
+    const items = live([{ type: "question", questionId: "q1", questions: [{ question: "A or B?", header: "Pick", options: [], multiSelect: false }] }]);
     expect(items[0]).toMatchObject({ uid: "q:q1", status: "pending" });
     // A re-broadcast (e.g. after a reconnect backfill) must not add a second card.
     expect(applyChatEvent(items, { type: "question", questionId: "q1", questions: [] }, { uid: "y" })).toBe(items);
@@ -107,7 +107,7 @@ describe("applyChatEvent", () => {
   it("reports approvals per project kind, with warnings and absorbed remote edits", () => {
     const ev = { type: "approved", pushed: true, warnings: ["comments may be lost"], absorbedRemote: ["a.tex"] };
     expect(withoutUid(live([ev], "overleaf"))).toEqual([
-      { kind: "notice", tone: "ok", text: "Changes pushed to Overleaf." },
+      { kind: "notice", tone: "ok", text: "Changes pushed to Overleaf.", source: "approve" },
       { kind: "notice", tone: "warn", text: "comments may be lost" },
       { kind: "notice", tone: "info", text: "Also picked up Overleaf changes to: a.tex" },
     ]);
@@ -115,6 +115,46 @@ describe("applyChatEvent", () => {
     expect(live([{ type: "approved" }], "git")[0]).toMatchObject({ text: "Nothing to push." });
     // Several items from one event still get distinct identities.
     expect(new Set(live([ev], "overleaf").map((it) => it.uid)).size).toBe(3);
+    const labelled = { type: "approved", pushed: true, historyLabel: "Agent: edit (BlattBot)" };
+    expect(withoutUid(live([labelled], "overleaf"))).toContainEqual({
+      kind: "notice",
+      tone: "info",
+      text: `Labelled in Overleaf's history: "Agent: edit (BlattBot)"`,
+    });
+  });
+
+  it("restores a persisted approval with its files and backup, worded by the event's project kind", () => {
+    const persisted: ChatTranscriptEvent[] = [
+      {
+        type: "approved",
+        pushed: true,
+        projectKind: "overleaf",
+        uploaded: ["main.tex"],
+        files: ["main.tex", "refs.bib"],
+        warnings: ["Overleaf's version of main.tex was backed up to /x/.git/blattbot/remote-backup/s", "kept"],
+        backup: { stamp: "s", files: ["main.tex"] },
+      },
+      { type: "approved", pushed: true, partial: true, files: ["a.tex", "b.tex", "c.tex", "d.tex", "e.tex", "f.tex", "g.tex"] },
+    ];
+    // Replay has no project kind of its own: the event carries it.
+    expect(withoutUid(replayChatEvents(persisted, "chat1"))).toEqual([
+      { kind: "notice", tone: "ok", text: "Changes pushed to Overleaf: main.tex, refs.bib.", source: "approve" },
+      { kind: "notice", tone: "warn", text: "kept" },
+      {
+        kind: "notice",
+        tone: "warn",
+        text: "Overleaf's previous versions of main.tex were backed up before they were overwritten — open History → Overleaf backups to view or download them.",
+      },
+      {
+        kind: "notice",
+        tone: "ok",
+        text: "Approved part pushed: a.tex, b.tex, c.tex, d.tex, e.tex and 2 more — the rest stays in Proof.",
+        source: "approve-part",
+      },
+    ]);
+    expect(live([{ type: "approved", projectKind: "local", files: ["x.tex"] }], "overleaf")[0]).toMatchObject({
+      text: "Committed locally: x.tex.",
+    });
   });
 });
 
@@ -175,5 +215,45 @@ describe("replayChatEvents", () => {
     expect(replayChatEvents([null as unknown as ChatTranscriptEvent, { type: "mystery" }, { type: "text_final", text: "ok" }], "c")).toEqual([
       { uid: "c:2", kind: "agent", text: "ok", streaming: false },
     ]);
+  });
+});
+
+describe("turn cards", () => {
+  const files = [
+    { path: "main.tex", status: "modified", additions: 3, deletions: 1 },
+    { path: "new.tex", status: "added", additions: 9, deletions: 0 },
+    { nope: true },
+  ];
+
+  it("puts the checkpoint of a turn that changed files on its card", () => {
+    const items = live([{ type: "turn_end", durationMs: 900, turnRef: "chat-1.2", files, fileCount: 2, additions: 12, deletions: 1 }]);
+    expect(withoutUid(items)).toEqual([
+      expect.objectContaining({
+        kind: "turn_end",
+        turnRef: "chat-1.2",
+        fileCount: 2,
+        additions: 12,
+        deletions: 1,
+        files: [
+          { path: "main.tex", status: "modified", additions: 3, deletions: 1 },
+          { path: "new.tex", status: "added", additions: 9, deletions: 0 },
+        ],
+      }),
+    ]);
+  });
+
+  it("keeps a stopped turn's changes undoable, and marks a card undone", () => {
+    const items = live([
+      { type: "turn_end", interrupted: true, turnRef: "chat-1.3", files },
+      { type: "turn_undone", turnRef: "chat-1.3", tone: "warn", text: "Turn undone: 2 files put back; conflict markers in main.tex." },
+    ]);
+    expect(items.map((it) => it.kind)).toEqual(["notice", "turn_end", "notice"]);
+    expect(items[1]).toMatchObject({ interrupted: true, turnRef: "chat-1.3", additions: 12, undone: expect.stringContaining("conflict markers") });
+    expect(items[2]).toMatchObject({ kind: "notice", tone: "warn" });
+    const redone = applyChatEvent(items, { type: "turn_redone", turnRef: "chat-1.3", tone: "ok", text: "Turn restored: 2 files put back." }, { uid: "r" });
+    expect(redone[1]).not.toHaveProperty("undone");
+    expect(redone.at(-1)).toMatchObject({ kind: "notice", tone: "ok", text: "Turn restored: 2 files put back." });
+    // A turn without a checkpoint (or without changes) keeps the plain line.
+    expect(live([{ type: "turn_end", turnRef: "chat-1.4", files: [] }])[0]).not.toHaveProperty("turnRef");
   });
 });

@@ -21,7 +21,7 @@ try {
   assert(await video.evaluate(el => el.paused && !el.autoplay && el.controls), "Explicit playback with native controls");
   assert(await video.evaluate(el => el.currentSrc.includes("/workflow.mp4")), "The complete editing workflow leads the site");
   await page.screenshot({ path: join(shots, "desktop-demos.png") });
-  for (const clip of ["writing", "evidence", "graph", "workflow"]) {
+  for (const clip of ["writing", "graph", "workflow"]) {
     await page.locator(`#demo-${clip}`).click();
     await page.waitForFunction(key => { const el = document.querySelector("video"); return el.currentSrc.includes(`/${key}.mp4`) && el.readyState >= 2 && el.currentTime > 0.2; }, clip);
     assert(await video.evaluate(el => el.duration > 15 && el.duration < 60), "A short playable video");
@@ -73,7 +73,7 @@ try {
   const noJs = await browser.newContext({ javaScriptEnabled: false });
   const fallback = await noJs.newPage();
   await fallback.goto(base);
-  assert.equal(await fallback.locator("noscript a").count(), 4);
+  assert.equal(await fallback.locator("noscript a").count(), 3);
   await noJs.close();
   console.log(`Website passed: playable clips, captions, keyboard controls, offscreen pause, image loading, lightbox, responsive layout and no-JS links. Screenshots: ${shots}`);
 } finally { await browser.close(); }

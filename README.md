@@ -24,7 +24,7 @@ npx blattbot
 
 This starts the app on http://127.0.0.1:4560 and opens your browser. On first run BlattBot checks your environment and offers to download [tectonic](https://tectonic-typesetting.github.io) if no TeX engine is found. Run `npx blattbot --help` for flags and `npx blattbot doctor` to see what it detects.
 
-You need Node 20 or newer, git, and the current [Codex CLI](https://developers.openai.com/codex/cli) installed and signed in:
+You need Node 22.13 or newer (Node 24 LTS recommended), git, and the current [Codex CLI](https://developers.openai.com/codex/cli) installed and signed in:
 
 ```bash
 npm install -g @openai/codex
@@ -37,18 +37,43 @@ Choose **Fast** in the chat toolbar or Settings → Agent → **Codex speed** to
 
 You can also select **Claude Code** (your existing login or an Anthropic API key) or an **OpenAI-compatible API** in Settings → Agent. Explicit backend choices are preserved; an empty backend setting now selects Codex. Changing backends starts a separate model conversation while keeping earlier messages visible in the chat. Global model settings and new project overrides are scoped to their harness. Background helpers such as paper summaries use the selected backend too; an incomplete configuration produces an error instead of silently switching providers.
 
-The optional Claude backend runs through the Claude Agent SDK, which is included with BlattBot and bundles its own copy of the Claude Code engine — npm downloads a platform binary of roughly 200 MB on install. To use a `claude` binary you already have instead, set `BLATTBOT_CLAUDE_EXECUTABLE=/path/to/claude`; `npx blattbot doctor` shows which engine is in use.
+The optional Claude backend runs through the Claude Agent SDK, which bundles its own copy of the Claude Code engine (a platform binary of about 230 MB). BlattBot does not install it by default. Select **Claude Code (Agent SDK)** in **Settings → Agent** and click **Install**: BlattBot downloads the version it is tested with into its data directory (`claude-agent-sdk/`). With a global `npm install -g blattbot`, you can instead run `npm install -g @anthropic-ai/claude-agent-sdk@0.3.278` next to it. Adding `--omit=optional` to that command skips the bundled engine; then set `BLATTBOT_CLAUDE_EXECUTABLE=/path/to/claude` to a `claude` binary you already have. The variable also works with a full install. `npx blattbot doctor` shows whether the SDK is installed and which engine is in use.
 
 ## Sync without clobbering
 
 - **Automatic sync and connection notices.** Remote projects sync when opened, restored after a reload, or reconnected after a server restart. A failed sync or overlapping remote edits opens a popup and leaves a warning above the project panes, with retry, reconnect, or review actions. While an Overleaf project is visible, its account session is checked every minute and when you return to the tab. Dismissing the popup keeps the warning visible until sync succeeds; local-only projects do not sync.
-- **Drift detection.** Approving a change first fetches a fresh snapshot from Overleaf. Files that changed both remotely and locally block the push with a per-file conflict list; you can discard your version per file, or force the push — in which case the remote versions are backed up locally first.
+- **Line-level merge.** A co-author editing other lines of a file you also changed no longer blocks anything. A sync commits Overleaf's version of the file and keeps your pending edits on top of it, so the agent always works on the current text. Approving merges the same way: the push carries the co-author's edits and yours, and edits you have not approved stay pending.
+- **Drift detection and conflicts.** Approving a change first fetches a fresh snapshot from Overleaf. Only edits to the *same* lines (or a binary file, or a file deleted on one side) still block the push. The Proof tab marks such files "changed on Overleaf too" as soon as a sync finds them, and its conflict banner shows, per file, what Overleaf changed next to the original text and yours. For each file you can **Keep Overleaf's version** (drops your edits to that file only), **Resolve in editor** (writes both versions with `<<<<<<< yours` / `>>>>>>> Overleaf` markers into the file; approve refuses the file until the markers are gone), or **Overwrite Overleaf** (pushes your version of that file only, after backing up Overleaf's under `.git/blattbot/remote-backup/`, listed under **History → Overleaf backups** to view or download). Buttons that act on every listed file say so.
 - **Selective merge.** Remote changes to files you have not touched are merged into your mirror as their own commit, both during a normal sync and after a push.
+- **History.** The **History** tab lists every sync from Overleaf (or the git remote) and every approval as a timeline grouped by day, with author, files and line counts; click an entry to see its diff. Filter by **From Overleaf** to see what co-authors changed, or **Pushed by me** for your approvals. A badge on the tab counts incoming changes since you last opened it. **Revert…** writes the reverse of a commit into your files as new pending changes — edits made since are kept, overlapping ones get conflict markers and are reported — and you review and approve the result in Proof like any other change; nothing is pushed directly. Approval commits are authored with your global git identity (`git config --global user.name/user.email`) when it is set, sync commits as "Overleaf". The commit message defaults to the prompt of the agent turn that made the changes ("Agent: …") or "Manual edits"; Overleaf itself does not store commit messages, so for Overleaf projects they live only in BlattBot's history. Approval outcomes (pushed files, warnings, backups) stay in the chat after a reload.
+- **"Overleaf changed" notice.** Every minute, BlattBot asks Overleaf for the project's history version, which moves with every edit (the project list's "last modified" time does not: Overleaf updates it only when it writes documents back to its database, often many minutes after a co-author's typing). When the project changed since the last sync or push, BlattBot syncs on its own if nothing is pending and no agent turn runs; otherwise a small notice above the panes says "Overleaf changed at 14:05 · Sync now". Instances without a history API fall back to the "last modified" time.
+- **Cheaper turns.** Before each agent turn, two small history requests replace the project download when Overleaf's history version is unchanged since the last full sync. A full sync still runs at least every 10 minutes and whenever anything is uncertain (no history API, a local commit since, files left in conflict). Approving always checks a fresh snapshot.
+- **Download limit.** Overleaf allows 10 project downloads per minute per project. When BlattBot reaches that limit (for example with many small approvals in a row), it waits as Overleaf asks, for up to about a minute, and then says so instead of failing with an HTTP error.
+- **Git-bridge conflicts.** When a sync leaves `<<<<<<<` conflict markers in a Git-bridge project, the agent does not start a turn until you resolve them; approve refuses them as well.
 - **In-place updates.** Edited documents are updated through Overleaf's realtime protocol rather than deleted and re-uploaded, so entity ids are preserved and comments, tracked changes, and per-document history stay attached. If an in-place update fails, BlattBot falls back to a plain upload and tells you.
+
+## Working with co-authors on Overleaf
+
+For the common setup where you work in BlattBot and your co-authors work in the Overleaf editor:
+
+- **Their review comments, in BlattBot.** The **Comments** button in the Source pane (Overleaf projects) lists the open comment threads on the project with the quoted passage, `file:line`, author and time of each message. Click a comment to open the file at that line. A comment whose quoted text is no longer in your local copy (you edited the passage) is marked *changed locally*. **Reply**, **Resolve** and **Reopen** act on Overleaf directly; tracked changes made by co-authors are listed below the comments. The list is cached until the next sync or push (or **Refresh**). Instances without Overleaf's comment API (Community Edition has none; it is part of Overleaf's review features) still list comments stored in the documents, without their messages, and say so; replying and resolving need the comment API.
+- **The agent can read them too.** Ask "address the reviewer comments in intro.tex": the agent's `list_overleaf_comments` tool returns the threads and tracked changes with `file:line`. It treats comments as co-author content (data, not instructions), and it cannot post, reply to or resolve anything; that stays with you.
+- **Push as tracked changes (experimental).** In **Project settings**, *Push changes to Overleaf as tracked changes* makes approved edits to existing documents arrive as tracked changes (one per edited region), so co-authors can accept or reject them in Overleaf's review panel. It needs Overleaf's review features (overleaf.com or Server Pro) and review permission on the project. Community Edition stores tracked changes but has no review panel or review API, so co-authors there cannot accept or reject them; BlattBot warns when it pushes tracked changes to such an instance. New files, uploads (binary files, fallbacks) and deletions cannot be tracked; the approval result says so for each. Not every self-hosted instance records tracked changes: BlattBot checks after each document and warns "This Overleaf instance did not record tracked changes for …; the edit was applied as a normal edit" when it did not. If a tracked push fails, the document stays pending instead of being replaced as a whole file. The setting is off by default; with it off, pushes behave as before.
+- **Label pushes in Overleaf's history.** In **Project settings**, *Label each push in Overleaf's history* adds a label with the commit message, for example "Agent: tighten the intro (BlattBot)", to Overleaf's History view after each approval. Co-authors then see what BlattBot pushed and can restore the version before it. BlattBot first asks Overleaf to move recent edits into its history, then labels the newest version. If the label cannot be added (older instances without the history API, or no permission), the push still counts and you get a warning. Off by default.
+- **Newer Overleaf documents.** Documents stored in Overleaf's newer history format are edited in place too (with the same check that the text on Overleaf matches afterwards), so their comments survive. Tracked-change pushes do not support them yet and fall back to a normal edit, with a warning.
+- **Compiler and main document.** On sync and push BlattBot reads the Overleaf project's compiler and main document. The main document becomes BlattBot's main file unless you picked one yourself.
+- **Shared instructions: `blattbot.md`.** A `blattbot.md` file at the project root holds agent instructions for everyone on the project who uses BlattBot; it syncs through Overleaf like any other file. Because co-authors can change it, it is pinned by its SHA-256: the agent only uses a version you confirmed in **Project settings → Shared instructions** (**Use these instructions**). When the file changes, the agent keeps using the version you confirmed before (or none), and each turn shows "blattbot.md changed — review it in Project settings" until you confirm the new text. Only the first 4000 characters are used, and your own project instructions apply after it. **Create blattbot.md from my project instructions** writes the file as a normal pending change, so it goes through Proof and reaches Overleaf when you approve it.
 
 ## The agent
 
 The agent works in the local git mirror and every turn ends in a diff you approve or discard. It compiles after editing and fixes its own LaTeX errors before showing you anything.
+
+- **Each turn, reviewable and undoable.** A turn that changed files ends in a card: "3 files · +12 −4 · **Review** · **Show changes** · **Undo turn**". Review opens Proof, Show changes shows only what that turn changed, and Undo turn reverses that turn in your files as they are now: edits made since are kept, and where they overlap the turn's changes both versions are kept with conflict markers (the chat names the files). The undo itself can be undone from the toast that follows. For this BlattBot snapshots the project before and after every turn (tracked and new files, not ignored ones) under `refs/blattbot/` in the local mirror, without touching your branch or index; the last 50 turns are kept, and nothing of it is pushed.
+- **Discard with undo.** Discarding everything, one file or one change in Proof first saves a restore point. An **Undo** toast shows for 15 seconds, and **Restore last discard** stays in Proof until the next discard; restoring keeps edits made since.
+- **Keep working during a turn.** The composer stays open: a message sent while the agent works waits in a queue (up to 5, listed under the composer, each removable) and starts on its own when the turn ends. If a turn fails or you stop it, the queue pauses ("Queue paused · Resume"). The Source editor stays editable too: what you type is a draft, saving waits for the turn ("Saves after the turn"), and if the agent changed the same file the save is refused and **Merge** combines both. Approve, discard, sync and switching chats wait for the turn to end. Every message goes to the chat it was written in, also with several tabs open.
+- **Scoped turns.** When you limit a message to some files, the agent can read everything but write only those files — on every backend, including Claude Code's own Write and Edit tools. A shell command that changes another file anyway is reported in the chat.
+- **Compiling.** The PDF refresh after a turn runs once the turn is over and is skipped when the agent's own compile already built the final state; compiles of a project never run at the same time, and the last PDF survives a restart. The TeX program comes from a `% !TEX program = xelatex` (or `lualatex`, `pdflatex`) line in the main file, else the Overleaf project's compiler, else pdfLaTeX; latexmk and the direct engines run that program (tectonic is XeTeX-based, so a LuaLaTeX document tries latexmk first). A document that loads fontspec or unicode-math without saying so is retried with XeLaTeX. The PDF pane names the engine and program, e.g. "latexmk · xelatex". **Recompile** always builds; other compiles reuse a build of unchanged sources.
+- **Smaller Polish turns.** Polish mode (proofreading) leaves the literature and repository tools and their instructions out of the request on the Claude and OpenAI-compatible backends, about 22 KB less per turn. Codex keeps the same tools in every mode, because its tools are fixed when a conversation starts.
 
 - **Citations.** A pipeline searches OpenAlex, Semantic Scholar, DBLP, and Crossref, fetches BibTeX, dedupes against your bibliography (by DOI and title), normalizes entries, upgrades arXiv preprints to the published version when one exists, and inserts the right cite keys. A deterministic audit checks every entry against Crossref/OpenAlex and badges it verified, unresolved, or mismatched.
 - **Reference browsing.** Group references by shared authors, year, conference/journal, CORE conference rank, cited/unused status, publication type, or bibliography file. Groups collapse, work with search, and remember your choice per project. Sort papers by citation count, year, title, author, or usage within the project; sorting also works within groups and puts unknown values last. Shared-author groups connect matching full author names through coauthors, with each paper shown once. Venue details include sourced citation counts and, when a conference can be matched exactly, a linked CORE/ICORE rating with its edition. “No citations indexed” describes the selected index record, not proof that a paper has never been cited; coverage and version matching can be incomplete. Rankings come from the official portal's latest export, cached for a week; the displayed edition is not necessarily the paper's publication-year ranking. Missing or ambiguous matches stay unrated.
@@ -141,7 +166,7 @@ PDF equation, section, figure and citation links navigate to their embedded dest
 
 ### Library indexing
 
-Library indexing runs automatically with saved item checkpoints, progress and delayed retries. The Library view exposes pause/resume controls and retry actions for missing text. All model backends can inspect and control source indexing through `library_index`. The retired Evidence, Checks, Memory and Discover workflows and their dedicated model tools are no longer exposed. Existing saved artifacts are retained; retired strict policies no longer block draft approval or enter agent prompts.
+Library indexing runs automatically with saved item checkpoints, progress and delayed retries. The Library view exposes pause/resume controls and retry actions for missing text. All model backends can inspect and control source indexing through `library_index`. The Evidence, Checks, Memory and Discover workflows are retired, and their model tools and code have been removed. Files they saved stay in the BlattBot data directory but are no longer read, except topic-match scores in citation graphs saved by older versions. Saved tasks of the retired kinds are kept but never run. Retired strict policies do not block draft approval or enter agent prompts.
 
 ### Search the paper library
 
@@ -157,6 +182,21 @@ The same index is available to all backends through `search_library`:
 ### Find in source and PDF
 
 **Ctrl/Cmd+F** searches the active Source or PDF pane. Source search handles literal LaTeX commands, live match counts, case/whole-word/regular-expression options and optional replacement with normal undo. Invalid expressions are reported. PDF search scans all pages, handles ligatures, whitespace and line hyphenation, and marks the exact selected text persistently while search is open. **Enter / Shift+Enter** moves forward/backward; **Escape** closes search. Case and whole-word options are available in both panes. PDF results are capped at 500 and source counts at 10,000, with `+` when more exist. Image-only PDF text needs OCR before it can be found.
+
+### Source editor and project files
+
+- **Autosave that never overwrites newer text.** Source saves 1.5 s after you stop typing (the **autosave** toggle in the status bar turns it off). Every save names the text you typed over. If an agent turn, a sync or a discarded change rewrote the file meanwhile, the save is refused and your draft stays, marked **changed on disk**: **Merge** combines both versions (passages both sides changed are marked as conflicts), **Save mine** writes your version over the file after a confirmation, **Revert** takes the file as it is. Autosave pauses while that notice shows, and a draft restored after a reload is not saved until you type in it.
+- **Drafts survive a reload.** Unsaved drafts are kept in browser storage. The browser's leave prompt only appears when a reload would really lose something: a draft too large for storage, a save still running, or a running agent turn. Pending changes are files on disk and never trigger it. The open Source file and Proof's text/rendered choice are remembered per project.
+- **New, rename, delete.** **+** above the file list creates a file; a path like `chapters/intro.tex` also creates the folder. Right-click a file or folder, or use a file's **⋯** button, to create a file there, rename or move it, or delete it (after a confirmation). These are pending changes like any edit: Proof lists them, **discard file** brings a file back, and nothing reaches Overleaf until you approve. File actions wait while an agent turn runs.
+- **Main file.** **Project settings → Main file** picks the document BlattBot compiles, from the `.tex` files with a `\documentclass` line. A visible PDF rebuilds right away. Overleaf's own main-document setting is not changed.
+
+### Projects at a glance
+
+Dashboard cards and the sidebar show each project's kind (Overleaf, git, local), a running agent turn, how many files have pending changes, and the last sync when the server records one. The sidebar's project switcher lists the same. Overleaf projects have an **Open in Overleaf** link on their card, in the header and in the sidebar; it opens the project in a new tab.
+
+### Keyboard shortcuts
+
+Press **?** (or **?** next to Settings in the sidebar) for the list. The single keys work while the cursor is not in a text field or an editor, and never use Ctrl/Cmd/Alt, so browser and editor shortcuts are untouched: **c** focuses the chat composer; **1**–**7** show Chat, Proof, Source, PDF, History, References or Research; **j** / **k** (or **]** / **[**) jump to the next or previous change in Proof; **Shift+A** approves and pushes all changes after a confirmation, with the same checks as the button. To leave the Source editor with the keyboard, press Escape, then Tab.
 
 ## Honesty notes
 
@@ -174,6 +214,28 @@ Codex or Claude Code in a folder can edit LaTeX. BlattBot adds what a bare CLI s
 Sign in once per Overleaf instance. The easiest way is "Sign in from browser session", which imports the login you already have in Firefox, Chrome or most other browsers. Inside WSL it reads the Windows browsers too; use Firefox there, since Chrome and Edge on Windows keep their cookies locked to the browser (app-bound encryption).
 
 Instances with the git bridge (paid overleaf.com plans, Server Pro) can also be connected through a git URL.
+
+## Environment variables
+
+`npx blattbot --help` prints the same list.
+
+| Variable | Purpose |
+| --- | --- |
+| `BLATTBOT_PORT` | Port to listen on (default 4560; `--port` wins). |
+| `BLATTBOT_DATA_DIR` | Data directory (default `~/.local/share/blattbot`; `--data-dir` wins). |
+| `BLATTBOT_CODEX_EXECUTABLE` | Codex CLI to use instead of the one on PATH. |
+| `BLATTBOT_CLAUDE_EXECUTABLE` | `claude` binary for the Claude backend instead of the bundled one. |
+| `BLATTBOT_BROWSER_EXECUTABLE` | Chrome, Edge or Chromium for the university sign-in window. |
+| `BLATTBOT_PDFTOPPM` | Poppler's `pdftoppm`, for PDF page images. |
+| `BLATTBOT_TESSERACT` | `tesseract`, for OCR. |
+| `BLATTBOT_KWALLET` | KDE wallet holding the browser cookie key (default `kdewallet`). |
+| `BLATTBOT_REVISION` | Revision reported by `/api/deployment` (unattended deployments). |
+| `BLATTBOT_START_DRAINED` | `1` starts with new writes paused for up to two minutes (updates). |
+| `BLATTBOT_HOME` | Home directory searched for browser profiles (default: yours). |
+| `BLATTBOT_WSL` | `1` or `0` forces WSL detection on or off. |
+| `BLATTBOT_WSL_MNT` | Where WSL mounts Windows drives (default `/mnt`). |
+| `BLATTBOT_GIT_TOKEN` | Set by BlattBot for its own git processes; do not set it. |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | Proxy for the tectonic download. |
 
 ## Security
 
@@ -199,16 +261,17 @@ npm install
 npm run dev                            # rebuild frontend, then server on :4560
 npm run dev:web                        # Vite dev server on :4561
 npm test                               # unit tests
+npm run check                          # typecheck + lint + unit tests (what CI runs)
 npm run codex:check --workspace=server # installed Codex protocol check, no model turn
-npm run test:ui --workspace=server     # browser verification (local mocks)
-npx tsx server/scripts/ui-verify.ts    # browser UI verification without agent turns
+npm run verify:ui                      # browser checks against local mocks (no model, no TeX)
+npm run test:ui --workspace=server     # full UI walkthrough without agent turns (needs TeX)
 npx tsx server/scripts/e2e.ts          # full loop with a real agent turn
 npm run release:pack                   # build and pack the npm tarball
 ```
 
 `npm run dev` rebuilds the frontend once before starting the server. For live frontend updates while editing, also run `npm run dev:web` in a second terminal and open port 4561.
 
-CI runs the suite on Ubuntu, macOS and Windows. Release notes live in [CHANGELOG.md](CHANGELOG.md).
+CI runs the suite on Ubuntu, macOS and Windows, and on the oldest supported Node. Release notes live in [CHANGELOG.md](CHANGELOG.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for tests, checks and releases.
 
 ## License
 

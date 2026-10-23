@@ -9,19 +9,20 @@
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMockOverleaf } from "./mock-overleaf.js";
+import { freePort } from "./free-port.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SHOTS = process.env.UI_SHOTS_DIR ?? "/tmp/blattbot-ui-shots";
 const EXECUTABLE = process.env.BLATTBOT_BROWSER_EXECUTABLE ||
   ["/usr/bin/chromium", "/usr/bin/google-chrome"].find(existsSync) || undefined;
-const SERVER_PORT = 4570;
-const MOCK_PORT = 4571;
-const ASK_PORT = 4572;
+const SERVER_PORT = await freePort();
+const MOCK_PORT = await freePort();
+const ASK_PORT = await freePort();
 const PROJECT_ID = "0123456789abcdef01234567";
 const COOKIE = "overleaf_session2=mock-session";
 
@@ -268,6 +269,34 @@ async function waitFor(bootstrapUrl: string, timeoutMs = 20_000): Promise<void> 
   throw new Error(`timed out waiting for ${bootstrapUrl}`);
 }
 
+/**
+ * This script compiles real LaTeX, so it needs a TeX engine. It uses the
+ * engine BlattBot finds on PATH, or the tectonic binary named by
+ * BLATTBOT_VERIFY_TECTONIC (copied into the isolated data dir). It never
+ * borrows the binary from your own BlattBot data dir without being told to.
+ */
+async function provideTexEngine(dataDir: string): Promise<string> {
+  const explicit = process.env.BLATTBOT_VERIFY_TECTONIC?.trim();
+  if (explicit) {
+    if (!existsSync(explicit)) throw new Error(`BLATTBOT_VERIFY_TECTONIC=${explicit} does not exist`);
+    const dest = join(dataDir, "bin", process.platform === "win32" ? "tectonic.exe" : "tectonic");
+    copyFileSync(explicit, dest); // a copy, not a symlink: symlinks need extra rights on Windows
+    chmodSync(dest, 0o755);
+    return `tectonic from BLATTBOT_VERIFY_TECTONIC (${explicit})`;
+  }
+  // Detect exactly as the server will: the isolated bin dir, then PATH.
+  process.env.BLATTBOT_DATA_DIR = dataDir;
+  const { detectEngine } = await import("../src/compile.js");
+  const engine = await detectEngine();
+  if (engine) return `${engine.name} (${engine.path})`;
+  const downloaded = join(homedir(), ".local", "share", "blattbot", "bin", process.platform === "win32" ? "tectonic.exe" : "tectonic");
+  throw new Error(
+    "ui-verify compiles real LaTeX, but no TeX engine (latexmk, pdflatex or tectonic) is on PATH.\n" +
+      "  Install one, or point BLATTBOT_VERIFY_TECTONIC at a tectonic binary" +
+      (existsSync(downloaded) ? `, e.g.\n    BLATTBOT_VERIFY_TECTONIC=${downloaded} npm run test:ui --workspace=server` : "."),
+  );
+}
+
 async function main() {
   mkdirSync(SHOTS, { recursive: true });
 
@@ -276,13 +305,13 @@ async function main() {
   mock.files.set("sections/refs.bib", Buffer.from(REFS_BIB));
   const askMock = await startAskMock(ASK_PORT);
 
-  // Isolated data dir so the real registry is untouched; borrow the tectonic binary.
+  // Isolated data dir so the real registry is untouched.
   const dataDir = mkdtempSync(join(tmpdir(), "blattbot-ui-verify-"));
-  const realTectonic = join(homedir(), ".local", "share", "blattbot", "bin", "tectonic");
   mkdirSync(join(dataDir, "bin"), { recursive: true });
-  if (existsSync(realTectonic)) symlinkSync(realTectonic, join(dataDir, "bin", "tectonic"));
+  console.log(`TeX engine: ${await provideTexEngine(dataDir)}`);
 
-  const server = spawn("npx", ["tsx", "src/index.ts"], {
+  // Run node directly (not through npx) so server.kill() stops the server itself.
+  const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
     cwd: join(__dirname, ".."),
     env: { ...process.env, BLATTBOT_PORT: String(SERVER_PORT), BLATTBOT_DATA_DIR: dataDir },
     stdio: "inherit",
@@ -351,7 +380,6 @@ async function main() {
     // Default layout is chat | pdf, and opening the project compiles the PDF
     // without any user action — canvases must appear on their own.
     await page.locator("canvas").first().waitFor({ state: "visible", timeout: 120_000 });
-    const openCompileOk = (await page.locator("canvas").count()) >= 1;
     await page.waitForTimeout(400);
     await shot("23-project-open");
 
@@ -467,7 +495,7 @@ async function main() {
     await styleBox.waitFor({ timeout: 5_000 }); // the form renders after the async GET
     await styleBox.fill("Use British English. Prefer \\autoref.");
     await projDlg.getByPlaceholder("global default").fill("fable");
-    await projDlg.locator("select").selectOption("research");
+    await projDlg.getByLabel("Default mode for new chats").selectOption("research");
     await shot("23f-project-settings");
     await projDlg.getByRole("button", { name: "Save project settings" }).click();
     await projDlg.getByText("Saved.").waitFor({ timeout: 5_000 });
@@ -1023,22 +1051,13 @@ async function main() {
     });
     await proofEditor().getByRole("button", { name: "Back to diff", exact: false }).click();
 
-    // ---- Leave warning: with the manual tweak still unapproved, the tab-close
-    // guard is armed (a synthetic beforeunload comes back defaultPrevented)…
-    await page
-      .waitForFunction(
-        () => {
-          const ev = new Event("beforeunload", { cancelable: true });
-          window.dispatchEvent(ev);
-          return ev.defaultPrevented;
-        },
-        { timeout: 5_000 },
-      )
-      .catch(() => {});
+    // ---- Leave warning: the manual tweak is saved but unapproved. Pending
+    // changes are safe on disk, so the tab-close guard stays quiet (a
+    // synthetic beforeunload is not defaultPrevented)…
     const leaveUnloadArmedOk = await page.evaluate(() => {
       const ev = new Event("beforeunload", { cancelable: true });
       window.dispatchEvent(ev);
-      return ev.defaultPrevented;
+      return !ev.defaultPrevented;
     });
 
     // …and navigating away (the wordmark) opens the in-app confirm naming the
@@ -1928,22 +1947,23 @@ async function main() {
     await sendButton().waitFor({ timeout: 20_000 });
 
     // While a turn runs the drop must STILL be prevented (otherwise the tab
-    // navigates away mid-stream) and must say why nothing was attached. The
-    // pending question card is the stable "busy" state in this flow.
+    // navigates away mid-stream); the picture is staged for the message the
+    // user queues next. The pending question card is the stable "busy" state.
     await page.getByPlaceholder(/Ask BlattBot/).filter({ visible: true }).first().fill("One more pass, please.");
     await sendButton().click();
     const busySkip = () => leftPane().getByRole("button", { name: "Skip these questions" }).filter({ visible: true });
     await busySkip().first().waitFor({ timeout: 20_000 });
     const busyDrop = await dropOnComposer({ name: "while-busy.png", type: "image/png", b64: PASTE_PNG_B64 });
-    await attachNotice(/Wait for the current turn/).first().waitFor({ timeout: 10_000 });
+    await leftPane().getByAltText("while-busy.png").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
     const busyDropOk =
       busyDrop.found &&
       busyDrop.overPrevented &&
       busyDrop.dropPrevented &&
       // …and the page is still the app: a navigation would have unmounted it.
       (await busySkip().count()) === 1 &&
-      (await leftPane().getByAltText("while-busy.png").count()) === 0;
+      (await leftPane().getByAltText("while-busy.png").filter({ visible: true }).count()) === 1;
     await shot("30p-drop-while-busy");
+    await leftPane().getByRole("button", { name: "Remove while-busy.png" }).filter({ visible: true }).first().click();
     await busySkip().first().click();
     await sendButton().waitFor({ timeout: 20_000 });
 
@@ -2762,7 +2782,7 @@ async function main() {
     if (!leaveWarnStayOk) throw new Error("'Stay' did not keep the project view with its pending proof");
     if (!leaveWarnLeaveOk) throw new Error("'Go to dashboard' did not navigate to the dashboard");
     if (!leaveUnloadArmedOk) {
-      throw new Error("beforeunload guard was not armed while unapproved changes were pending");
+      throw new Error("beforeunload guard fired for pending changes alone — they are safe on disk");
     }
     if (!leaveUnloadClearedOk) {
       throw new Error("beforeunload guard did not disarm once the pending changes were gone");

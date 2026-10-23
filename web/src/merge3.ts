@@ -154,7 +154,7 @@ export function merge3(base: string, ours: string, theirs: string): MergeResult 
     // hunk on either side that overlaps (or touches, for insertions) it.
     const nextO = oh[i];
     const nextT = th[j];
-    let start = Math.min(nextO?.start ?? Infinity, nextT?.start ?? Infinity);
+    const start = Math.min(nextO?.start ?? Infinity, nextT?.start ?? Infinity);
     let end = start;
     const inO: Hunk[] = [];
     const inT: Hunk[] = [];

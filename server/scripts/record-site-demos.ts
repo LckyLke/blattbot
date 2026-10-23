@@ -1,5 +1,5 @@
 /** Record real UI walkthroughs against site-demo-project's isolated, prepared data.
- * DEMO_CLIP=workflow|evidence|graph|writing records one clip; default records all four.
+ * DEMO_CLIP=workflow|graph|writing records one clip; default records all three.
  * DEMO_OUT_DIR changes the output folder. Run site-demo-project.ts --prepare first.
  * Captions and the pointer are presentation overlays; app state comes from real APIs.
  */
@@ -61,16 +61,15 @@ try {
   }
   if (!token) throw new Error(`Server failed: ${logs}`);
   browser = await chromium.launch({ executablePath: process.env.BLATTBOT_BROWSER_EXECUTABLE ?? "/usr/bin/chromium", headless: true });
-  const clips = process.env.DEMO_CLIP ? [process.env.DEMO_CLIP] : ["workflow", "evidence", "graph", "writing"];
+  const clips = process.env.DEMO_CLIP ? [process.env.DEMO_CLIP] : ["workflow", "graph", "writing"];
   for (const clip of clips) {
-    if (!["workflow", "evidence", "graph", "writing"].includes(clip)) throw new Error("Unknown clip");
+    if (!["workflow", "graph", "writing"].includes(clip)) throw new Error("Unknown clip");
     writeFileSync(join(projectPath, "main.tex"), manuscript);
     if (clip === "workflow") {
       await commitAll(projectPath, "Prepare a clean starting draft for the workflow demo");
       await api("/chats", {});
     }
     await api("/compile", {});
-    await api("/research/policy", { strict: false }, "PUT");
     const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, recordVideo: { dir: out, size: { width: 1600, height: 1000 } } });
     await context.addInitScript(({ clip }) => {
       localStorage.setItem("blattbot.paneLeft.v2", clip === "workflow" ? "chat" : clip === "writing" ? "source" : "pdf");
@@ -107,7 +106,7 @@ try {
     });
     const caption = async (text: string) => {
       marks.push({ at: (Date.now() - started) / 1000, text });
-      await page.evaluate(({ clip, text }) => { const el = document.getElementById("demo-caption")!; el.replaceChildren(); const tag = document.createElement("span"); tag.textContent = clip === "workflow" ? "EDIT · COMPILE · REVIEW" : clip === "evidence" ? "READ & VERIFY" : clip === "graph" ? "CONNECT YOUR SOURCES" : "FIND & REFINE"; el.append(tag, text); }, { clip, text });
+      await page.evaluate(({ clip, text }) => { const el = document.getElementById("demo-caption")!; el.replaceChildren(); const tag = document.createElement("span"); tag.textContent = clip === "workflow" ? "EDIT · COMPILE · REVIEW" : clip === "graph" ? "CONNECT YOUR SOURCES" : "FIND & REFINE"; el.append(tag, text); }, { clip, text });
       console.log(`${clip}: ${text}`);
     };
     const shot = async (name: string) => {
@@ -176,33 +175,6 @@ try {
         if (previous && window.start <= previous.end) previous.end = Math.max(previous.end, window.end);
         else segments.push(window);
       }
-    } else if (clip === "evidence") {
-      await click(page, research.getByRole("button", { name: "Evidence", exact: true }));
-      await research.getByText("Supports claim", { exact: true }).first().waitFor();
-      await research.locator(".research-body").evaluate(el => { el.scrollTop = 0; }).catch(() => {});
-      await caption("Follow the claim back to its source.");
-      await page.waitForTimeout(2200);
-      const card = research.locator("article.research-card").filter({ has: page.getByText("devlin2019", { exact: true }) });
-      await click(page, card.getByText("Evidence & explanation", { exact: true }));
-      await caption("A quoted passage. A page number. A checkable assessment.");
-      await point(page, card.locator("blockquote"));
-      await shot("research-evidence");
-      await page.waitForTimeout(2800);
-      await click(page, card.getByRole("button", { name: /Open source · page/ }).first());
-      await research.getByRole("region", { name: "Original source passage" }).waitFor();
-      await caption("Read the original evidence in context.");
-      await page.waitForTimeout(3500);
-      await click(page, research.getByRole("button", { name: "Close source" }));
-      await click(page, research.getByRole("button", { name: "Library", exact: true }));
-      await caption("Search across the papers in your project.");
-      await type(page, research.getByLabel("Search the paper library", { exact: true }), "bidirectional");
-      await click(page, research.getByRole("button", { name: "Search papers", exact: true }));
-      await research.locator("blockquote").first().waitFor();
-      await page.waitForTimeout(3300);
-      await click(page, research.getByRole("button", { name: "Evidence", exact: true }));
-      await click(page, research.getByLabel("Strict mode — resolve evidence gaps before approval"));
-      await caption("Keep unresolved passages open before approval.");
-      await page.waitForTimeout(2800);
     } else if (clip === "graph") {
       await research.getByRole("group", { name: "Interactive directed citation graph" }).waitFor();
       await caption("Your papers connect to a wider literature.");

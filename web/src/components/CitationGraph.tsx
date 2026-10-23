@@ -277,15 +277,13 @@ export default function CitationGraph({
         .sort(
           (a, b) =>
             (filter.trim() ? paperSearchScore(b, filter) - paperSearchScore(a, filter) : 0) ||
-            (sort === "relevance"
-              ? (b.relevance?.score ?? -1) - (a.relevance?.score ?? -1)
-              : sort === "impact"
-                ? (b.citationPercentile ?? -1) - (a.citationPercentile ?? -1)
-                : sort === "citations"
-                  ? (b.citationCount ?? -1) - (a.citationCount ?? -1)
-                  : sort === "recent"
-                    ? (b.year ?? 0) - (a.year ?? 0)
-                    : Number(b.inProject) - Number(a.inProject)) ||
+            (sort === "impact"
+              ? (b.citationPercentile ?? -1) - (a.citationPercentile ?? -1)
+              : sort === "citations"
+                ? (b.citationCount ?? -1) - (a.citationCount ?? -1)
+                : sort === "recent"
+                  ? (b.year ?? 0) - (a.year ?? 0)
+                  : Number(b.inProject) - Number(a.inProject)) ||
             a.title.localeCompare(b.title),
         ),
     [graph?.nodes, filter, visible, sort],

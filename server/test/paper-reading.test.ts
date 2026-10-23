@@ -67,7 +67,8 @@ describe("direct paper reading", () => {
 
   it("finds an uploaded exact-key PDF and returns real text through the Codex/OpenAI tools", async () => {
     writeFileSync(join(uploads, "smith2020.pdf"), textPdf(["Graph Models. An actual source statement."]));
-    const { executeTool, toolDefinitions } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
+    const { toolDefinitions } = await import("../src/backends/openai.js");
     const result = await executeTool(ctx, "read_paper", { key: "smith2020" });
     expect(result.isError).toBe(false);
     expect(result.content).toContain("An actual source statement");
@@ -79,7 +80,7 @@ describe("direct paper reading", () => {
   it("lets read_file extract uploaded PDFs and paginate instead of returning binary bytes", async () => {
     const path = join(uploads, "context.pdf");
     writeFileSync(path, textPdf(["a ".repeat(300), "This is the final result."]));
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     const first = await executeTool(ctx, "read_file", { path, limit: 100 });
     expect(first.content).toContain("Continue with offset=100");
     const next = await executeTool(ctx, "read_file", { path, offset: 100, limit: 4000 });
@@ -89,7 +90,7 @@ describe("direct paper reading", () => {
   });
 
   it("reports absent sources directly to the chat and never marks them as abstract/read", async () => {
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     const result = await executeTool(ctx, "read_paper", { key: "smith2020" });
     expect(result.content).toContain("Content: NONE");
     expect(result.content).toContain("External context");
@@ -103,7 +104,7 @@ describe("direct paper reading", () => {
 
   it("labels abstract-only evidence and emits a warning without relying on the model", async () => {
     writeFileSync(join(dir, "refs.bib"), "@article{smith2020, title={Graph Models}, abstract={We study graphs.}}");
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     const result = await executeTool(ctx, "read_paper", { key: "smith2020" });
     expect(result.content).toContain("Content: ABSTRACT");
     expect(result.content).toContain("We study graphs");
@@ -126,7 +127,7 @@ describe("direct paper reading", () => {
   it("does not treat summaries or a zero-hit search as having read evidence", async () => {
     const { writePaperRecord } = await import("../src/papers.js");
     writePaperRecord("p1", "smith2020", { summary: "A tempting generated summary", source: "agent" });
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     expect((await executeTool(ctx, "read_paper", { key: "smith2020" })).content).not.toContain("A tempting generated summary");
     writeFileSync(join(uploads, "smith2020.pdf"), textPdf(["Graph Models. Contents."]));
     const result = await executeTool(ctx, "read_paper", { key: "smith2020", query: "nonexistent" });
@@ -171,7 +172,7 @@ describe("direct paper reading", () => {
 
   it("rejects invalid offsets and unknown bibliography keys", async () => {
     writeFileSync(join(uploads, "smith2020.pdf"), textPdf(["Graph Models"]));
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     for (const args of [{ key: "missing" }, { key: "smith2020", offset: -1 }, { key: "smith2020", limit: 50000 }]) {
       expect((await executeTool(ctx, "read_paper", args)).isError).toBe(true);
     }

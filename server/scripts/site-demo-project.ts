@@ -1,5 +1,5 @@
 /** Isolated, reusable demo project. Uses public papers and the configured Codex login.
- * Run with --prepare to retrieve sources and perform real evidence checks before recording.
+ * Run with --prepare to retrieve sources, build the citation graph and index the library before recording.
  * No private project data, fabricated model replies or fabricated citation edges.
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -87,8 +87,6 @@ if (process.argv.includes("--prepare")) {
   console.log("Compiled manuscript.");
   const { readGraph, buildGraph } = await import("../src/research/graph.js");
   const { libraryStatus, indexPaper } = await import("../src/research/library.js");
-  const { evidenceView, verifyClaim } = await import("../src/research/evidence.js");
-  const { strictReport, auditUncitedClaims } = await import("../src/research/strict.js");
   const preparation = await Promise.allSettled([
     (async () => {
       if (readGraph(project.id, projectPath).pendingKeys.length) await buildGraph(project.id, projectPath);
@@ -99,16 +97,10 @@ if (process.argv.includes("--prepare")) {
     (async () => {
       for (const key of libraryStatus(project.id, projectPath).pending) await indexPaper(project.id, projectPath, key);
       console.log("Full-text library indexed.");
-      for (const claim of evidenceView(project.id, projectPath)) if (["unchecked", "stale"].includes(claim.status)) {
-        const evidence = await verifyClaim(project.id, projectPath, claim.id);
-        console.log(`Real evidence assessment for ${claim.key}: ${evidence.verdict}`);
-      }
-      if (!strictReport(project.id, projectPath).auditCurrent) await auditUncitedClaims(project.id, projectPath);
-      console.log("Real uncited-assertion audit saved.");
     })(),
   ]);
   for (const [i, result] of preparation.entries()) if (result.status === "rejected") console.error(`Preparation ${i}:`, result.reason);
   if (preparation.some(r => r.status === "rejected")) process.exit(1);
-  writeFileSync(join(demoRoot, "provenance.json"), JSON.stringify({ recordedWith: "Actual BlattBot UI", sources: papers.map(p => `https://arxiv.org/abs/${p.arxiv}`), graph: "OpenAlex, retrieved through BlattBot", judgments: "Real model checks, prepared before recording", modelSettings: "Uses the default Codex CLI configuration", preparedAt: new Date().toISOString(), projectId: project.id }, null, 2));
+  writeFileSync(join(demoRoot, "provenance.json"), JSON.stringify({ recordedWith: "Actual BlattBot UI", sources: papers.map(p => `https://arxiv.org/abs/${p.arxiv}`), graph: "OpenAlex, retrieved through BlattBot", modelSettings: "Uses the default Codex CLI configuration", preparedAt: new Date().toISOString(), projectId: project.id }, null, 2));
   console.log(`READY ${demoRoot}`);
 }

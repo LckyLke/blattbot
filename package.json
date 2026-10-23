@@ -8,6 +8,9 @@
     "server",
     "web"
   ],
+  "engines": {
+    "node": "^22.13.0 || >=23.4.0"
+  },
   "scripts": {
     "predev": "npm run build --workspace=web",
     "dev": "npm run dev --workspace=server",
@@ -15,9 +18,15 @@
     "build": "npm run build --workspace=web && npm run build --workspace=server",
     "start": "npm run start --workspace=server",
     "test": "npm run test --workspace=server",
+    "typecheck": "npm run typecheck --workspace=server && tsc --noEmit -p web",
+    "lint": "biome lint",
+    "check": "npm run typecheck && npm run lint && npm test",
+    "verify:ui": "npm run verify:ui --workspace=server --",
+    "release": "node scripts/release.mjs",
     "release:pack": "node scripts/release-pack.mjs"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.15",
     "playwright-core": "^1.62.0"
   },
   "allowScripts": {

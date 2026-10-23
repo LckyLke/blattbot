@@ -10,7 +10,7 @@ import { getProject, projectDir } from "../config.js";
 import { addCitation } from "../citations.js";
 import { withProjectLock } from "../project-lock.js";
 import { getPaperContent, readPaper, formatPaperReadResult, verifyEntry } from "../papers.js";
-import { localSourcePath } from "./evidence.js";
+import { localSourcePath } from "./sources.js";
 import { inspectPaperPage, readingCapabilities, renderPdfPage } from "./pdfreading.js";
 import { attachRepository, attachRepositorySchema, listRepositories, queryRepository, refreshRepository, removeRepository, repositoryQuerySchema, browseLocalRepositories } from "../repositories.js";
 import { codeAssessments, codeClaimSchema, verifyCodeClaim } from "./code-evidence.js";

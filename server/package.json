@@ -35,12 +35,12 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": "^22.13.0 || >=23.4.0"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web-tests.json && tsc --noEmit -p tsconfig.scripts.json",
     "codex:check": "tsx scripts/codex-check.ts",
     "test:ui": "tsx scripts/ui-verify.ts",
     "test:research-ui": "tsx scripts/research-ui-verify.ts",
@@ -50,11 +50,20 @@
     "test:sidebar-ui": "tsx scripts/sidebar-ui-verify.ts",
     "test:sync-ui": "tsx scripts/sync-ui-verify.ts",
     "test:file-mentions-ui": "tsx scripts/file-mentions-ui-verify.ts",
+    "test:history-ui": "tsx scripts/history-ui-verify.ts",
+    "test:refs-cleanup-ui": "tsx scripts/refs-cleanup-ui-verify.ts",
+    "test:graph-explorer-ui": "tsx scripts/graph-explorer-verify.ts",
+    "test:turn-flow-ui": "tsx scripts/turn-flow-ui-verify.ts",
+    "test:overleaf-review-ui": "tsx scripts/overleaf-review-ui-verify.ts",
+    "test:ui-fixes": "tsx scripts/ui-fixes-verify.ts",
+    "test:overleaf-ce": "tsx scripts/overleaf-ce-verify.ts",
+    "test:overleaf-ce-ui": "tsx scripts/overleaf-ce-ui-verify.ts",
+    "verify:ui": "tsx scripts/verify-ui.ts",
     "build": "tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.258",
     "@fastify/cors": "^11.0.0",
     "@fastify/static": "^10.1.5",
     "@fastify/websocket": "^11.0.0",
@@ -63,11 +72,14 @@
     "fflate": "^0.8.3",
     "pdfjs-dist": "4.10.38",
     "playwright-core": "^1.62.0",
+    "undici": "^7.19.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.278",
     "@types/node": "^26.1.2",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^3.2.7",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"

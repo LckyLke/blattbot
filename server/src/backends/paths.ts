@@ -8,8 +8,8 @@
  * the agent to read a credential file would otherwise be obeyed. Everything
  * below is enforced in the permission callback, before a tool ever runs.
  *
- * The openai backend enforces the same boundary in its own path resolvers
- * (resolveReadPath / resolveWritePath) — this brings the two backends level.
+ * BlattBot's own file tools (backends/tools.ts, served to every backend)
+ * enforce the same boundary through resolveReadPath / resolveWritePath below.
  */
 import { homedir } from "node:os";
 import { lstatSync } from "node:fs";
@@ -57,6 +57,52 @@ export function resolveReadPath(
   const abs = resolve(dir, p);
   if (abs === dir || !abs.startsWith(dir + sep)) throw new Error(`invalid path: ${p}`);
   return checked(dir, abs);
+}
+
+/**
+ * Resolve a write/edit path: must land strictly inside the project working
+ * tree (never .git, never a context directory), rejecting traversal and
+ * symlinks. A turn the user scoped to some files may write only those.
+ */
+export function resolveWritePath(dir: string, contextDirs: string[], raw: unknown, scope?: string[]): string {
+  if (typeof raw !== "string" || !raw.trim()) throw new Error("path is required");
+  const p = raw.trim();
+  const abs = isAbsolute(p) ? resolve(p) : resolve(dir, p);
+  if (abs === dir || !abs.startsWith(dir + sep)) {
+    throw new Error(`writes must stay inside the project: ${p}`);
+  }
+  for (const c of contextDirs) {
+    if (isInside(abs, c)) throw new Error("context directories are read-only");
+  }
+  if (isInside(abs, join(dir, ".git"))) throw new Error("the .git directory is off-limits");
+  const refused = scopeRefusal(dir, abs, scope);
+  if (refused) throw new Error(refused);
+  assertNoSymlinkPath(dir, abs);
+  return abs;
+}
+
+/**
+ * Why a write to `abs` is outside the turn's scope, or null when it is
+ * allowed (no scope, or one of the scoped files). Reads are never scoped.
+ */
+export function scopeRefusal(dir: string, abs: string, scope?: string[]): string | null {
+  if (!scope || scope.length === 0) return null;
+  const rel = displayPath(dir, abs).split(sep).join("/");
+  const allowed = scope.map((s) => displayPath(dir, resolve(dir, s)).split(sep).join("/"));
+  if (allowed.includes(rel)) return null;
+  return (
+    `${rel} is outside this turn's scope — the user limited edits to ${allowed.join(", ")}. ` +
+    "Read any file you need, but edit only those; if the task needs other files changed, say so instead."
+  );
+}
+
+/** The path a tool result or chat summary shows: relative when inside the project. */
+export function displayPath(dir: string, abs: string): string {
+  // Project-relative paths always use "/" (the agent and the chat see the
+  // same path on Windows), compared against the resolved root.
+  const root = resolve(dir);
+  const full = resolve(abs);
+  return isInside(full, root) && full !== root ? full.slice(root.length + 1).split(sep).join("/") : abs;
 }
 
 /** Refuse symlinks below an allowed root, including dangling links and
@@ -180,6 +226,7 @@ export function checkToolPaths(
   projectDir: string,
   contextDirs: string[],
   extraReadRoots: string[] = [],
+  scope?: string[],
 ): FenceResult {
   const readRoots = [projectDir, ...contextDirs, ...extraReadRoots];
   const secrets = secretRoots();
@@ -187,9 +234,11 @@ export function checkToolPaths(
   const judge = (raw: string, write: boolean): FenceResult | null => {
     const abs = isAbsolute(raw) ? resolve(raw) : resolve(projectDir, raw);
     // The project tree itself lives under the data directory — it is always
-    // allowed, and must be tested before the protected-path check.
+    // allowed, and must be tested before the protected-path check. A scoped
+    // turn writes only its scoped files.
     if (isInside(abs, projectDir) && !isInside(abs, join(projectDir, ".git"))) {
-      return null;
+      const refused = write ? scopeRefusal(projectDir, abs, scope) : null;
+      return refused ? { ok: false, message: refused } : null;
     }
     // Reads too, like the openai backend's resolveReadPath: for git-bridge
     // projects .git/config holds the remote URL with its access token.
