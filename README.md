@@ -37,7 +37,7 @@ Choose **Fast** in the chat toolbar or Settings → Agent → **Codex speed** to
 
 You can also select **Claude Code** (your existing login or an Anthropic API key) or an **OpenAI-compatible API** in Settings → Agent. Explicit backend choices are preserved; an empty backend setting now selects Codex. Changing backends starts a separate model conversation while keeping earlier messages visible in the chat. Global model settings and new project overrides are scoped to their harness. Background helpers such as paper summaries use the selected backend too; an incomplete configuration produces an error instead of silently switching providers.
 
-The optional Claude backend runs through the Claude Agent SDK, which is included with BlattBot and bundles its own copy of the Claude Code engine — npm downloads a platform binary of roughly 200 MB on install. To use a `claude` binary you already have instead, set `BLATTBOT_CLAUDE_EXECUTABLE=/path/to/claude`; `npx blattbot doctor` shows which engine is in use.
+The optional Claude backend runs through the Claude Agent SDK, which bundles its own copy of the Claude Code engine (a platform binary of about 230 MB). BlattBot does not install it by default. Select **Claude Code (Agent SDK)** in **Settings → Agent** and click **Install**: BlattBot downloads the version it is tested with into its data directory (`claude-agent-sdk/`). With a global `npm install -g blattbot`, you can instead run `npm install -g @anthropic-ai/claude-agent-sdk@0.3.278` next to it. Adding `--omit=optional` to that command skips the bundled engine; then set `BLATTBOT_CLAUDE_EXECUTABLE=/path/to/claude` to a `claude` binary you already have. The variable also works with a full install. `npx blattbot doctor` shows whether the SDK is installed and which engine is in use.
 
 ## Sync without clobbering
 
@@ -141,7 +141,7 @@ PDF equation, section, figure and citation links navigate to their embedded dest
 
 ### Library indexing
 
-Library indexing runs automatically with saved item checkpoints, progress and delayed retries. The Library view exposes pause/resume controls and retry actions for missing text. All model backends can inspect and control source indexing through `library_index`. The retired Evidence, Checks, Memory and Discover workflows and their dedicated model tools are no longer exposed. Existing saved artifacts are retained; retired strict policies no longer block draft approval or enter agent prompts.
+Library indexing runs automatically with saved item checkpoints, progress and delayed retries. The Library view exposes pause/resume controls and retry actions for missing text. All model backends can inspect and control source indexing through `library_index`. The Evidence, Checks, Memory and Discover workflows are retired, and their model tools and code have been removed. Files they saved stay in the BlattBot data directory but are no longer read, except topic-match scores in citation graphs saved by older versions. Saved tasks of the retired kinds are kept but never run. Retired strict policies do not block draft approval or enter agent prompts.
 
 ### Search the paper library
 

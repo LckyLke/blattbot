@@ -5,6 +5,7 @@ import { registerInlineQuestions, isInlineQuestionActive } from "./inline-questi
 import { researchJobs, listResearchJobs } from "./research/jobs.js";
 import { registerDeployment } from "./deployment.js";
 import { registerPublisherAccess } from "./publisher-access.js";
+import { registerClaudeSdkRoutes } from "./claude-sdk.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
@@ -96,6 +97,7 @@ registerResearchRoutes(app, async (id) => {
   broadcast(id, { type: "diff", diff });
 }, graphIndexer);
 registerPublisherAccess(app);
+registerClaudeSdkRoutes(app);
 app.addHook("onClose", async () => { await Promise.all([graphIndexer.stop(), researchJobs.stop()]); });
 app.addHook("onResponse", (req, reply, done) => {
   const id = (req.params as { id?: string })?.id;

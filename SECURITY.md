@@ -34,7 +34,7 @@ To revoke access: log out of Overleaf in your browser (invalidates the session s
 - **Your Overleaf instance.** Sync, push, and "Verify on Overleaf" talk to the instance a project is connected to, and to nothing else.
 - **Citation services.** Paper search and the citation audit query `api.openalex.org`, `api.semanticscholar.org`, `dblp.org`, `api.crossref.org`, `doi.org`, and `export.arxiv.org` with search queries, titles, and DOIs — never your manuscript itself.
 - **Paper hosts.** Paper retrieval checks indexed PDF locations, publisher/repository pages and additional discovery routes. Requests are anonymous unless you have explicitly connected the matching publisher in University access; those paper requests may include that publisher's scoped session cookies. Retrieved paper text can be sent to the configured model when you read, summarize or verify it.
-- **npm registry.** An update check fetches `registry.npmjs.org/blattbot/latest` at most once a day. No telemetry, no analytics; nothing else phones home.
+- **npm registry.** An update check fetches `registry.npmjs.org/blattbot/latest` at most once a day. **Install** in Settings → Agent runs your `npm` to download the pinned Claude Agent SDK version (with its Claude Code binary, install scripts disabled) into the data directory, only when you click it. No telemetry, no analytics; nothing else phones home.
 
 ## Prompt injection
 

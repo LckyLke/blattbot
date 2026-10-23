@@ -112,7 +112,7 @@ describe("additional paper sources", () => {
     const page = (word: string) => html(`<meta name="citation_title" content="Graph Models"><section id="abstract"><p>${word} ${"A source statement with enough context to explain the graph model. ".repeat(2)}</p></section>`);
     vi.mocked(fetchPublicUrl).mockResolvedValue(page("Original."));
     const { getPaperContent } = await import("../src/papers.js");
-    const { sourceVersion, sourceCurrent } = await import("../src/research/evidence.js");
+    const { sourceVersion, sourceCurrent } = await import("../src/research/sources.js");
     const content = await getPaperContent("p1", dir, "paper", { url: "https://repository.example/item/1" });
     const version = sourceVersion("p1", dir, content);
     expect(sourceCurrent("p1", dir, version)).toBe(true);

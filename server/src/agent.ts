@@ -31,11 +31,11 @@ import {
 // backends and this module import) — re-exported here so every existing
 // consumer keeps importing them from agent.js.
 export {
-  AGENT_TOOL_INFO,
   DEFAULT_MODEL,
   DISALLOWED_TOOLS,
   MODEL_ALIASES,
 } from "./backends/types.js";
+export { AGENT_TOOL_INFO } from "./backends/tools.js";
 export { SYSTEM_APPEND, resolveModel };
 export type { AgentEvent } from "./backends/types.js";
 
