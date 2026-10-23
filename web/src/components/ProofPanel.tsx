@@ -41,7 +41,8 @@ interface Props {
   /** Approve everything, or only `selection` (one file or one hunk); the rest stays pending. */
   onApprove: (message: string, force?: boolean, selection?: ApproveSelection) => void | Promise<void>;
   onReject: () => void | Promise<void>;
-  onRejectFile: (path: string) => void;
+  /** Discard one file's changes; a rename passes its old path too. */
+  onRejectFile: (path: string, oldPath?: string) => void;
   onRejectHunk: (patch: string) => void;
   /** Open a changed line in the Source editor for manual tweaks. */
   onJump?: (file: string, line: number) => void;
@@ -418,7 +419,7 @@ function FileDiff({
   approving: string | null;
   onApprovePart: (part: ApprovePart) => void;
   onEdit: (file: string, line: number) => void;
-  onRejectFile: (path: string) => void;
+  onRejectFile: (path: string, oldPath?: string) => void;
   onRejectHunk: (patch: string) => void;
   onJump?: (file: string, line: number) => void;
 }) {
@@ -465,7 +466,7 @@ function FileDiff({
           <button
             onClick={() => {
               setConfirmFile(false);
-              onRejectFile(file.path);
+              onRejectFile(file.path, file.oldPath);
             }}
             disabled={busy}
             aria-label={`Really discard changes to ${file.path}?`}

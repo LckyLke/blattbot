@@ -40,7 +40,8 @@ import {
 } from "@codemirror/autocomplete";
 import { tags as t } from "@lezer/highlight";
 import { bibtexLanguage, latexLanguage, latexTags } from "../latex-language";
-import { api, type FileContent } from "../api";
+import { api, type FileContent, type FileOpResult } from "../api";
+import { FileMenu, PathField, type FileMenuItem, type FileMenuTarget } from "./SourceFileActions";
 import {
   countDrafts,
   dropDraft,
@@ -77,6 +78,8 @@ interface Props {
   onQuoteToChat?: (text: string, source: string) => void;
   /** A focused editor inside Proof, without the file tree. */
   embedded?: { path: string; line: number };
+  /** A file was created, renamed or deleted: the project's new file list. */
+  onFilesChanged?: (projectId: string, files: string[]) => void;
 }
 
 interface DirNode {
@@ -688,7 +691,7 @@ const AUTOSAVE_MS = 1500;
  */
 let handledRevealNonce = -1;
 
-export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded }: Props) {
+export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded, onFilesChanged }: Props) {
   const dialog = useDialog();
   const tree = useMemo(() => buildTree(files), [files]);
   const [sel, setSel] = useState<string | null>(null);
@@ -1164,6 +1167,129 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     setSel(path);
   }
 
+  // ---- File actions: new file (folders via the path), rename, delete -------
+  // Each is a pending change like any edit — it shows in Proof and reaches
+  // the remote only when approved.
+  const [menu, setMenu] = useState<{ x: number; y: number; target: FileMenuTarget } | null>(null);
+  const [pathEdit, setPathEdit] = useState<{ mode: "new"; dir: string } | { mode: "rename"; path: string } | null>(null);
+  const [fileOpErr, setFileOpErr] = useState<string | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  useEffect(() => {
+    setMenu(null);
+    setPathEdit(null);
+    setFileOpErr(null);
+  }, [projectId]);
+
+  function applyFileOp(res: FileOpResult) {
+    onDiffRef.current(projectId, res.diff);
+    onFilesChanged?.(projectId, res.files);
+  }
+
+  function openMenu(e: React.MouseEvent<HTMLElement>, target: FileMenuTarget) {
+    e.preventDefault();
+    if (busy) {
+      setFileOpErr("File actions wait until the agent turn ends.");
+      return;
+    }
+    // The context-menu key reports no pointer position: anchor at the row.
+    const r = e.currentTarget.getBoundingClientRect();
+    const keyboard = e.clientX === 0 && e.clientY === 0;
+    setFileOpErr(null);
+    setMenu({ x: keyboard ? r.left + 12 : e.clientX, y: keyboard ? r.bottom : e.clientY, target });
+  }
+
+  async function createFile(raw: string): Promise<string | null> {
+    if (busyRef.current) return "File actions wait until the agent turn ends.";
+    if (raw.endsWith("/")) return "Add a file name after the folder, e.g. chapters/intro.tex";
+    try {
+      const res = await api.createFile(projectId, raw);
+      if (projRef.current !== projectId) return null;
+      setPathEdit(null);
+      applyFileOp(res);
+      rememberOpenFile(projectId, res.path);
+      setSaveErr(null);
+      setSel(res.path);
+      return null;
+    } catch (err: any) {
+      return err.message;
+    }
+  }
+
+  async function renameFile(from: string, raw: string): Promise<string | null> {
+    if (raw === from) {
+      setPathEdit(null);
+      return null;
+    }
+    if (busyRef.current) return "File actions wait until the agent turn ends.";
+    if (isFileSaving(projectId, from)) return "Wait for the save to finish.";
+    try {
+      const res = await api.renameFile(projectId, from, raw);
+      if (projRef.current !== projectId) return null;
+      setPathEdit(null);
+      // An unsaved draft moves with its file.
+      const draft = readDraft(projectId, from);
+      if (draft) {
+        stashDraft(projectId, res.path, draft);
+        dropDraft(projectId, from);
+      }
+      if (selRef.current === from) {
+        rememberOpenFile(projectId, res.path);
+        setSel(res.path);
+      }
+      applyFileOp(res);
+      return null;
+    } catch (err: any) {
+      return err.message;
+    }
+  }
+
+  async function deleteFile(path: string) {
+    setFileOpErr(null);
+    if (busyRef.current) return setFileOpErr("File actions wait until the agent turn ends.");
+    if (isFileSaving(projectId, path)) return setFileOpErr("Wait for the save to finish.");
+    const unsaved = hasDraft(projectId, path);
+    const ok = await dialog.confirm({
+      title: `Delete ${path}?`,
+      body: (
+        <>
+          <p>
+            The file is removed from the working copy. Like any edit this is a pending change: Proof lists it,
+            Discard there brings the file back, and only approving makes it final (and removes it from the remote).
+          </p>
+          {unsaved && <p className="mt-2 text-pencil">Its unsaved edits in the editor are discarded too.</p>}
+          {path === mainTex && <p className="mt-2">This is the main file — another one is picked for compiling.</p>}
+        </>
+      ),
+      confirmLabel: "Delete file",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const res = await api.deleteFile(projectId, path);
+      if (projRef.current !== projectId) return;
+      dropDraft(projectId, path);
+      if (selRef.current === path) {
+        rememberOpenFile(projectId, null);
+        setSel(null);
+      }
+      applyFileOp(res);
+    } catch (err: any) {
+      setFileOpErr(err.message);
+    }
+  }
+
+  function menuItems(target: FileMenuTarget): FileMenuItem[] {
+    if (target.kind === "dir") {
+      return [{ label: "New file in this folder…", run: () => setPathEdit({ mode: "new", dir: `${target.path}/` }) }];
+    }
+    const slash = target.path.lastIndexOf("/");
+    return [
+      { label: "Rename or move…", run: () => setPathEdit({ mode: "rename", path: target.path }) },
+      { label: "New file here…", run: () => setPathEdit({ mode: "new", dir: slash >= 0 ? target.path.slice(0, slash + 1) : "" }) },
+      { label: "Delete…", danger: true, run: () => void deleteFile(target.path) },
+    ];
+  }
+
   // Pick a file once the list is known: the one open before (a remount after
   // a pane swap, a project re-entered), else the main file, else the first
   // text-like one. Also recovers if the open file disappears.
@@ -1313,6 +1439,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                 return next;
               })
             }
+            onContextMenu={(e) => openMenu(e, { kind: "dir", path: node.path })}
             style={pad}
             className="flex w-full items-center gap-1 py-1 pr-2 text-left text-[11.5px] text-paper-dim hover:text-paper"
           >
@@ -1323,28 +1450,53 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
         {(!node.path || !collapsed.has(node.path)) && (
           <>
             {node.dirs.map((d) => renderDir(d, node.path ? depth + 1 : depth))}
-            {node.files.map((f) => (
-              <button
-                key={f.path}
-                onClick={() => void selectFile(f.path)}
-                style={{ paddingLeft: `${10 + (node.path ? depth + 1 : depth) * 12}px` }}
-                className={`flex w-full items-baseline gap-1.5 py-1 pr-2 text-left font-mono text-[11.5px] transition-colors ${
-                  sel === f.path ? "bg-ink-3 text-paper" : "text-paper-dim hover:bg-ink-3/50"
-                }`}
-              >
-                <span className="truncate">{f.name}</span>
-                {f.path !== sel && hasDraft(projectId, f.path) && (
-                  <span className="text-gold" title="Unsaved edits">
-                    ●
-                  </span>
-                )}
-                {f.path === mainTex && (
-                  <span className="rounded-sm border border-gold/40 px-1 text-[8.5px] uppercase tracking-wide text-gold">
-                    main
-                  </span>
-                )}
-              </button>
-            ))}
+            {node.files.map((f) =>
+              pathEdit?.mode === "rename" && pathEdit.path === f.path ? (
+                <PathField
+                  key={f.path}
+                  label={`New path for ${f.path}`}
+                  initial={f.path}
+                  selectName
+                  hint="Enter renames; a different folder moves it"
+                  onSubmit={(value) => renameFile(f.path, value)}
+                  onCancel={() => setPathEdit(null)}
+                />
+              ) : (
+                <div key={f.path} className="group relative">
+                  <button
+                    onClick={() => void selectFile(f.path)}
+                    onContextMenu={(e) => openMenu(e, { kind: "file", path: f.path })}
+                    style={{ paddingLeft: `${10 + (node.path ? depth + 1 : depth) * 12}px` }}
+                    className={`flex w-full items-baseline gap-1.5 py-1 pr-6 text-left font-mono text-[11.5px] transition-colors ${
+                      sel === f.path ? "bg-ink-3 text-paper" : "text-paper-dim hover:bg-ink-3/50"
+                    }`}
+                  >
+                    <span className="truncate">{f.name}</span>
+                    {f.path !== sel && hasDraft(projectId, f.path) && (
+                      <span className="text-gold" title="Unsaved edits">
+                        ●
+                      </span>
+                    )}
+                    {f.path === mainTex && (
+                      <span className="rounded-sm border border-gold/40 px-1 text-[8.5px] uppercase tracking-wide text-gold">
+                        main
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`File actions for ${f.path}`}
+                    title="Rename, move or delete"
+                    aria-haspopup="menu"
+                    disabled={busy}
+                    onClick={(e) => openMenu(e, { kind: "file", path: f.path })}
+                    className="absolute right-0.5 top-1/2 -translate-y-1/2 rounded px-1 text-[12px] leading-none text-graphite opacity-0 transition-opacity hover:text-paper focus:opacity-100 group-hover:opacity-100 disabled:hidden"
+                  >
+                    ⋯
+                  </button>
+                </div>
+              ),
+            )}
           </>
         )}
       </div>
@@ -1406,11 +1558,50 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   return (
     <div className="flex h-full" data-source-panel data-selection-location={sel || "Source"} onPointerDownCapture={() => { document.documentElement.dataset.findScope = "source"; }} onFocusCapture={() => { document.documentElement.dataset.findScope = "source"; }}>
-      {!embedded && <aside className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
+      {!embedded && <aside aria-label="Project files" className="w-48 shrink-0 overflow-y-auto border-r border-rule py-1.5">
+        <div className="flex items-center gap-1 pb-0.5 pl-2.5 pr-1">
+          <span className="text-[10px] uppercase tracking-wide text-graphite">Files</span>
+          <button
+            type="button"
+            aria-label="New file"
+            title={busy ? "File actions wait until the agent turn ends" : "New file — a path like chapters/intro.tex also creates the folder"}
+            disabled={busy}
+            onClick={() => {
+              setFileOpErr(null);
+              setPathEdit({ mode: "new", dir: "" });
+            }}
+            className="ml-auto rounded px-1.5 text-[14px] leading-none text-graphite transition-colors hover:text-leaf disabled:opacity-40"
+          >
+            +
+          </button>
+        </div>
+        {pathEdit?.mode === "new" && (
+          <PathField
+            label="New file path"
+            initial={pathEdit.dir}
+            hint="e.g. chapters/intro.tex — folders are created"
+            onSubmit={createFile}
+            onCancel={() => setPathEdit(null)}
+          />
+        )}
+        {fileOpErr && (
+          <p role="alert" className="px-2.5 py-1 text-[10.5px] leading-snug text-pencil">
+            {fileOpErr}
+          </p>
+        )}
         {files.length === 0 ? (
           <p className="px-3 py-2 text-xs text-graphite">No files.</p>
         ) : (
           renderDir(tree, 0)
+        )}
+        {menu && (
+          <FileMenu
+            x={menu.x}
+            y={menu.y}
+            label={`Actions for ${menu.target.path}`}
+            items={menuItems(menu.target)}
+            onClose={closeMenu}
+          />
         )}
       </aside>}
 

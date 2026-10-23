@@ -21,6 +21,7 @@ import {
   api,
   ensureAuth,
   ApproveConflictError,
+  HttpError,
   type Account,
   type ApproveSelection,
   type ChatMeta,
@@ -1171,11 +1172,18 @@ function AppShell() {
   }, [selectedId, pushChat]);
 
   const rejectFile = useCallback(
-    async (path: string) => {
+    async (path: string, oldPath?: string) => {
       const id = selectedId;
       if (!id) return;
       try {
-        const r = await api.rejectFile(id, path);
+        let r = await api.rejectFile(id, path);
+        // A rename is two paths: discarding it also brings the old file back.
+        if (oldPath) {
+          r = await api.rejectFile(id, oldPath).catch((err) => {
+            if (err instanceof HttpError && err.status === 409) return r;
+            throw err;
+          });
+        }
         if (selectedRef.current?.id !== id) return;
         // The working tree just changed under the last compile/source view.
         dirtySinceCompile.current = true;
@@ -1215,6 +1223,14 @@ function AppShell() {
     setDiff(d);
     setSourceStamp((s) => s + 1);
   }, []);
+
+  // Source created, renamed or deleted a file: show the new file list at once,
+  // and reload the project (a renamed or deleted main file moves its role).
+  const handleFilesChanged = useCallback((projectId: string, files: string[]) => {
+    if (selectedRef.current?.id !== projectId) return;
+    setDetail((d) => (d && d.id === projectId ? { ...d, files } : d));
+    void refreshProjects();
+  }, [refreshProjects]);
 
   // After a source save: if the PDF is on screen, refresh it immediately.
   const panesRef = useRef(panes);
@@ -1506,6 +1522,7 @@ function AppShell() {
             onQuoteToChat={quoteToChat}
             onSaved={handleSourceSaved}
             reveal={sourceReveal}
+            onFilesChanged={handleFilesChanged}
           />
         );
       case "pdf":

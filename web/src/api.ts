@@ -228,6 +228,19 @@ export interface FileContent {
   content: string;
 }
 
+/** Result of creating, renaming or deleting a project file. */
+export interface FileOpResult {
+  ok: boolean;
+  /** The file's (new) path. */
+  path: string;
+  /** The old path of a rename. */
+  from?: string;
+  /** The working diff afterwards. */
+  diff: string;
+  /** The project's file list afterwards. */
+  files: string[];
+}
+
 export interface ProjectDetail extends Project {
   files: string[];
   turnActive: boolean;
@@ -558,6 +571,19 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ path, content, base }),
     }),
+  /** New project file (missing folders on its path are created). */
+  createFile: (id: string, path: string, content = "") =>
+    request<FileOpResult>(`/api/projects/${id}/files`, {
+      method: "POST",
+      body: JSON.stringify({ path, content }),
+    }),
+  renameFile: (id: string, from: string, to: string) =>
+    request<FileOpResult>(`/api/projects/${id}/files/rename`, {
+      method: "POST",
+      body: JSON.stringify({ from, to }),
+    }),
+  deleteFile: (id: string, path: string) =>
+    request<FileOpResult>(`/api/projects/${id}/files?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
   cookieViaBrowser: (url: string) =>
     request<{ cookie: string; source: string }>("/api/cookies/browser", {
       method: "POST",
