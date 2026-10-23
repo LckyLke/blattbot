@@ -9,15 +9,26 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { listFiles } from "../latex.js";
 import * as git from "../git.js";
+import { CONFLICT_LABELS, describeConflict, type RemoteConflict } from "../conflicts.js";
+import { mergeText } from "../merge.js";
 import type { OverleafClient, OlRealtimeSession, ProjectTree } from "./olclient.js";
 import { computeTextOp } from "./ot.js";
 
 export interface SyncInResult {
   changed: boolean;
-  /** Remote-changed paths merged into the tree while local edits were pending. */
+  /** Remote-changed paths whose Overleaf version is now in the mirror (local edits were pending). */
   merged?: string[];
-  /** Remote-changed paths left untouched because they also have local edits. */
+  /**
+   * Of `merged`: files that also had local edits, merged line by line. HEAD
+   * holds Overleaf's version; the local edits stay pending on top.
+   */
+  rebased?: string[];
+  /** Remote-changed paths left untouched: their local edits overlap (or a side is binary or deleted). */
   drift?: string[];
+  /** What overlaps in each drift path. */
+  conflicts?: RemoteConflict[];
+  /** HEAD now holds Overleaf's version of every changed file — nothing was left behind. */
+  inSync: boolean;
 }
 
 /** Unpack a project zip buffer into { relPath → content }. Directory entries are dropped. */
@@ -54,7 +65,7 @@ export async function applySnapshot(dir: string, snapshot: Map<string, Buffer>, 
     }
     writeFileSync(target, content);
   }
-  return git.commitAll(dir, message);
+  return git.commitAll(dir, message, git.OVERLEAF_AUTHOR);
 }
 
 export type RemoteChangeKind = "modified" | "added" | "deleted";
@@ -99,6 +110,12 @@ export async function mergeRemotePaths(
   paths: string[],
   message = "Sync from Overleaf",
 ): Promise<boolean> {
+  writeRemoteVersions(dir, snapshot, paths);
+  return git.commitPaths(dir, message, paths, git.OVERLEAF_AUTHOR);
+}
+
+/** Write Overleaf's version of `paths` into the worktree (deleting what it no longer has). */
+function writeRemoteVersions(dir: string, snapshot: Map<string, Buffer>, paths: string[]): void {
   for (const rel of paths) {
     const target = join(dir, rel);
     const content = snapshot.get(rel);
@@ -109,14 +126,133 @@ export async function mergeRemotePaths(
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, content);
   }
-  return git.commitPaths(dir, message, paths);
+}
+
+/** A worktree file's bytes; null when it does not exist. */
+export function readWorktree(dir: string, rel: string): Buffer | null {
+  try {
+    return readFileSync(join(dir, rel));
+  } catch {
+    return null;
+  }
+}
+
+/** A file whose local edits are kept on top of Overleaf's version. */
+export interface RebasedFile {
+  /** The worktree text to write once HEAD holds Overleaf's version. */
+  content: Buffer;
+  /** The worktree text before, restored if the step cannot be completed. */
+  original: Buffer;
+}
+
+/**
+ * Bring Overleaf's version of some paths into HEAD as ONE sync commit of
+ * only those paths. `plain` paths also take it in the worktree; `rebased`
+ * paths get their own worktree text (a line merge), so their local edits
+ * stay pending on top of Overleaf's version. The commit is built off-index,
+ * so the worktree never loses the local edits in between.
+ */
+export async function applyRemoteVersions(
+  dir: string,
+  snapshot: Map<string, Buffer>,
+  plain: string[],
+  rebased: Map<string, RebasedFile>,
+  message = "Sync from Overleaf",
+): Promise<boolean> {
+  const paths = [...plain, ...rebased.keys()];
+  if (paths.length === 0) return false;
+  // Untouched paths first: if this fails HEAD stays put, and what was
+  // written equals Overleaf's version, which the next sync recognises.
+  writeRemoteVersions(dir, snapshot, plain);
+  const head = await git.revParse(dir, "HEAD");
+  const changed = await git.commitContents(
+    dir,
+    message,
+    new Map(paths.map((p) => [p, snapshot.get(p) ?? null])),
+    git.OVERLEAF_AUTHOR,
+  );
+  await git.resetIndexPaths(dir, paths);
+  try {
+    for (const [rel, file] of rebased) writeFileSync(join(dir, rel), file.content);
+  } catch (err) {
+    // HEAD on Overleaf's version under the OLD local text would read as a
+    // pending edit that reverts the co-author's change — undo the commit.
+    await git.resetSoft(dir, head);
+    await git.resetIndexPaths(dir, paths);
+    for (const [rel, file] of rebased) {
+      try {
+        writeFileSync(join(dir, rel), file.original);
+      } catch {
+        /* best effort */
+      }
+    }
+    throw err;
+  }
+  return changed;
+}
+
+export interface RemoteMergeResult {
+  changed: boolean;
+  /** Paths whose Overleaf version is now in HEAD (untouched and rebased ones). */
+  merged: string[];
+  rebased: string[];
+  drift: string[];
+  conflicts: RemoteConflict[];
+  /** Pending paths that already hold exactly Overleaf's version (HEAD still differs). */
+  pendingSame: string[];
+}
+
+/**
+ * Bring Overleaf's changes to `paths` into a mirror with pending edits.
+ * Paths without local edits take the remote version. Paths with local edits
+ * are merged line by line (base = HEAD, yours = worktree, Overleaf = the
+ * snapshot): on a clean merge HEAD takes Overleaf's version and the worktree
+ * the merged text, so the local edits stay pending on top. Overlapping
+ * edits, binary files and delete-vs-modify are left untouched and reported.
+ */
+export async function mergeRemoteChanges(
+  dir: string,
+  snapshot: Map<string, Buffer>,
+  paths: string[],
+  local: Set<string>,
+  message = "Sync from Overleaf",
+): Promise<RemoteMergeResult> {
+  const plain: string[] = [];
+  const rebased = new Map<string, RebasedFile>();
+  const drift: string[] = [];
+  const conflicts: RemoteConflict[] = [];
+  const pendingSame: string[] = [];
+  for (const rel of paths) {
+    if (!local.has(rel)) {
+      plain.push(rel);
+      continue;
+    }
+    const remote = snapshot.get(rel) ?? null;
+    // Already identical on both sides (e.g. pushed before a failed approve
+    // was rolled back) — pending locally, but not drift.
+    if (sameAsWorktree(dir, rel, remote ?? undefined)) {
+      pendingSame.push(rel);
+      continue;
+    }
+    const base = await git.readBlob(dir, "HEAD", rel);
+    const mine = readWorktree(dir, rel);
+    const merged = base && mine && remote ? await mergeText(base, mine, remote, CONFLICT_LABELS) : null;
+    if (merged && merged.conflicts === 0) {
+      rebased.set(rel, { content: merged.content, original: mine! });
+      continue;
+    }
+    drift.push(rel);
+    conflicts.push(await describeConflict(rel, base, mine, remote));
+  }
+  const changed = await applyRemoteVersions(dir, snapshot, plain, rebased, message);
+  return { changed, merged: [...plain, ...rebased.keys()], rebased: [...rebased.keys()], drift, conflicts, pendingSame };
 }
 
 /**
  * Pull the latest server state into the local mirror. With a clean tree the
- * whole snapshot lands as one sync commit; with pending local edits only the
- * remote changes to untouched paths are merged in (committed selectively) and
- * the overlapping paths are reported as drift, their local content untouched.
+ * whole snapshot lands as one sync commit; with pending local edits the
+ * remote changes are merged in (see mergeRemoteChanges) and only paths whose
+ * edits overlap are reported as drift, their local content untouched.
  */
 export async function syncIn(
   client: OverleafClient,
@@ -128,27 +264,17 @@ export async function syncIn(
   const snapshot = prefetched ?? unpackZip(await client.downloadZip(remoteProjectId));
   if (!dirty) {
     const changed = await applySnapshot(dir, snapshot, "Sync from Overleaf");
-    return { changed };
+    return { changed, inSync: true };
   }
   const local = new Set(await git.changedPaths(dir));
   const remote = await scanRemoteDrift(dir, snapshot);
-  const merged: string[] = [];
-  const drift: string[] = [];
-  for (const rel of remote.keys()) {
-    if (!local.has(rel)) {
-      merged.push(rel);
-      continue;
-    }
-    // Already identical on both sides (e.g. pushed before a failed approve
-    // was rolled back) — pending locally, but not drift.
-    if (sameAsWorktree(dir, rel, snapshot.get(rel))) continue;
-    drift.push(rel);
-  }
-  const changed = merged.length > 0 ? await mergeRemotePaths(dir, snapshot, merged) : false;
+  const result = await mergeRemoteChanges(dir, snapshot, [...remote.keys()], local);
   return {
-    changed,
-    ...(merged.length > 0 ? { merged } : {}),
-    ...(drift.length > 0 ? { drift } : {}),
+    changed: result.changed,
+    ...(result.merged.length > 0 ? { merged: result.merged } : {}),
+    ...(result.rebased.length > 0 ? { rebased: result.rebased } : {}),
+    ...(result.drift.length > 0 ? { drift: result.drift, conflicts: result.conflicts } : {}),
+    inSync: result.drift.length === 0 && result.pendingSame.length === 0,
   };
 }
 

@@ -11,6 +11,7 @@ import { OverleafAuthError } from "../overleaf/olclient.js";
 import * as sync from "../sync.js";
 import { getAccount, updateAccount } from "../accounts.js";
 import { diffPaths } from "../http-helpers.js";
+import * as history from "../history.js";
 
 export function registerReviewRoutes(app: FastifyInstance): void {
   app.get<{ Params: { id: string } }>("/api/projects/:id/diff", async (req, reply) => {
@@ -30,14 +31,22 @@ export function registerReviewRoutes(app: FastifyInstance): void {
         type: "synced",
         detail: result.detail,
         merged: result.merged,
+        rebased: result.rebased,
         drift: result.drift,
+        conflicts: result.conflicts,
+        lastSyncAt: result.lastSyncAt,
+        remoteLastUpdated: result.remoteLastUpdated,
       });
       return {
         ok: true,
         output: result.detail ?? "",
         changed: result.changed ?? false,
         merged: result.merged ?? [],
+        rebased: result.rebased ?? [],
         drift: result.drift ?? [],
+        conflicts: result.conflicts ?? [],
+        ...(result.lastSyncAt ? { lastSyncAt: result.lastSyncAt } : {}),
+        ...(result.remoteLastUpdated ? { remoteLastUpdated: result.remoteLastUpdated } : {}),
       };
     } catch (err: any) {
       return reply.code(422).send({ error: err.message });
@@ -82,7 +91,7 @@ export function registerReviewRoutes(app: FastifyInstance): void {
 
   app.post<{
     Params: { id: string };
-    Body: { message?: string; force?: boolean; selection?: { files?: unknown; patches?: unknown } };
+    Body: { message?: string; force?: boolean; forcePaths?: unknown; selection?: { files?: unknown; patches?: unknown } };
   }>(
     "/api/projects/:id/approve",
     async (req, reply) => {
@@ -92,31 +101,52 @@ export function registerReviewRoutes(app: FastifyInstance): void {
       const message = req.body?.message?.trim() || "BlattBot edit";
       // Partial approval: whole files and/or single hunks of the working diff.
       let selection: sync.ApproveSelection | undefined;
+      const strings = (v: unknown) => Array.isArray(v) && v.length <= 500 && v.every((x) => typeof x === "string" && x.length > 0);
       if (req.body?.selection !== undefined) {
-        const strings = (v: unknown) => Array.isArray(v) && v.length <= 500 && v.every((x) => typeof x === "string" && x.length > 0);
         const { files = [], patches = [] } = req.body.selection ?? {};
         if (!strings(files) || !strings(patches)) {
           return reply.code(400).send({ error: "selection must list files and/or patches" });
         }
         selection = { files: files as string[], patches: patches as string[] };
       }
+      // Overwrite Overleaf for these conflicting files only.
+      const forcePaths = req.body?.forcePaths;
+      if (forcePaths !== undefined && !strings(forcePaths)) {
+        return reply.code(400).send({ error: "forcePaths must list files" });
+      }
       const dir = projectDir(project.id);
       try {
-        const { result, remaining } = await withProjectLock(project.id, async () => {
-          const result = await sync.approve(project, message, { force: req.body?.force === true, selection });
+        const { result, remaining, notes, chatId } = await withProjectLock(project.id, async () => {
+          // Trailers record what kind of commit this is and which chat it came from.
+          const plan = await history.planApproval(project, selection);
+          const result = await sync.approve(project, history.withTrailers(message, plan.trailers), {
+            force: req.body?.force === true,
+            forcePaths: forcePaths as string[] | undefined,
+            selection,
+          });
+          const notes = await history.finishApproval(project, plan, result);
           // What is still pending: the unapproved rest, or files that failed to upload.
           const remaining = selection || result.pending ? await git.workingDiff(dir) : null;
-          return { result, remaining };
+          return { result, remaining, notes, chatId: plan.chatId };
         });
-        broadcast(project.id, {
+        const approved = {
           type: "approved",
           pushed: result.pushed,
           uploaded: result.uploaded,
           deleted: result.deleted,
           warnings: result.warnings,
           absorbedRemote: result.absorbedRemote,
+          mergedRemote: result.mergedRemote,
+          drift: result.drift,
+          conflicts: result.conflicts,
+          remoteLastUpdated: result.remoteLastUpdated,
           ...(selection ? { partial: true } : {}),
-        });
+          projectKind: project.kind,
+          ...notes,
+        };
+        broadcast(project.id, approved);
+        // Persisted too, so the outcome is still in the chat after a reload.
+        history.recordChatEvent(project.id, approved, chatId);
         // "approved" clears the review; whatever is left stays in it.
         if (remaining !== null) broadcast(project.id, { type: "diff", diff: remaining, changed: false });
         return { ok: true, ...result, ...(remaining !== null ? { diff: remaining } : {}) };
@@ -127,6 +157,7 @@ export function registerReviewRoutes(app: FastifyInstance): void {
           return reply.code(409).send({ error: err.message, conflicts: err.conflicts });
         }
         if (err instanceof sync.SelectionError) return reply.code(409).send({ error: err.message });
+        if (err instanceof history.HistoryError) return reply.code(err.status).send({ error: err.message });
         return reply.code(422).send({ error: err.message });
       }
     },

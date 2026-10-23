@@ -65,6 +65,14 @@ export interface Project {
   settings?: ProjectSettings;
   /** Cumulative agent cost/turn totals — see chats.ts (updated at turn end). */
   stats?: ProjectStats;
+  /** Overleaf projects: when the last full sync (snapshot download) finished. */
+  lastSyncAt?: string;
+  /**
+   * Overleaf projects: Overleaf's project `lastUpdated` as of the last
+   * successful sync or push. A newer value in the project list means a
+   * co-author (or the user, on Overleaf) changed something since.
+   */
+  remoteLastUpdated?: string;
   createdAt: string;
 }
 

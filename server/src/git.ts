@@ -58,6 +58,43 @@ async function gitLiteral(cwd: string, ...args: string[]): Promise<string> {
   return gitWithEnv(cwd, { GIT_LITERAL_PATHSPECS: "1" }, args);
 }
 
+/** Who a commit is attributed to (passed as GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL). */
+export interface CommitAuthor {
+  name: string;
+  email: string;
+}
+
+/** BlattBot's own identity: the repo-level user.name/email of every mirror. */
+export const BLATTBOT_AUTHOR: CommitAuthor = { name: "BlattBot", email: "blattbot@localhost" };
+
+/** Author of the commits that mirror Overleaf's state, i.e. co-author edits. */
+export const OVERLEAF_AUTHOR: CommitAuthor = { name: "Overleaf", email: "overleaf@localhost" };
+
+function authorEnv(author?: CommitAuthor): Record<string, string> {
+  return author ? { GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email } : {};
+}
+
+let approver: Promise<CommitAuthor> | null = null;
+
+/**
+ * Author of approval commits: the user's global git identity when both
+ * user.name and user.email are set there (read once), else BlattBot.
+ */
+export function approverIdentity(): Promise<CommitAuthor> {
+  approver ??= (async () => {
+    const read = (key: string) =>
+      git(undefined, "config", "--global", "--get", key).then((v) => v.trim(), () => "");
+    const [name, email] = await Promise.all([read("user.name"), read("user.email")]);
+    return name && email ? { name, email } : BLATTBOT_AUTHOR;
+  })();
+  return approver;
+}
+
+/** Forget the cached identity (tests, or after the user changed it). */
+export function resetApproverIdentity(): void {
+  approver = null;
+}
+
 /**
  * Credentials for ONE remote command. Overleaf's git bridge authenticates as
  * user "git" with the token as password. The token is never written into the
@@ -124,7 +161,10 @@ export async function workingDiff(dir: string): Promise<string> {
 }
 
 export async function hasChanges(dir: string): Promise<boolean> {
-  const status = await git(dir, "status", "--porcelain");
+  // No optional locks: the project detail route calls this outside the
+  // project lock, and status would otherwise take .git/index.lock to refresh
+  // the index — failing a sync or approve running at the same moment.
+  const status = await gitWithEnv(dir, { GIT_OPTIONAL_LOCKS: "0" }, ["status", "--porcelain"]);
   return status.trim().length > 0;
 }
 
@@ -176,10 +216,15 @@ export async function resetSoft(dir: string, ref: string): Promise<void> {
  * Commit what is staged, except `paths`: those are unstaged first and stay as
  * pending worktree changes. Returns false when nothing else was staged.
  */
-export async function commitStagedExcept(dir: string, message: string, paths: string[]): Promise<boolean> {
+export async function commitStagedExcept(
+  dir: string,
+  message: string,
+  paths: string[],
+  author?: CommitAuthor,
+): Promise<boolean> {
   if (paths.length > 0) await gitLiteral(dir, "reset", "-q", "--", ...paths);
   if (!(await git(dir, "diff", "--cached", "--name-only")).trim()) return false;
-  await git(dir, "commit", "-m", message);
+  await gitWithEnv(dir, authorEnv(author), ["commit", "-m", message]);
   return true;
 }
 
@@ -318,10 +363,10 @@ export async function initRepo(dir: string): Promise<void> {
 }
 
 /** Stage everything and commit. Returns false when there was nothing to commit. */
-export async function commitAll(dir: string, message: string): Promise<boolean> {
+export async function commitAll(dir: string, message: string, author?: CommitAuthor): Promise<boolean> {
   await git(dir, "add", "--all");
   if (!(await hasChanges(dir))) return false;
-  await git(dir, "commit", "-m", message);
+  await gitWithEnv(dir, authorEnv(author), ["commit", "-m", message]);
   return true;
 }
 
@@ -332,12 +377,17 @@ export async function commitAll(dir: string, message: string): Promise<boolean> 
  * stages remote files even when a committed .gitignore matches them (the
  * remote explicitly has them, so the mirror must too).
  */
-export async function commitPaths(dir: string, message: string, paths: string[]): Promise<boolean> {
+export async function commitPaths(
+  dir: string,
+  message: string,
+  paths: string[],
+  author?: CommitAuthor,
+): Promise<boolean> {
   if (paths.length === 0) return false;
   await gitLiteral(dir, "add", "-f", "--", ...paths);
   const status = await gitLiteral(dir, "status", "--porcelain", "--", ...paths);
   if (!status.trim()) return false;
-  await gitLiteral(dir, "commit", "-m", message, "--", ...paths);
+  await gitWithEnv(dir, { GIT_LITERAL_PATHSPECS: "1", ...authorEnv(author) }, ["commit", "-m", message, "--", ...paths]);
   return true;
 }
 
@@ -383,6 +433,102 @@ export async function archiveZip(dir: string, rev = "HEAD"): Promise<Buffer> {
   }
 }
 
+/** `git <args>` with `input` on stdin; resolves stdout. */
+async function gitInput(dir: string, args: string[], input: Buffer, extraEnv: Record<string, string> = {}): Promise<string> {
+  return new Promise<string>((resolvePromise, rejectPromise) => {
+    const child = execFile(
+      "git",
+      args,
+      {
+        cwd: dir,
+        maxBuffer: 64 * 1024 * 1024,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "true", ...extraEnv },
+      },
+      (err: any, stdout, stderr) => {
+        if (err) {
+          rejectPromise(new GitError(`git ${args[0]} failed: ${String(stderr ?? err.message).trim()}`, String(stderr ?? ""), `git ${args.join(" ")}`));
+        } else {
+          resolvePromise(String(stdout));
+        }
+      },
+    );
+    child.stdin!.end(input);
+  });
+}
+
+/** Store `content` as a blob in the repository; returns its object id. */
+export async function hashObject(dir: string, content: Buffer): Promise<string> {
+  return (await gitInput(dir, ["hash-object", "-w", "--stdin"], content)).trim();
+}
+
+/**
+ * Point index entries at new contents (null = remove the entry). The
+ * worktree is not touched. `indexFile` selects another index than the
+ * repository's own (GIT_INDEX_FILE).
+ */
+export async function setIndexContents(
+  dir: string,
+  contents: Map<string, Buffer | null>,
+  indexFile?: string,
+): Promise<void> {
+  if (contents.size === 0) return;
+  const env: Record<string, string> = indexFile ? { GIT_INDEX_FILE: indexFile } : {};
+  const modes = new Map<string, string>();
+  const tree = await gitLiteral(dir, "ls-tree", "-z", "HEAD", "--", ...contents.keys()).catch(() => "");
+  for (const record of tree.split("\0")) {
+    const m = /^(\d+) blob [0-9a-f]+\t(.+)$/s.exec(record);
+    if (m) modes.set(m[2], m[1]);
+  }
+  const records: string[] = [];
+  let zero = "";
+  // Removals first: a file replaced by a directory of the same name must be
+  // gone before entries under it are added.
+  const ordered = [...contents].sort(([, a], [, b]) => Number(a !== null) - Number(b !== null));
+  for (const [path, content] of ordered) {
+    if (content === null) {
+      // Mode 0 removes the entry; the null id must have the repository's hash length.
+      zero ||= "0".repeat((await revParse(dir, "HEAD")).length);
+      records.push(`0 ${zero}\t${path}`);
+    } else {
+      records.push(`${modes.get(path) ?? "100644"} ${await hashObject(dir, content)}\t${path}`);
+    }
+  }
+  await gitInput(dir, ["update-index", "-z", "--index-info"], Buffer.from(records.join("\0") + "\0"), env);
+}
+
+/**
+ * Commit new contents for some paths on top of HEAD (null = delete) without
+ * touching the worktree or the index: a temporary index builds the tree.
+ * Returns false when the contents already match HEAD.
+ */
+export async function commitContents(
+  dir: string,
+  message: string,
+  contents: Map<string, Buffer | null>,
+  author?: CommitAuthor,
+): Promise<boolean> {
+  if (contents.size === 0) return false;
+  const gitDir = (await git(dir, "rev-parse", "--absolute-git-dir")).trim();
+  const indexFile = join(gitDir, `blattbot-index-${process.pid}-${Date.now()}`);
+  try {
+    await gitWithEnv(dir, { GIT_INDEX_FILE: indexFile }, ["read-tree", "HEAD"]);
+    await setIndexContents(dir, contents, indexFile);
+    const tree = (await gitWithEnv(dir, { GIT_INDEX_FILE: indexFile }, ["write-tree"])).trim();
+    const parent = await revParse(dir, "HEAD");
+    if (tree === (await revParse(dir, "HEAD^{tree}"))) return false;
+    const commit = (await gitWithEnv(dir, authorEnv(author), ["commit-tree", tree, "-p", parent, "-m", message])).trim();
+    await git(dir, "update-ref", "HEAD", commit, parent);
+    return true;
+  } finally {
+    rmSync(indexFile, { force: true });
+  }
+}
+
+/** Reset the index entries of these paths to HEAD; the worktree is untouched. */
+export async function resetIndexPaths(dir: string, paths: string[]): Promise<void> {
+  if (paths.length > 0) await gitLiteral(dir, "reset", "-q", "--", ...paths);
+}
+
 export async function diffNameStatus(dir: string, fromRef: string, toRef: string): Promise<string> {
   return git(dir, "diff", "--name-status", "-M", fromRef, toRef);
 }
@@ -393,5 +539,198 @@ export async function revParse(dir: string, ref: string): Promise<string> {
 
 export async function log(dir: string, count = 20): Promise<string> {
   return git(dir, "log", `--max-count=${count}`, "--pretty=format:%h %an %ad %s", "--date=relative");
+}
+
+// ---- History inspection (read-only) ----
+
+/** Read-only commands never take git's optional locks (no index refresh). */
+const READ_ENV = { GIT_OPTIONAL_LOCKS: "0" };
+/** Plain unified diffs, whatever the user's diff config says. */
+const PLAIN_DIFF = ["--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"];
+
+/** One file a commit changed, with its line counts (null for binary files). */
+export interface CommitFileStat {
+  path: string;
+  /** Set for a rename: the path before. */
+  oldPath?: string;
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface RawCommit {
+  sha: string;
+  parents: string[];
+  authorName: string;
+  authorEmail: string;
+  /** Author date, ISO 8601. */
+  authorDate: string;
+  /** Full message: subject, body and trailers. */
+  body: string;
+  /** Empty for merge commits (git log shows no diff for them). */
+  files: CommitFileStat[];
+}
+
+const LOG_FORMAT = "%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%B%x00";
+
+/** Parse `git log -z --numstat` output written with LOG_FORMAT. */
+export function parseLog(out: string): RawCommit[] {
+  const commits: RawCommit[] = [];
+  // Each record starts with \x1e and the full object id; a \x1e anywhere
+  // else (in a message, say) stays part of the record it is in.
+  const records: string[] = [];
+  for (const piece of out.split("\x1e")) {
+    const id = piece.slice(0, Math.max(0, piece.indexOf("\0")));
+    if (/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(id)) records.push(piece);
+    else if (records.length > 0) records[records.length - 1] += `\x1e${piece}`;
+  }
+  for (const record of records) {
+    const parts = record.split("\0");
+    if (parts.length < 6 || !/^[0-9a-f]{40,64}$/.test(parts[0])) continue;
+    const [sha, parents, authorName, authorEmail, authorDate, body] = parts;
+    const tokens = parts.slice(6).map((t) => t.replace(/^\n+/, ""));
+    const files: CommitFileStat[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(tokens[i]);
+      if (!m) continue;
+      const additions = m[1] === "-" ? null : Number(m[1]);
+      const deletions = m[2] === "-" ? null : Number(m[2]);
+      if (m[3] === "") {
+        // A rename: "<add>\t<del>\t\0<old>\0<new>".
+        const oldPath = tokens[++i];
+        const path = tokens[++i];
+        if (path) files.push({ path, oldPath, additions, deletions });
+      } else {
+        files.push({ path: m[3], additions, deletions });
+      }
+    }
+    commits.push({
+      sha,
+      parents: parents.split(" ").filter(Boolean),
+      authorName,
+      authorEmail,
+      authorDate,
+      body,
+      files,
+    });
+  }
+  return commits;
+}
+
+/**
+ * Commits reachable from `rev` (a commit or a range like `a..b`), newest
+ * first, with per-file line counts. An empty repository has none.
+ */
+export async function logCommits(
+  dir: string,
+  opts: { rev?: string; skip?: number; max: number },
+): Promise<RawCommit[]> {
+  const args = [
+    "log",
+    "-z",
+    `--format=${LOG_FORMAT}`,
+    "--numstat",
+    "-M",
+    `--skip=${Math.max(0, Math.floor(opts.skip ?? 0))}`,
+    `--max-count=${Math.max(1, Math.floor(opts.max))}`,
+    opts.rev ?? "HEAD",
+    "--",
+  ];
+  try {
+    return parseLog(await gitWithEnv(dir, READ_ENV, args));
+  } catch (err) {
+    // No commits yet: nothing to list.
+    if (err instanceof GitError && /does not have any commits|unknown revision|bad default revision/i.test(err.stderr)) return [];
+    throw err;
+  }
+}
+
+/** How many commits `rev` reaches (0 for an empty repository). */
+export async function countCommits(dir: string, rev = "HEAD"): Promise<number> {
+  try {
+    return Number((await gitWithEnv(dir, READ_ENV, ["rev-list", "--count", rev, "--"])).trim()) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** The full commit id `rev` names, or null when it is not a commit here. */
+export async function resolveCommit(dir: string, rev: string): Promise<string | null> {
+  try {
+    return (await gitWithEnv(dir, READ_ENV, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`])).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when commit `a` is `b` or one of its ancestors. */
+export async function isAncestor(dir: string, a: string, b: string): Promise<boolean> {
+  try {
+    await gitWithEnv(dir, READ_ENV, ["merge-base", "--is-ancestor", a, b]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The empty tree's id, for diffing a root commit (SHA-1 or SHA-256 repos). */
+function emptyTree(like: string): string {
+  return like.length === 64
+    ? "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
+    : "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+}
+
+/** Unified diff of one commit against its first parent (all-added for a root commit). */
+export async function commitDiff(dir: string, sha: string, parent: string | undefined): Promise<string> {
+  return gitWithEnv(dir, READ_ENV, ["diff", ...PLAIN_DIFF, "-M", parent ?? emptyTree(sha), sha, "--"]);
+}
+
+/** One path a commit changed, as `git diff-tree --raw` reports it (no rename detection). */
+export interface TreeChange {
+  /** A = added, D = deleted, M = modified, T = type changed. */
+  status: string;
+  path: string;
+  oldMode: string;
+  newMode: string;
+}
+
+/** Per-path changes between two commits, renames split into delete + add. */
+export async function treeChanges(dir: string, from: string, to: string): Promise<TreeChange[]> {
+  const out = await gitWithEnv(dir, READ_ENV, ["diff-tree", "-r", "-z", "--no-renames", "--raw", from, to, "--"]);
+  const changes: TreeChange[] = [];
+  const records = out.split("\0");
+  for (let i = 0; i + 1 < records.length; i += 2) {
+    // ":<old mode> <new mode> <old id> <new id> <status>" then the path.
+    const m = /^:(\d+) (\d+) [0-9a-f]+ [0-9a-f]+ ([A-Z])/.exec(records[i]);
+    if (!m) continue;
+    changes.push({ oldMode: m[1], newMode: m[2], status: m[3], path: records[i + 1] });
+  }
+  return changes;
+}
+
+/** Commits on HEAD not yet on its upstream branch (empty when there is none). */
+export async function unpushedCommits(dir: string): Promise<Set<string>> {
+  try {
+    const out = await gitWithEnv(dir, READ_ENV, ["rev-list", "@{upstream}..HEAD"]);
+    return new Set(out.split("\n").filter(Boolean));
+  } catch {
+    return new Set();
+  }
+}
+
+/** Paths whose worktree state differs from HEAD, without refreshing the index. */
+export async function pendingPathsReadOnly(dir: string): Promise<string[]> {
+  const out = await gitWithEnv(dir, READ_ENV, ["status", "--porcelain", "-z", "--untracked-files=all"]);
+  const paths: string[] = [];
+  const records = out.split("\0");
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    if (!rec) continue;
+    paths.push(rec.slice(3));
+    if (rec[0] === "R" || rec[0] === "C") {
+      const orig = records[++i];
+      if (orig) paths.push(orig);
+    }
+  }
+  return paths;
 }
 

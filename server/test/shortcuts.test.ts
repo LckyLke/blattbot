@@ -21,6 +21,9 @@ describe("shortcutFor", () => {
     expect(shortcutFor(press("2"))).toEqual({ kind: "view", view: "proof" });
     expect(shortcutFor(press("3"))).toEqual({ kind: "view", view: "source" });
     expect(shortcutFor(press("4"))).toEqual({ kind: "view", view: "pdf" });
+    expect(shortcutFor(press("5"))).toEqual({ kind: "view", view: "history" });
+    expect(shortcutFor(press("7"))).toEqual({ kind: "view", view: "research" });
+    expect(shortcutFor(press("8"))).toBeNull();
     expect(shortcutFor(press("j"))).toEqual({ kind: "nextChange" });
     expect(shortcutFor(press("]"))).toEqual({ kind: "nextChange" });
     expect(shortcutFor(press("k"))).toEqual({ kind: "prevChange" });

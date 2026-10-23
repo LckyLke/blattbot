@@ -19,8 +19,10 @@ export interface Project {
   turnActive?: boolean;
   /** List status: files with pending (unapproved) changes. */
   pendingFiles?: number;
-  /** When the project last synced from its remote, when the server records it. */
+  /** Overleaf projects: when the last full sync finished. */
   lastSyncAt?: string;
+  /** Overleaf projects: Overleaf's lastUpdated as of the last sync or push. */
+  remoteLastUpdated?: string;
 }
 
 /** Cumulative agent usage of a project (cost known only on the Claude backend). */
@@ -420,11 +422,84 @@ export const MAX_CHAT_IMAGE_BYTES = 3.5 * 1024 * 1024;
 /** The cap as the composer spells it ("3.5 MB"). */
 export const MAX_CHAT_IMAGE_LABEL = `${MAX_CHAT_IMAGE_BYTES / 1024 / 1024} MB`;
 
-/** A file both Overleaf and the local tree changed since the last sync. */
+/** Where a commit came from: Overleaf/the remote, your approval, local only, a revert. */
+export type CommitKind = "sync" | "approve" | "local" | "revert" | "other";
+export type HistoryFilter = "all" | "sync" | "mine";
+
+export interface HistoryCommit {
+  sha: string;
+  short: string;
+  kind: CommitKind;
+  subject: string;
+  /** Message text after the subject line ("" when none). */
+  body: string;
+  author: { name: string; email: string };
+  /** ISO 8601. */
+  time: string;
+  parents: string[];
+  files: { path: string; oldPath?: string; additions: number | null; deletions: number | null }[];
+  additions: number;
+  deletions: number;
+  chatId?: string;
+  reverts?: string[];
+}
+
+/** Reverts written into the worktree that wait for approval in Proof. */
+export interface PendingRevertInfo {
+  commits: { sha: string; short: string; subject: string }[];
+  paths: string[];
+  /** Suggested commit message for approving them. */
+  message: string;
+}
+
+export interface HistoryPage {
+  head: string | null;
+  commits: HistoryCommit[];
+  nextOffset: number | null;
+  pendingRevert: PendingRevertInfo | null;
+}
+
+/** Overleaf's versions saved before a forced approval overwrote them. */
+export interface HistoryBackup {
+  stamp: string;
+  at: string;
+  files: { path: string; size: number }[];
+}
+
+export interface RevertResult {
+  ok: boolean;
+  sha: string;
+  short: string;
+  subject: string;
+  changed: string[];
+  conflicts: { path: string; reason: string; markers: boolean }[];
+  message: string;
+  /** The working diff after the revert. */
+  diff: string;
+}
+
+/** One region both sides changed: Overleaf's text, the shared base, and yours. */
+export interface ConflictHunk {
+  /** 1-based line in your version where it starts. */
+  line: number;
+  remote: string;
+  base: string;
+  mine: string;
+}
+
+/** A file both Overleaf and the local tree changed since the last sync, in overlapping places. */
 export interface SyncConflict {
   path: string;
-  /** "deleted-remote" = the file was deleted on Overleaf but edited locally. */
-  kind: "modified" | "deleted-remote";
+  /**
+   * "deleted-remote" = deleted on Overleaf but edited locally; "deleted-local"
+   * = the reverse; "unmerged" = a Git-bridge sync left conflict markers.
+   */
+  kind: "modified" | "deleted-remote" | "deleted-local" | "unmerged";
+  /** Not text on every side (no line merge, no hunks). */
+  binary?: boolean;
+  hunks?: ConflictHunk[];
+  /** Overlapping regions beyond `hunks`. */
+  more?: number;
 }
 
 /** Approve was refused (HTTP 409): remote edits overlap the local ones. */
@@ -687,12 +762,12 @@ export const api = {
    * offer per-file discard or a forced overwrite; other errors throw plainly.
    */
   /** Approve all pending changes, or only `selection` (whole files and/or single-hunk patches). */
-  approve: async (id: string, message: string, force = false, selection?: ApproveSelection) => {
+  approve: async (id: string, message: string, force = false, selection?: ApproveSelection, forcePaths?: string[]) => {
     await ensureAuth();
     const res = await fetch(appUrl(`/api/projects/${id}/approve`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, force, ...(selection ? { selection } : {}) }),
+      body: JSON.stringify({ message, force, ...(selection ? { selection } : {}), ...(forcePaths ? { forcePaths } : {}) }),
     });
     if (!res.ok) {
       let body: any = null;
@@ -712,8 +787,23 @@ export const api = {
       pushed: boolean;
       warnings?: string[];
       absorbedRemote?: string[];
+      /** Files whose Overleaf edits were merged line by line with yours. */
+      mergedRemote?: string[];
+      /** Pending files Overleaf also changed in overlapping places. */
+      drift?: string[];
+      conflicts?: SyncConflict[];
+      remoteLastUpdated?: string;
     };
   },
+  /**
+   * Settle conflicting files one by one: keep Overleaf's version (drops your
+   * edits to them), or write the merge with conflict markers into them.
+   */
+  resolveConflicts: (id: string, paths: string[], keep: "overleaf" | "markers") =>
+    request<{ ok: boolean; diff: string; resolved: { path: string; conflicts: number; line?: number }[] }>(
+      `/api/projects/${id}/conflicts/resolve`,
+      { method: "POST", body: JSON.stringify({ paths, keep }) },
+    ),
   reject: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}/reject`, { method: "POST" }),
   rejectFile: (id: string, path: string) =>
     request<{ ok: boolean; diff: string }>(`/api/projects/${id}/reject-file`, {
@@ -726,10 +816,45 @@ export const api = {
       body: JSON.stringify({ patch }),
     }),
   sync: (id: string) =>
-    request<{ ok: boolean; output: string; changed?: boolean; merged?: string[]; drift?: string[] }>(
-      `/api/projects/${id}/sync`,
-      { method: "POST" },
+    request<{
+      ok: boolean;
+      output: string;
+      changed?: boolean;
+      merged?: string[];
+      /** Of merged: files with pending edits, merged line by line under them. */
+      rebased?: string[];
+      drift?: string[];
+      conflicts?: SyncConflict[];
+      lastSyncAt?: string;
+      remoteLastUpdated?: string;
+    }>(`/api/projects/${id}/sync`, { method: "POST" }),
+  /** Commits newest first; pass `head` and `offset` from the first page to page on. */
+  history: (id: string, opts: { limit?: number; offset?: number; head?: string; filter?: HistoryFilter } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.offset) q.set("offset", String(opts.offset));
+    if (opts.head) q.set("head", opts.head);
+    if (opts.filter && opts.filter !== "all") q.set("filter", opts.filter);
+    const qs = q.toString();
+    return request<HistoryPage>(`/api/projects/${id}/history${qs ? `?${qs}` : ""}`);
+  },
+  /** Incoming (Overleaf/remote) commits since `since`, for the History tab's badge. */
+  historyStatus: (id: string, since?: string) =>
+    request<{ head: string | null; unread: number; pendingRevert: PendingRevertInfo | null }>(
+      `/api/projects/${id}/history/status${since ? `?since=${encodeURIComponent(since)}` : ""}`,
     ),
+  historyCommit: (id: string, sha: string) =>
+    request<{ commit: HistoryCommit; diff: string; truncated: boolean }>(
+      `/api/projects/${id}/history/${encodeURIComponent(sha)}`,
+    ),
+  historyBackups: (id: string) => request<{ backups: HistoryBackup[] }>(`/api/projects/${id}/history/backups`),
+  backupFileUrl: (id: string, stamp: string, path: string, download = false) =>
+    appUrl(
+      `/api/projects/${id}/history/backups/${encodeURIComponent(stamp)}/file?path=${encodeURIComponent(path)}${download ? "&download=1" : ""}`,
+    ),
+  /** Write the reverse of a commit into the files as pending changes (nothing is pushed). */
+  revertCommit: (id: string, sha: string) =>
+    request<RevertResult>(`/api/projects/${id}/history/${encodeURIComponent(sha)}/revert`, { method: "POST" }),
   compile: (id: string) => request<CompileInfo>(`/api/projects/${id}/compile`, { method: "POST" }),
   /**
    * Compile the project's state as committed at a rev (only "HEAD" — the

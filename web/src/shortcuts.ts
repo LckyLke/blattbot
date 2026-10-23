@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef } from "react";
 
-export type ShortcutView = "chat" | "proof" | "source" | "pdf" | "refs" | "research";
+export type ShortcutView = "chat" | "proof" | "source" | "pdf" | "history" | "refs" | "research";
 
 export type ShortcutAction =
   | { kind: "help" }
@@ -22,8 +22,9 @@ const VIEW_KEYS: Record<string, ShortcutView> = {
   "2": "proof",
   "3": "source",
   "4": "pdf",
-  "5": "refs",
-  "6": "research",
+  "5": "history",
+  "6": "refs",
+  "7": "research",
 };
 
 /** The cheat sheet: what each key does, in display order. */
@@ -41,8 +42,9 @@ export const SHORTCUT_SHEET: SheetRow[] = [
   { keys: ["2"], label: "Show Proof" },
   { keys: ["3"], label: "Show Source" },
   { keys: ["4"], label: "Show PDF" },
-  { keys: ["5"], label: "Show References" },
-  { keys: ["6"], label: "Show Research" },
+  { keys: ["5"], label: "Show History" },
+  { keys: ["6"], label: "Show References" },
+  { keys: ["7"], label: "Show Research" },
   { keys: ["j", "]"], label: "Next change in Proof" },
   { keys: ["k", "["], label: "Previous change in Proof" },
   { keys: ["Shift", "A"], join: "+", label: "Approve & push all changes (asks first)" },

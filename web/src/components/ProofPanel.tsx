@@ -3,8 +3,10 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalSt
 import { tabStripKeyDown } from "../a11y";
 import { buildHunkPatch, parseDiff, type DiffFile, type DiffHunk } from "../diff";
 import type { ApproveSelection, CompileInfo, SyncConflict } from "../api";
+import { FALLBACK_MESSAGE, partMessage } from "../approve-message";
 import { useDialog } from "./Dialog";
 import { HunkLines } from "./DiffView";
+import ConflictBanner from "./ConflictBanner";
 import { countDrafts, draftPaths, subscribeDrafts } from "../drafts";
 import { countFileSaves, subscribeFileSaves } from "../editor-sync";
 import { loadProofMode, saveProofMode, type ProofMode } from "../ui-memory";
@@ -28,6 +30,12 @@ interface Props {
   busy: boolean;
   /** Approve was blocked: Overleaf changed these files while they also carry local edits. */
   conflicts: SyncConflict[] | null;
+  /** A sync found these files changed on Overleaf too, in places that overlap the local edits. */
+  drift?: SyncConflict[] | null;
+  /** Overleaf projects can keep or overwrite a version; Git-bridge conflicts are edited by hand. */
+  projectKind?: "git" | "overleaf" | "local";
+  /** Scroll this file's diff into view (each new nonce once). */
+  reveal?: { path: string; nonce: number };
   projectId: string;
   sourceStamp: number;
   /** A manual edit changed the working tree: the fresh diff, and the project it was saved to. */
@@ -39,22 +47,38 @@ interface Props {
   pdfStamp: number;
   /** Ask App to recompile the working state when the preview is missing/stale. */
   onEnsureCurrentPdf: () => void;
-  /** Approve everything, or only `selection` (one file or one hunk); the rest stays pending. */
-  onApprove: (message: string, force?: boolean, selection?: ApproveSelection) => void | Promise<void>;
+  /**
+   * Approve everything, or only `selection` (one file or one hunk); the rest
+   * stays pending. `force`: overwrite Overleaf's conflicting edits — all of
+   * them (true) or those of the listed files.
+   */
+  onApprove: (message: string, force?: boolean | string[], selection?: ApproveSelection) => void | Promise<void>;
   onReject: () => void | Promise<void>;
   /** Discard one file's changes; a rename passes its old path too. */
   onRejectFile: (path: string, oldPath?: string) => void;
   onRejectHunk: (patch: string) => void;
   /** Open a changed line in the Source editor for manual tweaks. */
   onJump?: (file: string, line: number) => void;
-  /** Drop the local edits to the conflicted paths (reject-file per path). */
-  onDiscardConflicts: (paths: string[]) => void | Promise<void>;
+  /** Commit message used when the field is left empty (from the latest agent turn, a revert, …). */
+  defaultMessage?: string;
+  /**
+   * Conflict banner, per file: keep Overleaf's version (drops the local
+   * edits to those files only), or write both versions with conflict markers
+   * into the file. Resolves what was done (nothing on failure).
+   */
+  onResolveConflicts: (
+    paths: string[],
+    keep: "overleaf" | "markers",
+  ) => Promise<{ path: string; conflicts: number; line?: number }[] | void>;
 }
 
 export default function ProofPanel({
   diff,
   busy,
   conflicts,
+  drift,
+  projectKind,
+  reveal,
   projectId,
   sourceStamp,
   onDiff,
@@ -68,16 +92,22 @@ export default function ProofPanel({
   onRejectFile,
   onRejectHunk,
   onJump,
-  onDiscardConflicts,
+  onResolveConflicts,
+  defaultMessage,
 }: Props) {
+  const fallbackMessage = defaultMessage?.trim() || FALLBACK_MESSAGE;
+  const messageLabel = projectKind === "overleaf" ? "Commit message (local history only)" : "Commit message";
   const files = useMemo(() => parseDiff(diff), [diff]);
   const [message, setMessage] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   /** Source-level diff vs the compiled-output comparison. */
   const [mode, setMode] = useState<ProofMode>(() => loadProofMode(projectId));
   useEffect(() => saveProofMode(projectId, mode), [projectId, mode]);
-  /** In-flight approve/discard — buttons lock and the footer shows a sweep. */
-  const [acting, setActing] = useState<"push" | "discard" | null>(null);
+  /** In-flight approve/discard/conflict step — buttons lock and the footer shows a sweep. */
+  const [acting, setActing] = useState<"push" | "discard" | "resolve" | null>(null);
+  /** The conflict-banner file whose action is in flight. */
+  const [bannerActing, setBannerActing] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   /** The file/hunk whose partial approval is in flight (its button shows progress). */
   const [approving, setApproving] = useState<string | null>(null);
   /** What the last approve covered — "Overwrite Overleaf" retries exactly that. */
@@ -98,30 +128,115 @@ export default function ProofPanel({
     { add: 0, del: 0 },
   );
 
+  // A refused approve's conflicts win; otherwise what the last sync found.
+  const banner = conflicts?.length
+    ? { list: conflicts, source: "approve" as const }
+    : drift?.length
+      ? { list: drift, source: "sync" as const }
+      : null;
+  const conflictByPath = useMemo(() => new Map((banner?.list ?? []).map((c) => [c.path, c])), [banner?.list]);
+
+  // "Review changes" lands on the file: back to the text diff, scrolled there.
+  useEffect(() => {
+    if (!reveal) return;
+    setMode("text");
+    setEditing(null);
+    const timer = setTimeout(() => {
+      const target = [...(listRef.current?.querySelectorAll<HTMLElement>("[data-diff-path]") ?? [])].find(
+        (el) => el.dataset.diffPath === reveal.path,
+      );
+      target?.scrollIntoView({ block: "start" });
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [reveal?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Approve all pending changes, or just one file / one hunk of them. */
-  async function approve(force = false, part?: ApprovePart) {
+  async function approve(force: boolean | string[] = false, part?: ApprovePart) {
     if (actionsLocked || files.length === 0) return;
     lastPart.current = part;
     setActing("push");
     setApproving(part?.key ?? null);
     try {
-      await onApprove(message.trim() || (part ? `BlattBot edit: ${part.path}` : "BlattBot edit"), force, part?.selection);
+      await onApprove(message.trim() || (part ? partMessage(fallbackMessage, part.path) : fallbackMessage), force, part?.selection);
     } finally {
       setActing(null);
       setApproving(null);
     }
   }
 
-  /** Conflict banner: replace Overleaf's versions with ours, after a warning. */
-  async function overwriteRemote() {
-    if (actionsLocked) return;
+  /** Conflict banner, every listed file: replace Overleaf's versions with ours, after a warning. */
+  async function overwriteAll() {
+    if (actionsLocked || !banner) return;
+    const n = banner.list.length;
     const ok = await dialog.confirm({
-      title: "Overwrite Overleaf?",
-      body: "Your versions of the conflicting files will replace the ones on Overleaf. Overleaf's current versions are backed up locally first.",
+      title: `Overwrite Overleaf with all ${n} files?`,
+      body:
+        `Your versions of ${banner.list.map((c) => c.path).join(", ")} replace the ones on Overleaf, including the changes shown in the banner. ` +
+        "Overleaf's current versions are backed up locally first." +
+        (lastPart.current ? "" : " Your other pending changes are pushed too."),
       confirmLabel: "Overwrite Overleaf",
       danger: true,
     });
     if (ok) await approve(true, lastPart.current);
+  }
+
+  /** Conflict banner, one file: push our version of it over Overleaf's, after a warning. */
+  async function overwriteOne(path: string) {
+    if (actionsLocked) return;
+    const ok = await dialog.confirm({
+      title: `Overwrite ${path} on Overleaf?`,
+      body:
+        `Your version of ${path} replaces the one on Overleaf, including the changes shown in the banner. ` +
+        `Overleaf's version is backed up locally first. Only ${path} is pushed now.`,
+      confirmLabel: "Overwrite Overleaf",
+      danger: true,
+    });
+    if (!ok) return;
+    // The approval that ran into the conflict when it was about this file; else the whole file.
+    const last = lastPart.current;
+    const part: ApprovePart = last?.path === path ? last : { selection: { files: [path] }, key: path, path };
+    setBannerActing(path);
+    try {
+      await approve([path], part);
+    } finally {
+      setBannerActing(null);
+    }
+  }
+
+  /** Conflict banner: take Overleaf's version of these files, dropping the local edits to them only. */
+  async function keepOverleaf(paths: string[]) {
+    if (actionsLocked) return;
+    setActing("resolve");
+    setBannerActing(paths.length === 1 ? paths[0] : null);
+    try {
+      await onResolveConflicts(paths, "overleaf");
+    } finally {
+      setActing(null);
+      setBannerActing(null);
+    }
+  }
+
+  /**
+   * Conflict banner: write both versions into the file with conflict markers
+   * (Git-bridge files already have them) and open it where they start.
+   */
+  async function resolveInEditor(c: SyncConflict) {
+    if (actionsLocked) return;
+    let line = markerLine(files.find((f) => f.path === c.path));
+    if (c.kind !== "unmerged") {
+      setActing("resolve");
+      setBannerActing(c.path);
+      try {
+        const done = await onResolveConflicts([c.path], "markers");
+        if (!done) return;
+        line = done.find((r) => r.path === c.path)?.line;
+      } finally {
+        setActing(null);
+        setBannerActing(null);
+      }
+    }
+    if (onJump) onJump(c.path, line ?? 1);
+    else edit(c.path, line ?? 1);
   }
 
   async function discard() {
@@ -135,19 +250,7 @@ export default function ProofPanel({
     }
   }
 
-  /** Conflict banner: keep Overleaf's versions by dropping the local edits. */
-  async function discardMine() {
-    if (actionsLocked || !conflicts) return;
-    setActing("discard");
-    try {
-      await onDiscardConflicts(conflicts.map((c) => c.path));
-    } finally {
-      setActing(null);
-    }
-  }
-
   // ---- Keyboard shortcuts (shortcuts.ts): next/previous change, approve all.
-  const listRef = useRef<HTMLDivElement>(null);
   const hunkCursor = useRef(-1);
   useEffect(() => {
     hunkCursor.current = -1;
@@ -224,39 +327,18 @@ export default function ProofPanel({
 
   return (
     <div className="flex h-full flex-col">
-      {conflicts && conflicts.length > 0 && (
-        <div className="shrink-0 border-b border-gold/40 bg-gold/10 px-4 py-3">
-          <p role="status" className="text-[12.5px] font-medium text-gold">
-            Overleaf changed {conflicts.length} file{conflicts.length === 1 ? "" : "s"} you also
-            edited — nothing was pushed
-          </p>
-          <ul className="mt-1 space-y-0.5 font-mono text-[11.5px] text-paper-dim">
-            {conflicts.map((c) => (
-              <li key={c.path}>
-                {c.path}
-                {c.kind === "deleted-remote" && (
-                  <span className="ml-1.5 text-pencil">deleted on Overleaf</span>
-                )}
-              </li>
-            ))}
-          </ul>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button
-              onClick={() => void discardMine()}
-              disabled={actionsLocked}
-              className="rounded-lg border border-rule px-2.5 py-1 text-[11.5px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
-            >
-              Discard my changes to these files
-            </button>
-            <button
-              onClick={() => void overwriteRemote()}
-              disabled={actionsLocked}
-              className="rounded-lg bg-pencil/90 px-2.5 py-1 text-[11.5px] font-medium text-ink transition-colors hover:bg-pencil disabled:opacity-50"
-            >
-              Overwrite Overleaf
-            </button>
-          </div>
-        </div>
+      {banner && (
+        <ConflictBanner
+          conflicts={banner.list}
+          source={banner.source}
+          locked={actionsLocked}
+          overleaf={projectKind === "overleaf"}
+          acting={bannerActing}
+          onKeepOverleaf={(paths) => void keepOverleaf(paths)}
+          onResolveInEditor={(c) => void resolveInEditor(c)}
+          onOverwrite={(path) => void overwriteOne(path)}
+          onOverwriteAll={() => void overwriteAll()}
+        />
       )}
       {/* Text diff (source lines) vs rendered diff (compiled-output pixels). */}
       <div
@@ -336,9 +418,9 @@ export default function ProofPanel({
         </div>
       ) : (
         <div
+          ref={listRef}
           role="tabpanel"
           aria-label="Text diff"
-          ref={listRef}
           className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
         >
           <InlineDiffContext.Provider value={{ projectId, busy: busy || acting !== null, onDiff, onSaved }}>
@@ -346,6 +428,7 @@ export default function ProofPanel({
             <FileDiff
               key={file.path}
               file={file}
+              conflict={conflictByPath.get(file.path)}
               busy={actionsLocked}
               canEdit={!busy && acting === null}
               approving={approving}
@@ -392,11 +475,24 @@ export default function ProofPanel({
           </span>
           {busy && <span className="text-gold">agent still working…</span>}
         </div>
+        <label
+          htmlFor={`proof-message-${projectId}`}
+          className="mb-1 block text-[11px] text-graphite"
+          title={
+            projectKind === "overleaf"
+              ? "Overleaf does not store commit messages: this one is kept in BlattBot's History only."
+              : undefined
+          }
+        >
+          {messageLabel}
+        </label>
         <div className="flex gap-2">
           <input
+            id={`proof-message-${projectId}`}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Commit message (optional)"
+            placeholder={fallbackMessage}
+            title={`Leave empty to use: ${fallbackMessage}`}
             className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-3 py-2 text-[13px] text-paper placeholder:text-graphite/60"
           />
           <button
@@ -469,8 +565,18 @@ const STATUS_BADGE: Record<DiffFile["status"], { label: string; cls: string }> =
   renamed: { label: "renamed", cls: "text-paper-dim border-rule" },
 };
 
+/** The first line of a `<<<<<<<` conflict block the file's pending changes add. */
+export function markerLine(file: DiffFile | undefined): number | undefined {
+  for (const hunk of file?.hunks ?? []) {
+    const hit = hunk.lines.find((l) => l.kind === "add" && /^<{7}(?: |$)/.test(l.text));
+    if (hit?.newNo != null) return hit.newNo;
+  }
+  return undefined;
+}
+
 function FileDiff({
   file,
+  conflict,
   busy,
   canEdit,
   approving,
@@ -481,6 +587,8 @@ function FileDiff({
   onJump,
 }: {
   file: DiffFile;
+  /** Overleaf changed this file too, overlapping the local edits. */
+  conflict?: SyncConflict;
   busy: boolean;
   canEdit: boolean;
   approving: string | null;
@@ -493,11 +601,13 @@ function FileDiff({
   const [collapsed, setCollapsed] = useState(false);
   const [confirmFile, setConfirmFile] = useState(false);
   const badge = STATUS_BADGE[file.status];
+  const marked = markerLine(file) != null;
   return (
     // A file without hunks (renamed, empty, binary) is one change for the j/k keys.
     <section
       className="mb-4 scroll-mt-2 focus:outline-none"
       data-selection-location={`${file.path} (diff)`}
+      data-diff-path={file.path}
       {...(file.hunks.length === 0 ? { "data-proof-hunk": "", tabIndex: -1 } : {})}
     >
       <div className="booktabs flex w-full items-baseline gap-2 px-1 pb-1 pt-2">
@@ -565,6 +675,26 @@ function FileDiff({
           {collapsed ? "▸" : "▾"}
         </button>
       </div>
+      {((conflict && conflict.kind !== "unmerged") || marked) && (
+        <div className="flex flex-wrap gap-1.5 px-1 pb-1">
+          {conflict && conflict.kind !== "unmerged" && (
+            <span
+              className="rounded-sm border border-gold/60 bg-gold/10 px-1 text-[11px] text-gold"
+              title="Overleaf changed this file too, where you edited it — choose what to keep in the conflict banner above"
+            >
+              changed on Overleaf too
+            </span>
+          )}
+          {marked && (
+            <span
+              className="rounded-sm border border-pencil/50 px-1 text-[11px] text-pencil"
+              title="Remove the <<<<<<< ======= >>>>>>> markers before approving"
+            >
+              conflict markers — resolve before approving
+            </span>
+          )}
+        </div>
+      )}
       {!collapsed &&
         file.hunks.map((hunk, hi) => (
           <HunkBlock

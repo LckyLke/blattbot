@@ -20,6 +20,7 @@ const SCRIPTS = [
   "code-repositories-ui",
   "file-mentions-ui",
   "graph-explorer",
+  "history-ui",
   "pdf-links-ui",
   "refs-cleanup-ui",
   "research-ui",

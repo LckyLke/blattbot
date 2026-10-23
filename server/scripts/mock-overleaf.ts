@@ -15,6 +15,7 @@
  * (exposed via the legacy top-level files/uploads/deletes fields) plus any
  * created through POST /project/new (exposed via `created`).
  */
+import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer } from "ws";
 import { zipSync } from "fflate";
@@ -30,6 +31,10 @@ export interface MockProject {
   entityIds: Map<string, string>;
   /** path → OT version (0 until the first applyOtUpdate lands). */
   docVersions: Map<string, number>;
+  /** Dashboard `lastUpdated` (ISO); moves when the listing sees changed files. */
+  lastUpdated?: string;
+  /** Content fingerprint behind `lastUpdated`. */
+  fingerprint?: string;
 }
 
 export interface MockOverleaf {
@@ -62,6 +67,12 @@ export interface MockOverleaf {
   conflictNextOtUpdate: boolean;
   /** Total websocket connections accepted (tree joins + realtime sessions). */
   wsConnections: number;
+  /** Project zip downloads served (all projects). */
+  zipDownloads: number;
+  /** Test hook: when true, the dashboard list carries no lastUpdated (older instances). */
+  omitLastUpdated: boolean;
+  /** The primary project's dashboard lastUpdated, as the next listing reports it. */
+  lastUpdated: () => string;
   close: () => Promise<void>;
 }
 
@@ -163,8 +174,28 @@ export async function startMockOverleaf(
     failCompile: false,
     conflictNextOtUpdate: false,
     wsConnections: 0,
+    zipDownloads: 0,
+    omitLastUpdated: false,
+    lastUpdated: () => lastUpdatedFor(primary),
     close: async () => {},
   };
+
+  /**
+   * Like Overleaf's project list: lastUpdated moves whenever the project's
+   * files changed — however they changed (uploads, OT, or a test editing
+   * `files` directly) — as seen at the next listing.
+   */
+  function lastUpdatedFor(proj: MockProject): string {
+    const hash = createHash("sha1");
+    for (const path of [...proj.files.keys()].sort()) hash.update(path).update("\0").update(proj.files.get(path)!).update("\0");
+    const fingerprint = hash.digest("hex");
+    if (fingerprint !== proj.fingerprint || !proj.lastUpdated) {
+      const previous = proj.lastUpdated ? Date.parse(proj.lastUpdated) : 0;
+      proj.lastUpdated = new Date(Math.max(Date.now(), previous + 1)).toISOString();
+      proj.fingerprint = fingerprint;
+    }
+    return proj.lastUpdated;
+  }
 
   const idFor = (proj: MockProject, path: string) => {
     if (!proj.entityIds.has(path)) {
@@ -223,7 +254,11 @@ export async function startMockOverleaf(
 
     if (req.method === "GET" && url.pathname === "/project") {
       const blob = JSON.stringify({
-        projects: [...projects.values()].map((p) => ({ id: p.id, name: p.name })),
+        projects: [...projects.values()].map((p) => ({
+          id: p.id,
+          name: p.name,
+          ...(state.omitLastUpdated ? {} : { lastUpdated: lastUpdatedFor(p) }),
+        })),
       })
         .replace(/&/g, "&amp;")
         .replace(/"/g, "&quot;");
@@ -276,6 +311,7 @@ export async function startMockOverleaf(
     }
 
     if (proj && req.method === "GET" && sub === "/download/zip") {
+      state.zipDownloads++;
       const entries: Record<string, Uint8Array> = {};
       for (const [p, buf] of proj.files) entries[p] = new Uint8Array(buf);
       respond(200, Buffer.from(zipSync(entries)), "application/zip");

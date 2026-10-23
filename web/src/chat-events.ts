@@ -34,7 +34,15 @@ export type ChatItemData =
       input?: string;
       output?: string;
     }
-  | { kind: "notice"; tone: "info" | "warn" | "error" | "ok"; text: string; citationGroup?: string; details?: string }
+  | {
+      kind: "notice";
+      tone: "info" | "warn" | "error" | "ok";
+      text: string;
+      citationGroup?: string;
+      details?: string;
+      /** "approve": the outcome of a full approval; "approve-part": of a partial one. */
+      source?: "approve" | "approve-part";
+    }
   | {
       /** A mid-turn agent question — actionable while pending, collapsed after.
        *  "stale": restored from a transcript with no resolution but not the
@@ -77,6 +85,13 @@ type Tone = (typeof TONES)[number];
 
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
+
+/** "a.tex, b.tex and 3 more" — file lists in notices stay one line. */
+function fileList(paths: string[], max = 5): string {
+  if (paths.length <= max) return paths.join(", ");
+  return `${paths.slice(0, max).join(", ")} and ${paths.length - max} more`;
+}
 
 /**
  * A question card's identity is its question id — the same in the live
@@ -239,30 +254,59 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
       return [...items, notice(uid, "error", String(ev.message ?? "agent error"))];
     case "sync_warning":
       return [...items, notice(uid, "warn", `Sync: ${String(ev.message ?? "")}`)];
-    // Live-only (approve/discard routes, never persisted to the transcript).
+    // The approve route broadcasts this and persists it to the transcript,
+    // so a reload shows the same outcome. Older transcripts lack it.
     case "approved": {
+      const kind = (["local", "git", "overleaf"] as const).find((k) => k === ev.projectKind) ?? opts.projectKind;
+      const files = strings(ev.files);
+      const shown = files.length > 0 ? files : [...strings(ev.uploaded), ...strings(ev.deleted)];
+      const list = shown.length > 0 ? `: ${fileList(shown)}` : "";
       const next = [
         ...items,
-        notice(
-          uid,
-          "ok",
-          opts.projectKind === "local"
-            ? ev.partial ? "Committed the approved part locally." : "Committed locally."
-            : ev.pushed
-              ? ev.partial ? "Approved part pushed — the rest stays in Proof." : "Changes pushed to Overleaf."
-              : "Nothing to push.",
-        ),
+        {
+          ...notice(
+            uid,
+            "ok",
+            kind === "local"
+              ? ev.partial ? `Committed the approved part locally${list}.` : `Committed locally${list}.`
+              : ev.pushed
+                ? ev.partial ? `Approved part pushed${list} — the rest stays in Proof.` : `Changes pushed to Overleaf${list}.`
+                : "Nothing to push.",
+          ),
+          source: ev.partial ? ("approve-part" as const) : ("approve" as const),
+        },
       ];
+      const backup = ev.backup && typeof ev.backup === "object" ? strings((ev.backup as { files?: unknown }).files) : [];
       // Safety-relevant push warnings must reach the user: the OT-fallback
       // notice (comments/tracked changes on a doc may not survive), the
       // forced-overwrite backup location, files to delete manually, …
-      if (Array.isArray(ev.warnings) && ev.warnings.length > 0) {
-        next.push(notice(`${uid}:warnings`, "warn", ev.warnings.join("\n")));
+      const warnings = strings(ev.warnings).filter(
+        // The backup notice below says where to find the backup instead.
+        (w) => !(backup.length > 0 && /^Overleaf's versions? of .+ (?:was|were) backed up to /.test(w)),
+      );
+      if (warnings.length > 0) {
+        next.push(notice(`${uid}:warnings`, "warn", warnings.join("\n")));
+      }
+      if (backup.length > 0) {
+        next.push(
+          notice(
+            `${uid}:backup`,
+            "warn",
+            `Overleaf's previous versions of ${fileList(backup)} were backed up before they were overwritten — open History → Overleaf backups to view or download them.`,
+          ),
+        );
       }
       // The push also absorbed collaborator edits to files we hadn't
       // touched — the tree changed beyond what was reviewed.
       if (Array.isArray(ev.absorbedRemote) && ev.absorbedRemote.length > 0) {
         next.push(notice(`${uid}:absorbed`, "info", `Also picked up Overleaf changes to: ${ev.absorbedRemote.join(", ")}`));
+      }
+      // Co-author edits to other lines of the same files were merged in.
+      if (Array.isArray(ev.mergedRemote) && ev.mergedRemote.length > 0) {
+        next.push(notice(`${uid}:merged`, "info", `Merged Overleaf's edits to ${ev.mergedRemote.join(", ")} with yours, line by line.`));
+      }
+      if (Array.isArray(ev.drift) && ev.drift.length > 0) {
+        next.push(notice(`${uid}:drift`, "warn", `Overleaf also changed ${ev.drift.join(", ")} where you have pending edits — see Proof.`));
       }
       return next;
     }
