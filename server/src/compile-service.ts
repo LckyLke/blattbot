@@ -95,8 +95,7 @@ export async function compileFingerprint(projectId: string): Promise<string> {
   const dir = projectDir(projectId);
   const project = getProject(projectId);
   const main = project?.mainTex ?? findMainTex(dir) ?? "";
-  const overleafCompiler = (project as { overleafCompiler?: unknown } | undefined)?.overleafCompiler;
-  const { program } = main ? resolveTexProgram(dir, main, typeof overleafCompiler === "string" ? overleafCompiler : undefined) : { program: "" };
+  const { program } = main ? resolveTexProgram(dir, main, project?.overleafCompiler) : { program: "" };
   return createHash("sha256")
     .update(await projectFingerprint(dir))
     .update(`\0${program}\0${loadSettings().engine}\0${main}`)

@@ -91,6 +91,24 @@ describe("TeX program", () => {
     expect(engineRuns()).toEqual(["latexmk -xelatex -interaction=nonstopmode -halt-on-error main.tex"]);
   });
 
+  it("uses the Overleaf project's compiler when the main file names none", async () => {
+    fakeEngine("latexmk", writesPdf);
+    const config = await import("../src/config.js");
+    config.updateProject(projectId, { overleafCompiler: "lualatex" });
+    try {
+      writeMain();
+      const r = await service.compileWorkingTree(projectId);
+      expect(r).toMatchObject({ ok: true, program: "lualatex", programSource: "Overleaf" });
+      expect(engineRuns()).toEqual(["latexmk -lualatex -interaction=nonstopmode -halt-on-error main.tex"]);
+      // The magic comment still wins.
+      rmSync(runlog(), { force: true });
+      writeMain("% !TEX program = pdflatex\n");
+      expect(await service.compileWorkingTree(projectId)).toMatchObject({ program: "pdflatex", programSource: "magic comment" });
+    } finally {
+      config.updateProject(projectId, { overleafCompiler: undefined });
+    }
+  });
+
   it("forces a rebuild only when latexmk refuses after an earlier failure", async () => {
     fakeEngine(
       "latexmk",

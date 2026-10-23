@@ -85,8 +85,7 @@ export function resolveTexProgram(
 
 /** The compiler the Overleaf project is set to (stored by the Overleaf sync). */
 function overleafCompilerOf(projectId: string): string | undefined {
-  const value = (getProject(projectId) as { overleafCompiler?: unknown } | undefined)?.overleafCompiler;
-  return typeof value === "string" ? value : undefined;
+  return getProject(projectId)?.overleafCompiler;
 }
 
 export interface Engine {
