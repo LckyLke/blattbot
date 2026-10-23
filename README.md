@@ -141,7 +141,7 @@ PDF equation, section, figure and citation links navigate to their embedded dest
 
 ### Library indexing
 
-Library indexing runs automatically with saved item checkpoints, progress and delayed retries. The Library view exposes pause/resume controls and retry actions for missing text. All model backends can inspect and control source indexing through `library_index`. The retired Evidence, Checks, Memory and Discover workflows and their dedicated model tools are no longer exposed. Existing saved artifacts are retained; retired strict policies no longer block draft approval or enter agent prompts.
+Library indexing runs automatically with saved item checkpoints, progress and delayed retries. The Library view exposes pause/resume controls and retry actions for missing text. All model backends can inspect and control source indexing through `library_index`. The Evidence, Checks, Memory and Discover workflows are retired, and their model tools and code have been removed. Files they saved stay in the BlattBot data directory but are no longer read, except topic-match scores in citation graphs saved by older versions. Saved tasks of the retired kinds are kept but never run. Retired strict policies do not block draft approval or enter agent prompts.
 
 ### Search the paper library
 

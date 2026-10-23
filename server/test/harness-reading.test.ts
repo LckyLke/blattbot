@@ -25,33 +25,6 @@ describe("recoverable harness reads", () => {
     expect(JSON.stringify(first).length).toBeLessThan(1000);
     expect(readFileSync(join(dir, "main.tex"), "utf8")).toBe(content);
   });
-  it("pages oversized evidence reports with recoverable filters and a global strict policy", async () => {
-    const body = Array.from({ length: 150 }, (_, i) => `Claim ${i}: ${"Scientific content ".repeat(70)}\\cite{${i % 2 ? "alpha" : "beta"}}.\n\n`).join("");
-    writeFileSync(join(dir, "main.tex"), body);
-    writeFileSync(join(dir, "refs.bib"), "@article{alpha,title={Alpha}}\n@article{beta,title={Beta}}");
-    const { evidencePage, strictReportPage } = await import("../src/research/report-pages.js");
-    const { saveResearchPolicy } = await import("../src/research/strict.js");
-    saveResearchPolicy("p1", true);
-    const ctx = { project: { id: "p1" }, dir, contextDirs: [], signal: new AbortController().signal, emit: vi.fn() } as any;
-    const run = async (name: string, args = {}) => {
-      const raw = JSON.stringify(name === "list_evidence" ? evidencePage("p1", dir, args) : strictReportPage("p1", dir, args));
-      expect(raw.length).toBeLessThan(40000);
-      const result = JSON.parse(raw); expect(result.error).toBeUndefined(); return result;
-    };
-    const first = await run("list_evidence", { limit: 100 });
-    expect(first.summary.totalClaims).toBeGreaterThan(100);
-    expect(first.nextOffset).toBeGreaterThan(0);
-    const second = await run("list_evidence", { offset: first.nextOffset, limit: 100 });
-    expect(first.items.map((x: any) => x.id)).not.toContain(second.items[0].id);
-    const filtered = await run("list_evidence", { key: "alpha", status: "unchecked", limit: 2 });
-    expect(filtered.items).toHaveLength(2);
-    expect(filtered.items.every((x: any) => x.key === "alpha" && x.status === "unchecked")).toBe(true);
-    const strict = await run("strict_evidence_report", { limit: 100 });
-    expect(strict).toMatchObject({ strict: true, policy: { strict: true }, ready: false });
-    expect(strict.nextOffset).toBeGreaterThan(0);
-    const empty = await run("strict_evidence_report", { key: "missing" });
-    expect(empty).toMatchObject({ issues: [], nextOffset: null, strict: true, ready: false, open: strict.open });
-  });
   it("merges nearby search hits and normalizes whitespace while keeping original offsets", async () => {
     const { readTextDocument, readTextPages } = await import("../src/pdftext.js");
     const document = "Graph\n  models work. Graph models also work. " + "x".repeat(1400) + "Graph\tmodels finish.";

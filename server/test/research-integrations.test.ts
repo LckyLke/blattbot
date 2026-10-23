@@ -4,12 +4,10 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { textPdf } from "./fixtures/pdf.js";
 let root: string, dir: string;
 const bib =
   "@article{alpha,title={Graph Models},author={Ada Smith},year={2020},doi={10.1234/alpha}}\n@article{beta,title={Neural Optimization},author={Bea Jones},year={2021},doi={10.1234/beta}}";
@@ -360,122 +358,7 @@ We build on \cite{alpha}.
   });
 });
 
-describe("discovery snapshots and publication status", () => {
-  it("records citation searches and screening decisions with dates", async () => {
-    const d = await import("../src/research/discovery.js");
-    const run = await d.citationNeighbors("p1", dir, "alpha", "references");
-    expect(run.results.map((h) => h.title)).toEqual([
-      "Neural Optimization",
-      "Shared Foundations",
-    ]);
-    d.screeningDecision(
-      "p1",
-      run.id,
-      run.results[0].ref,
-      "include",
-      "Relevant comparator",
-    );
-    expect(d.searchHistory("p1")[0].decisions[run.results[0].ref].reason).toBe(
-      "Relevant comparator",
-    );
-    expect(() =>
-      d.screeningDecision("p1", run.id, "missing-ref", "exclude", "Wrong"),
-    ).toThrow(/not part/);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("", { status: 503 })),
-    );
-    const failed = await d.citationNeighbors("p1", dir, "alpha", "citing");
-    expect(failed.error).toContain("503");
-    expect(d.searchHistory("p1")).toHaveLength(2);
-  });
-  it("queries notices targeting the original DOI instead of retracting a retraction notice", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url) => {
-        const u = decodeURIComponent(String(url));
-        if (u.includes("openalex")) return graphFetch(url);
-        if (u.includes("filter=updates:"))
-          return json({
-            message: {
-              items: [
-                {
-                  DOI: "10.1234/notice",
-                  "update-to": [
-                    {
-                      DOI: "10.1234/alpha",
-                      type: "retraction",
-                      source: "retraction-watch",
-                    },
-                  ],
-                },
-              ],
-            },
-          });
-        return json({
-          message: {
-            title: ["Graph Models"],
-            "update-to": [{ DOI: "10.1234/unrelated", type: "retraction" }],
-          },
-        });
-      }),
-    );
-    const d = await import("../src/research/discovery.js");
-    const result = await d.publicationStatus("p1", dir, "alpha");
-    expect(result.status).toBe("retracted");
-    expect(result.notices).toEqual([
-      { type: "retraction", doi: "10.1234/notice", source: "retraction-watch" },
-    ]);
-    writeFileSync(
-      join(dir, "refs.bib"),
-      bib.replace("Graph Models", "Changed title"),
-    );
-    expect(d.readPublicationStatuses("p1", dir).alpha.stale).toBe(true);
-  });
-  it("does not interpret update-to on the current record as that record being retracted", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url) =>
-        String(url).includes("openalex")
-          ? graphFetch(url)
-          : json({
-              message: String(url).includes("filter=")
-                ? { items: [] }
-                : {
-                    title: ["Graph Models"],
-                    "update-to": [{ DOI: "10.1234/other", type: "retraction" }],
-                  },
-            }),
-      ),
-    );
-    const d = await import("../src/research/discovery.js");
-    expect((await d.publicationStatus("p1", dir, "alpha")).status).toBe(
-      "not_flagged",
-    );
-  });
-  it("keeps an OpenAlex status with explicit coverage limits when Crossref does not index the DOI", async () => {
-    vi.stubGlobal("fetch", vi.fn(async url => String(url).includes("openalex")
-      ? json({ ...works.W1, is_retracted: false }) : new Response("", { status: 404 })));
-    const { publicationStatus } = await import("../src/research/discovery.js");
-    const result = await publicationStatus("p1", dir, "alpha");
-    expect(result.status).toBe("not_flagged");
-    expect(result.note).toContain("does not index this DOI");
-    expect(result.note).toContain("incomplete");
-  });
-  it("preserves an independent retraction flag when Crossref fails", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url) =>
-        String(url).includes("openalex")
-          ? json({ ...works.W1, is_retracted: true })
-          : new Response("", { status: 503 }),
-      ),
-    );
-    const d = await import("../src/research/discovery.js");
-    const result = await d.publicationStatus("p1", dir, "alpha");
-    expect(result.status).toBe("retracted");
-    expect(result.note).toContain("incomplete");
-  });
+describe("OpenAlex requests", () => {
   it("supports optional OpenAlex authentication without sending the key to other indexes", async () => {
     vi.stubEnv("OPENALEX_API_KEY", "test-secret");
     const f = vi.fn(async () => json({}));
@@ -491,106 +374,6 @@ describe("discovery snapshots and publication status", () => {
   });
 });
 
-describe("Zotero read-only import", () => {
-  it("masks keys, locks down the secret file, and sends credentials only to the configured library", async () => {
-    const z = await import("../src/research/zotero.js");
-    const publicConfig = z.configureZotero("p1", {
-      mode: "web",
-      libraryType: "users",
-      libraryId: "123",
-      apiKey: "private-key",
-    });
-    expect(publicConfig).not.toHaveProperty("apiKey");
-    expect(publicConfig.hasApiKey).toBe(true);
-    // Windows does not expose POSIX owner/group/other permission bits.
-    if (process.platform !== "win32") {
-      expect(
-        statSync(join(root, "research-secrets", "p1.json")).mode & 0o777,
-      ).toBe(0o600);
-    }
-    const f = vi.fn(async () =>
-      json(
-        [
-          {
-            key: "ABCD1234",
-            version: 1,
-            data: {
-              title: "Graph Models",
-              itemType: "journalArticle",
-              creators: [{ name: "Ada" }],
-            },
-          },
-        ],
-        { "Total-Results": "1" },
-      ),
-    );
-    vi.stubGlobal("fetch", f);
-    expect((await z.listZotero("p1", "graph")).items[0].title).toBe(
-      "Graph Models",
-    );
-    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toContain("https://api.zotero.org/users/123/items/top");
-    expect(init.headers).toMatchObject({ "Zotero-API-Key": "private-key" });
-    expect(init.method).toBeUndefined();
-  });
-  it("imports and safely binds PDFs without replacing an existing user upload", async () => {
-    const uploads = join(root, "context", "p1");
-    mkdirSync(uploads, { recursive: true });
-    writeFileSync(join(uploads, "alpha.pdf"), "user-owned");
-    const z = await import("../src/research/zotero.js");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url) => {
-        const u = String(url);
-        if (u.endsWith("format=bibtex"))
-          return new Response(
-            "@article{alpha,title={Graph Models},doi={10.1234/alpha}}",
-          );
-        if (u.includes("/children"))
-          return json([
-            {
-              key: "PDF01234",
-              data: { contentType: "application/pdf", itemType: "attachment" },
-            },
-          ]);
-        if (u.endsWith("/file"))
-          return new Response(
-            new Uint8Array(textPdf(["Graph Models. The imported original PDF."])),
-          );
-        return json({ version: 7 });
-      }),
-    );
-    const result = await z.importZotero("p1", dir, "ABCD1234");
-    expect(result.citeKey).toBe("alpha");
-    expect(result.pdfPath).toContain("zotero-ABCD1234-");
-    expect(result.warnings).toEqual([]);
-    expect(readFileSync(join(uploads, "alpha.pdf"), "utf8")).toBe("user-owned");
-    const { getPaperContent } = await import("../src/papers.js");
-    expect((await getPaperContent("p1", dir, "alpha")).pages[0]).toContain(
-      "imported original",
-    );
-  });
-  it("keeps a successful bibliography import and reports missing attachments", async () => {
-    const z = await import("../src/research/zotero.js");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url) =>
-        String(url).endsWith("format=bibtex")
-          ? new Response(
-              "@article{gamma,title={New Publication},author={Ada Smith},year={2024}}",
-            )
-          : new Response("", { status: 403 }),
-      ),
-    );
-    const result = await z.importZotero("p1", dir, "ABCD1234");
-    expect(result.citeKey).toBe("gamma");
-    expect(result.warnings.join(" ")).toContain("403");
-    expect(readFileSync(join(dir, "refs.bib"), "utf8")).toContain(
-      "New Publication",
-    );
-  });
-});
-
 it("reports an omitted index reference list as unknown, not an empty list", async () => {
   vi.stubGlobal(
     "fetch",
@@ -601,36 +384,4 @@ it("reports an omitted index reference list as unknown, not an empty list", asyn
   ).buildGraph("p1", dir, ["alpha"]);
   expect(graph.pendingKeys).toContain("alpha");
   expect(graph.errors.alpha).toContain("coverage is unknown");
-});
-
-it("imports Zotero notes as clearly labeled text and strips active markup", async () => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (url) => {
-      const u = String(url);
-      if (u.endsWith("format=bibtex"))
-        return new Response(
-          "@article{alpha,title={Graph Models},doi={10.1234/alpha}}",
-        );
-      if (u.includes("/children"))
-        return json([
-          {
-            key: "NOTE1234",
-            data: {
-              itemType: "note",
-              note: "<p>Read the <b>limitations</b>.</p><script>bad()</script>",
-            },
-          },
-        ]);
-      return json({ version: 1 });
-    }),
-  );
-  const result = await (
-    await import("../src/research/zotero.js")
-  ).importZotero("p1", dir, "ABCD1234");
-  const notes = readFileSync(result.notesPath!, "utf8");
-  expect(notes).toContain("user notes, not the original paper");
-  expect(notes).toContain("Read the limitations.");
-  expect(notes).not.toContain("<script>");
-  expect(notes).not.toContain("bad()");
 });
