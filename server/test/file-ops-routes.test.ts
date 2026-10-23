@@ -179,6 +179,39 @@ describe("delete", () => {
   });
 });
 
+describe("main file selection", () => {
+  it("lists .tex files with a \\documentclass and the current main file", async () => {
+    const { id } = await createProject("Main candidates");
+    await call("POST", `/api/projects/${id}/files`, { path: "slides/talk.tex", content: "% x\n\\documentclass{beamer}\n" });
+    await call("POST", `/api/projects/${id}/files`, { path: "chapters/intro.tex", content: "\\section{Intro}\n" });
+    await call("POST", `/api/projects/${id}/files`, { path: "commented.tex", content: "% \\documentclass{article}\n" });
+    const res = await call("GET", `/api/projects/${id}/main-files`);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json()).toEqual({ mainTex: "main.tex", chosen: false, candidates: ["main.tex", "slides/talk.tex"] });
+  });
+
+  it("sets mainTex and mainTexChosen through the project patch route", async () => {
+    const { id } = await createProject("Main choose");
+    await call("POST", `/api/projects/${id}/files`, { path: "slides/talk.tex", content: "\\documentclass{beamer}\n" });
+    const res = await call("PATCH", `/api/projects/${id}`, { mainTex: "slides/talk.tex" });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().project.mainTex).toBe("slides/talk.tex");
+    const detail = (await call("GET", `/api/projects/${id}`)).json();
+    expect(detail.mainTex).toBe("slides/talk.tex");
+    expect(detail.mainTexChosen).toBe(true);
+    expect((await call("GET", `/api/projects/${id}/main-files`)).json().chosen).toBe(true);
+  });
+
+  it("refuses a missing file, a non-.tex file and unsafe paths", async () => {
+    const { id } = await createProject("Main refuse");
+    expect((await call("PATCH", `/api/projects/${id}`, { mainTex: "nope.tex" })).statusCode).toBe(404);
+    expect((await call("PATCH", `/api/projects/${id}`, { mainTex: "references.bib" })).statusCode).toBe(400);
+    expect((await call("PATCH", `/api/projects/${id}`, { mainTex: "../main.tex" })).statusCode).toBe(400);
+    expect((await call("PATCH", `/api/projects/${id}`, { mainTex: 7 })).statusCode).toBe(400);
+    expect((await call("GET", `/api/projects/${id}`)).json().mainTexChosen).toBeUndefined();
+  });
+});
+
 describe("while an agent turn runs", () => {
   it("refuses create, rename and delete with 409", async () => {
     const { id, dir } = await createProject("Busy files");

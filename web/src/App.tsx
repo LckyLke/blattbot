@@ -786,8 +786,8 @@ function AppShell() {
   // apply; the precise check runs when the page is about to unload.
   const draftTotal = useSyncExternalStore(subscribeDrafts, countDrafts);
   const saveTotal = useSyncExternalStore(subscribeFileSaves, countAllFileSaves);
-  const unloadBusyRef = useRef(busy);
-  unloadBusyRef.current = busy;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const mayWarnBeforeUnload = busy || draftTotal > 0 || saveTotal > 0;
   useEffect(() => {
     if (!mayWarnBeforeUnload) return;
@@ -795,7 +795,7 @@ function AppShell() {
       // Write the debounced drafts out first — those then survive the reload.
       flushDraftPersistence();
       const warn = shouldWarnOnUnload({
-        busy: unloadBusyRef.current,
+        busy: busyRef.current,
         unpersistedDrafts: unpersistedDraftCount(),
         savesInFlight: countAllFileSaves(),
       });
@@ -1241,6 +1241,18 @@ function AppShell() {
       void startCompileRef.current();
     }
   }, []);
+
+  // Project settings picked another main file: the last PDF is of the old
+  // one. Reload the project (the Source tree's "main" badge) and rebuild a
+  // visible PDF now, otherwise on the next visit.
+  const handleMainFileChanged = useCallback(() => {
+    dirtySinceCompile.current = true;
+    void refreshProjects();
+    const p = panesRef.current;
+    if ((p.left === "pdf" || p.right === "pdf") && !compilingRef.current && !busyRef.current) {
+      void startCompileRef.current();
+    }
+  }, [refreshProjects]);
 
   // "Quote in chat" from the PDF: bump the nonce so Chat appends exactly once.
   const quoteToChat = useCallback((text: string, source = "the PDF") => {
@@ -1804,6 +1816,7 @@ function AppShell() {
           project={selected}
           onClose={() => setProjSettingsOpen(false)}
           onSaved={setProjSettings}
+          onMainFileChanged={handleMainFileChanged}
         />
       )}
     </div>

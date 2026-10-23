@@ -145,7 +145,7 @@ export default function Sidebar({
             <button
               onClick={onOpenProjectSettings}
               aria-label="Open project settings"
-              title="Writing style, model override, and default mode for this project"
+              title="Writing style, model override, main file, and default mode for this project"
               className="flex h-7 items-center gap-1.5 rounded-lg px-1.5 text-[10.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
             >
               <SidebarIcon name="settings" className="h-3.5 w-3.5" /> Project settings

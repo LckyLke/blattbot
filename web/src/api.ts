@@ -5,6 +5,8 @@ export interface Project {
   gitUrl: string;
   kind: "git" | "overleaf" | "local";
   mainTex?: string;
+  /** The user picked mainTex in the project settings. */
+  mainTexChosen?: boolean;
   sessionId?: string;
   createdAt: string;
   hasToken: boolean;
@@ -584,6 +586,15 @@ export const api = {
     }),
   deleteFile: (id: string, path: string) =>
     request<FileOpResult>(`/api/projects/${id}/files?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
+  /** The main-file choices: .tex files with a \documentclass, plus the current one. */
+  mainFiles: (id: string) =>
+    request<{ mainTex: string | null; chosen: boolean; candidates: string[] }>(`/api/projects/${id}/main-files`),
+  /** Pick the main file (sets mainTexChosen, so detection keeps it). */
+  setMainFile: (id: string, mainTex: string) =>
+    request<{ ok: boolean; project: Project }>(`/api/projects/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ mainTex }),
+    }),
   cookieViaBrowser: (url: string) =>
     request<{ cookie: string; source: string }>("/api/cookies/browser", {
       method: "POST",

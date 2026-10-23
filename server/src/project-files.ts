@@ -124,6 +124,14 @@ export function renameProjectFile(dir: string, rawFrom: unknown, rawTo: unknown)
   return { from: from.rel, to: to.rel };
 }
 
+/** Validate a main-file choice: an existing .tex file inside the project. */
+export function checkMainTex(dir: string, raw: unknown): string {
+  const { rel, abs } = checkProjectPath(dir, raw);
+  if (!rel.toLowerCase().endsWith(".tex")) throw new FileOpError("the main file must be a .tex file", 400);
+  regularFile(abs, rel);
+  return rel;
+}
+
 /** Delete a file. */
 export function deleteProjectFile(dir: string, rawPath: unknown): string {
   const { rel, abs } = checkProjectPath(dir, rawPath);

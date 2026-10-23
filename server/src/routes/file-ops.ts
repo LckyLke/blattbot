@@ -8,7 +8,7 @@ import * as git from "../git.js";
 import { isTurnActive } from "../agent.js";
 import { withProjectLock } from "../project-lock.js";
 import { broadcast } from "../events.js";
-import { findMainTex, listFiles } from "../latex.js";
+import { findMainTex, listFiles, mainTexCandidates } from "../latex.js";
 import { FileOpError, createProjectFile, deleteProjectFile, renameProjectFile } from "../project-files.js";
 
 const TURN_ACTIVE = "agent turn in progress — file changes wait until it ends";
@@ -43,6 +43,16 @@ async function fileOp<T extends object>(
 }
 
 export function registerFileOpRoutes(app: FastifyInstance): void {
+  // Main-file choices for the project settings: .tex files with a
+  // \documentclass, plus the current main file whatever it is.
+  app.get<{ Params: { id: string } }>("/api/projects/:id/main-files", async (req, reply) => {
+    const project = getProject(req.params.id);
+    if (!project) return reply.code(404).send({ error: "unknown project" });
+    const candidates = mainTexCandidates(projectDir(project.id));
+    if (project.mainTex && !candidates.includes(project.mainTex)) candidates.unshift(project.mainTex);
+    return { mainTex: project.mainTex ?? null, chosen: Boolean(project.mainTexChosen), candidates };
+  });
+
   // New file, empty or with content; missing folders on its path are created.
   app.post<{ Params: { id: string }; Body: { path?: unknown; content?: unknown } }>(
     "/api/projects/:id/files",
