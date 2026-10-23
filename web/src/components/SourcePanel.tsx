@@ -1485,8 +1485,11 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                   </button>
                   <button
                     type="button"
-                    aria-label={`File actions for ${f.path}`}
-                    title="Rename, move or delete"
+                    // The name stays generic so file-name lookups find only the row itself;
+                    // the title (the accessible description) names the file.
+                    aria-label="File actions"
+                    data-file-actions={f.path}
+                    title={`Rename, move or delete ${f.path}`}
                     aria-haspopup="menu"
                     disabled={busy}
                     onClick={(e) => openMenu(e, { kind: "file", path: f.path })}

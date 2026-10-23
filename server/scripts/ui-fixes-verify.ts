@@ -186,7 +186,7 @@ try {
   await proof.getByText("sections/results.tex", { exact: true }).first().waitFor();
   assert(existsSync(join(dir, "sections/results.tex")));
 
-  await files.getByRole("button", { name: "File actions for alt.tex", exact: true }).click();
+  await files.locator('[data-file-actions="alt.tex"]').click();
   await page.getByRole("menuitem", { name: "Rename or move…" }).click();
   await files.getByRole("textbox", { name: "New path for alt.tex" }).fill("drafts/alt-renamed.tex");
   await page.keyboard.press("Enter");
@@ -194,7 +194,7 @@ try {
   await proof.getByText("drafts/alt-renamed.tex", { exact: true }).first().waitFor();
   assert(!existsSync(join(dir, "alt.tex")) && existsSync(join(dir, "drafts/alt-renamed.tex")));
 
-  await files.getByRole("button", { name: "File actions for references.bib", exact: true }).click();
+  await files.locator('[data-file-actions="references.bib"]').click();
   await page.getByRole("menuitem", { name: "Delete…" }).click();
   await page.getByRole("dialog", { name: "Delete references.bib?" }).getByRole("button", { name: "Delete file" }).click();
   await files.getByRole("button", { name: /^references\.bib/ }).waitFor({ state: "detached" });
@@ -231,6 +231,7 @@ try {
   const approveAll = page.getByRole("dialog", { name: "Approve & push all changes?" });
   await approveAll.waitFor();
   await approveAll.getByRole("button", { name: "Cancel", exact: true }).click();
+  await approveAll.waitFor({ state: "detached" });
   assert.equal(await git.revParse(dir, "HEAD"), headBefore, "cancelled approve-all commits nothing");
   await page.keyboard.press("c");
   await page.waitForFunction(() => document.activeElement?.classList.contains("chat-composer-input") ?? false);
@@ -261,6 +262,7 @@ try {
   await settings.getByText("Saved.").waitFor();
   await rebuilt;
   await settings.getByRole("button", { name: "Close project settings" }).click();
+  await settings.waitFor({ state: "detached" });
   const chosen = config.getProject(local.id)!;
   assert.equal(chosen.mainTex, "drafts/alt-renamed.tex");
   assert.equal(chosen.mainTexChosen, true);

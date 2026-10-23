@@ -189,6 +189,8 @@ function AppShell() {
   const [listError, setListError] = useState<string | null>(null);
   const [view, setView] = useState<View>("dashboard");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [engine, setEngine] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -305,7 +307,10 @@ function AppShell() {
    * shows the error with a retry instead of an empty, first-run hub.
    * Resolves the fresh project list, or null when it could not be loaded.
    */
+  /** Bumped by every full list load: a status poll answered after one is stale. */
+  const listLoads = useRef(0);
   const refreshProjects = useCallback(async (): Promise<Project[] | null> => {
+    listLoads.current++;
     const [list, accts] = await Promise.allSettled([api.projects(), api.accounts()]);
     if (list.status === "fulfilled") setProjects(list.value);
     if (accts.status === "fulfilled") setAccounts(accts.value);
@@ -349,11 +354,14 @@ function AppShell() {
   useEffect(() => {
     const poll = () => {
       if (document.visibilityState !== "visible") return;
+      const loads = listLoads.current;
       api
         .projects()
-        .then((list) =>
-          setProjects((prev) => (prev === null || JSON.stringify(prev) === JSON.stringify(list) ? prev : list)),
-        )
+        .then((list) => {
+          // A project created or removed meanwhile: the full load that followed wins.
+          if (listLoads.current !== loads) return;
+          setProjects((prev) => (prev === null || JSON.stringify(prev) === JSON.stringify(list) ? prev : list));
+        })
         .catch(() => {});
     };
     const timer = setInterval(poll, 15_000);
@@ -383,7 +391,9 @@ function AppShell() {
     try {
       const versionAtRequest = pdfVersionRef.current;
       const d = await api.project(id);
-      if (selectedRef.current?.id !== id) return;
+      // By id, not by the listed project: a project opened right after it was
+      // created may not be in the (still loading) project list yet.
+      if (selectedIdRef.current !== id) return;
       setDetail(d);
       if (d.lastCompile && versionAtRequest === pdfVersionRef.current) {
         acceptCompile(d.lastCompile);

@@ -495,7 +495,7 @@ async function main() {
     await styleBox.waitFor({ timeout: 5_000 }); // the form renders after the async GET
     await styleBox.fill("Use British English. Prefer \\autoref.");
     await projDlg.getByPlaceholder("global default").fill("fable");
-    await projDlg.locator("select").selectOption("research");
+    await projDlg.getByLabel("Default mode for new chats").selectOption("research");
     await shot("23f-project-settings");
     await projDlg.getByRole("button", { name: "Save project settings" }).click();
     await projDlg.getByText("Saved.").waitFor({ timeout: 5_000 });
