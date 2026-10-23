@@ -13,15 +13,15 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { textPdf } from "../test/fixtures/pdf.js";
+import { freePort } from "./free-port.js";
 const root = mkdtempSync(join(tmpdir(), "blattbot-research-ui-"));
 const shots = process.env.UI_SHOTS_DIR ?? "/tmp/blattbot-research-ui";
 mkdirSync(shots, { recursive: true });
-const port = 4578,
-  modelPort = 4579,
+const port = await freePort(),
+  modelPort = await freePort(),
   base = `http://127.0.0.1:${port}`;
 const quote = "Accuracy was 91 percent on dataset A.";
-let graphLookups = 0;
-let modelDelay = 0;
+const modelDelay = 0;
 const works = {
   W1: {
     id: "https://openalex.org/W1",
@@ -47,7 +47,6 @@ const works = {
 };
 const model = createServer(async (req, res) => {
   if (req.url?.startsWith("/openalex/")) {
-    graphLookups++;
     const url = new URL(
       req.url.replace("/openalex", ""),
       "https://api.openalex.org",

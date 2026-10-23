@@ -292,7 +292,7 @@ export async function queryRepository(id: string, raw: unknown, signal?: AbortSi
   if (!input.query) throw new Error("A search query is required. Use searchMode=literal (default) or regex (POSIX extended syntax).");
   // Git's default pathspec glob matches slashes. Escape user glob syntax so path
   // remains the same literal prefix used by files, and scope before collecting output.
-  const scope = prefix ? [`:(top)${prefix.replace(/[\\*?\[\]]/g, "\\$&")}*`] : [];
+  const scope = prefix ? [`:(top)${prefix.replace(/[\\*?[\]]/g, "\\$&")}*`] : [];
   let output: string;
   try {
     output = await git(dir, ["grep", "--no-textconv", "--no-color", "--no-heading", "--no-break", "-n", "-I",

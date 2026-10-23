@@ -59,6 +59,20 @@ export interface CodexStatus {
   defaultModel?: string;
 }
 
+/** The optional Claude Agent SDK (server/src/claude-sdk.ts). */
+export interface ClaudeSdkStatus {
+  installed: boolean;
+  version?: string;
+  source?: "dependency" | "managed";
+  location?: string;
+  binary?: string;
+  pinnedVersion: string;
+  download: string;
+  installing: boolean;
+  error?: string;
+  message: string;
+}
+
 export interface Settings {
   model: string;
   /** What the ACTIVE backend actually runs: "" and tier aliases resolved for
@@ -570,6 +584,9 @@ export const api = {
   agentInfo: () => request<AgentInfo>("/api/agent/info"),
   codexLimits: () => request<UsageLimits>("/api/agent/codex/limits"),
   codexStatus: (refresh = false) => request<CodexStatus>(`/api/agent/codex/status${refresh ? "?refresh=1" : ""}`),
+  claudeSdk: () => request<ClaudeSdkStatus>("/api/agent/claude-sdk"),
+  /** Resolves when npm has finished (a large download); joins an install already running. */
+  installClaudeSdk: () => request<ClaudeSdkStatus>("/api/agent/claude-sdk/install", { method: "POST" }),
   updateCookie: (id: string, cookie: string) =>
     request<{ ok: boolean }>(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify({ cookie }) }),
   cookieImport: (url: string) =>

@@ -2,18 +2,19 @@
 import { chromium } from "playwright-core";
 import { createServer } from "node:http";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { freePort } from "./free-port.js";
 
 const root = mkdtempSync(join(tmpdir(), "blattbot-code-ui-"));
 const data = join(root, "data");
 const source = join(root, "implementation");
 const shots = process.env.UI_SHOTS_DIR ?? "/tmp/blattbot-code-ui";
 mkdirSync(shots, { recursive: true });
-const port = 4592, modelPort = 4593, base = `http://127.0.0.1:${port}`;
+const port = await freePort(), modelPort = await freePort(), base = `http://127.0.0.1:${port}`;
 const quote = "We use the mean loss over the batch.";
 let repository: { id: string; commit: string };
 const toolNames: string[] = [];

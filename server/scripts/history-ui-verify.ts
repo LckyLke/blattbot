@@ -11,10 +11,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
+import { freePort } from "./free-port.js";
 import { startMockOverleaf } from "./mock-overleaf.js";
 
-const SERVER_PORT = 4743;
-const MOCK_PORT = 4744;
+const SERVER_PORT = await freePort();
+const MOCK_PORT = await freePort();
 const root = mkdtempSync(join(tmpdir(), "blattbot-history-ui-"));
 const gitConfig = join(root, "gitconfig");
 writeFileSync(gitConfig, "[user]\n\tname = Grace Hopper\n\temail = grace@example.org\n");

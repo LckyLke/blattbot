@@ -315,7 +315,7 @@ describe("Codex background harness", () => {
 
 describe("shared Codex/OpenAI file boundary", () => {
   it("blocks symlinked reads, writes, and new files below symlinked directories", async () => {
-    const { resolveReadPath, resolveWritePath } = await import("../src/backends/openai.js");
+    const { resolveReadPath, resolveWritePath } = await import("../src/backends/paths.js");
     const outside = join(data, "outside");
     mkdirSync(outside);
     writeFileSync(join(outside, "secret.tex"), "secret");

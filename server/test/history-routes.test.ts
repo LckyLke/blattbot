@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMockOverleaf, type MockOverleaf } from "../scripts/mock-overleaf.js";
+import { freePort } from "../scripts/free-port.js";
 
 const mocks = vi.hoisted(() => ({ turn: vi.fn() }));
 vi.mock("../src/agent.js", async (importOriginal) => ({
@@ -11,8 +12,8 @@ vi.mock("../src/agent.js", async (importOriginal) => ({
   runTurn: mocks.turn,
 }));
 
-const PORT = 4741;
-const MOCK_PORT = 4742;
+let PORT = 0;
+let MOCK_PORT = 0;
 const REMOTE_ID = "abab1111cdcd2222efef3333";
 const LINES = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
 const BASE = LINES.join("\n") + "\n";
@@ -32,6 +33,8 @@ const call = (method: "GET" | "POST", url: string, payload?: Record<string, unkn
   app.inject({ method, url, payload, headers: { host: `127.0.0.1:${PORT}`, authorization: `Bearer ${token}` } });
 
 beforeAll(async () => {
+  PORT = await freePort();
+  MOCK_PORT = await freePort();
   root = mkdtempSync(join(tmpdir(), "blattbot-history-routes-"));
   const globalConfig = join(root, "gitconfig");
   writeFileSync(globalConfig, "[user]\n\tname = Grace Hopper\n\temail = grace@example.org\n");
@@ -226,8 +229,8 @@ describe("history routes", () => {
     expect(file.body).toContain("<b>Theirs</b>.");
     const download = await call("GET", `/api/projects/${project.id}/history/backups/${approved.backup.stamp}/file?path=main.tex&download=1`);
     expect(download.headers["content-disposition"]).toBe("attachment; filename*=UTF-8''main.tex");
-    const escape = await call("GET", `/api/projects/${project.id}/history/backups/${approved.backup.stamp}/file?path=../../config`);
-    expect(escape.statusCode).toBe(404);
+    const outside = await call("GET", `/api/projects/${project.id}/history/backups/${approved.backup.stamp}/file?path=../../config`);
+    expect(outside.statusCode).toBe(404);
 
     // The history shows who did what: Overleaf's import, then the user's push.
     const commits = (await call("GET", `/api/projects/${project.id}/history`)).json().commits;

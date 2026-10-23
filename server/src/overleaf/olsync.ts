@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { listFiles } from "../latex.js";
 import * as git from "../git.js";
-import { OverleafClient, type OlRealtimeSession, type ProjectTree } from "./olclient.js";
+import type { OverleafClient, OlRealtimeSession, ProjectTree } from "./olclient.js";
 import { computeTextOp } from "./ot.js";
 
 export interface SyncInResult {

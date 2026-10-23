@@ -2,12 +2,10 @@ import { z } from "zod";
 import { readAllBibEntries } from "../citations.js";
 import { titlesSimilar } from "../papers.js";
 import { entryDoi } from "../bib.js";
-import { bibHash } from "./evidence.js";
+import { bibHash } from "./sources.js";
 import { fetchJson, openAlexWork } from "./discovery.js";
 import { digest, now, readStore, updateStore } from "./store.js";
 import { sourceFailure, type SourceFailure } from "./source-failure.js";
-
-import { type TopicRelevance } from "./relevance.js";
 import { collectCitationLocations, type CitationLocation } from "../usage.js";
 import { libraryStatus } from "./library.js";
 
@@ -25,6 +23,16 @@ interface WorkDetails {
   retrievedAt?: string;
 }
 
+/**
+ * A topic-match score against the research question that the retired Memory
+ * workflow stored. Graphs saved by older versions still carry it; nothing
+ * computes new scores.
+ */
+export interface TopicRelevance {
+  score: number | null;
+  matchedTerms: string[];
+  basis: "title" | "title_abstract";
+}
 export interface GraphNode extends WorkDetails {
   relevance?: TopicRelevance;
   sourceAvailability?: string;

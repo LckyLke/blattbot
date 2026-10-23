@@ -70,7 +70,6 @@ try {
       await api("/chats", {});
     }
     await api("/compile", {});
-    await api("/research/policy", { strict: false }, "PUT");
     const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, recordVideo: { dir: out, size: { width: 1600, height: 1000 } } });
     await context.addInitScript(({ clip }) => {
       localStorage.setItem("blattbot.paneLeft.v2", clip === "workflow" ? "chat" : clip === "writing" ? "source" : "pdf");

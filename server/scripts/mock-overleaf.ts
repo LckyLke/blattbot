@@ -15,7 +15,7 @@
  * (exposed via the legacy top-level files/uploads/deletes fields) plus any
  * created through POST /project/new (exposed via `created`).
  */
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer } from "ws";
 import { zipSync } from "fflate";
 

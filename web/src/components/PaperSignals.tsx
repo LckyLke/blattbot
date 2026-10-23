@@ -18,33 +18,33 @@ export default function PaperSignals({
       aria-label="Paper relevance and research signals"
     >
       <h4>Research signals</h4>
-      <div className="cg-signal-row">
-        <div>
-          <strong>
-            {node.relevance?.score == null
-              ? "—"
-              : `${node.relevance.score}/100`}
-          </strong>
-          <span>Topic match</span>
-        </div>
-        <p>
-          {question ? (
-            <>
+      {/* Topic matches exist only in graphs saved with a research question by
+          the retired Memory workflow; nothing scores new ones. */}
+      {question && (
+        <>
+          <div className="cg-signal-row">
+            <div>
+              <strong>
+                {node.relevance?.score == null
+                  ? "—"
+                  : `${node.relevance.score}/100`}
+              </strong>
+              <span>Topic match</span>
+            </div>
+            <p>
               Matches your research question using{" "}
               {node.relevance?.basis === "title_abstract"
                 ? "title and abstract"
                 : "title only"}
               .
-            </>
-          ) : (
-            "Set your research question in Research → Memory to score topic matches."
+            </p>
+          </div>
+          {!!node.relevance?.matchedTerms.length && (
+            <p className="cg-signal-terms">
+              Matched: {node.relevance.matchedTerms.join(" · ")}
+            </p>
           )}
-        </p>
-      </div>
-      {!!node.relevance?.matchedTerms.length && (
-        <p className="cg-signal-terms">
-          Matched: {node.relevance.matchedTerms.join(" · ")}
-        </p>
+        </>
       )}
       <div className="cg-signal-row">
         <div>
@@ -100,12 +100,14 @@ export default function PaperSignals({
       </div>
       <details>
         <summary>How to interpret these signals</summary>
-        <p>
-          Topic match is the percentage of research-question terms found in the
-          title or abstract, weighted by their rarity in this graph. It is a
-          screening aid, not semantic understanding or a probability. Missing
-          abstracts reduce the evidence available for matching.
-        </p>
+        {question && (
+          <p>
+            Topic match is the percentage of research-question terms found in
+            the title or abstract, weighted by their rarity in this graph. It is
+            a screening aid, not semantic understanding or a probability.
+            Missing abstracts reduce the evidence available for matching.
+          </p>
+        )}
         <p>
           Citation impact measures scholarly attention, including critical
           citations. It does not establish that a result is correct. Assess

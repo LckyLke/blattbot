@@ -9,19 +9,20 @@
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMockOverleaf } from "./mock-overleaf.js";
+import { freePort } from "./free-port.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SHOTS = process.env.UI_SHOTS_DIR ?? "/tmp/blattbot-ui-shots";
 const EXECUTABLE = process.env.BLATTBOT_BROWSER_EXECUTABLE ||
   ["/usr/bin/chromium", "/usr/bin/google-chrome"].find(existsSync) || undefined;
-const SERVER_PORT = 4570;
-const MOCK_PORT = 4571;
-const ASK_PORT = 4572;
+const SERVER_PORT = await freePort();
+const MOCK_PORT = await freePort();
+const ASK_PORT = await freePort();
 const PROJECT_ID = "0123456789abcdef01234567";
 const COOKIE = "overleaf_session2=mock-session";
 
@@ -268,6 +269,34 @@ async function waitFor(bootstrapUrl: string, timeoutMs = 20_000): Promise<void> 
   throw new Error(`timed out waiting for ${bootstrapUrl}`);
 }
 
+/**
+ * This script compiles real LaTeX, so it needs a TeX engine. It uses the
+ * engine BlattBot finds on PATH, or the tectonic binary named by
+ * BLATTBOT_VERIFY_TECTONIC (copied into the isolated data dir). It never
+ * borrows the binary from your own BlattBot data dir without being told to.
+ */
+async function provideTexEngine(dataDir: string): Promise<string> {
+  const explicit = process.env.BLATTBOT_VERIFY_TECTONIC?.trim();
+  if (explicit) {
+    if (!existsSync(explicit)) throw new Error(`BLATTBOT_VERIFY_TECTONIC=${explicit} does not exist`);
+    const dest = join(dataDir, "bin", process.platform === "win32" ? "tectonic.exe" : "tectonic");
+    copyFileSync(explicit, dest); // a copy, not a symlink: symlinks need extra rights on Windows
+    chmodSync(dest, 0o755);
+    return `tectonic from BLATTBOT_VERIFY_TECTONIC (${explicit})`;
+  }
+  // Detect exactly as the server will: the isolated bin dir, then PATH.
+  process.env.BLATTBOT_DATA_DIR = dataDir;
+  const { detectEngine } = await import("../src/compile.js");
+  const engine = await detectEngine();
+  if (engine) return `${engine.name} (${engine.path})`;
+  const downloaded = join(homedir(), ".local", "share", "blattbot", "bin", process.platform === "win32" ? "tectonic.exe" : "tectonic");
+  throw new Error(
+    "ui-verify compiles real LaTeX, but no TeX engine (latexmk, pdflatex or tectonic) is on PATH.\n" +
+      "  Install one, or point BLATTBOT_VERIFY_TECTONIC at a tectonic binary" +
+      (existsSync(downloaded) ? `, e.g.\n    BLATTBOT_VERIFY_TECTONIC=${downloaded} npm run test:ui --workspace=server` : "."),
+  );
+}
+
 async function main() {
   mkdirSync(SHOTS, { recursive: true });
 
@@ -276,13 +305,13 @@ async function main() {
   mock.files.set("sections/refs.bib", Buffer.from(REFS_BIB));
   const askMock = await startAskMock(ASK_PORT);
 
-  // Isolated data dir so the real registry is untouched; borrow the tectonic binary.
+  // Isolated data dir so the real registry is untouched.
   const dataDir = mkdtempSync(join(tmpdir(), "blattbot-ui-verify-"));
-  const realTectonic = join(homedir(), ".local", "share", "blattbot", "bin", "tectonic");
   mkdirSync(join(dataDir, "bin"), { recursive: true });
-  if (existsSync(realTectonic)) symlinkSync(realTectonic, join(dataDir, "bin", "tectonic"));
+  console.log(`TeX engine: ${await provideTexEngine(dataDir)}`);
 
-  const server = spawn("npx", ["tsx", "src/index.ts"], {
+  // Run node directly (not through npx) so server.kill() stops the server itself.
+  const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
     cwd: join(__dirname, ".."),
     env: { ...process.env, BLATTBOT_PORT: String(SERVER_PORT), BLATTBOT_DATA_DIR: dataDir },
     stdio: "inherit",
@@ -351,7 +380,6 @@ async function main() {
     // Default layout is chat | pdf, and opening the project compiles the PDF
     // without any user action — canvases must appear on their own.
     await page.locator("canvas").first().waitFor({ state: "visible", timeout: 120_000 });
-    const openCompileOk = (await page.locator("canvas").count()) >= 1;
     await page.waitForTimeout(400);
     await shot("23-project-open");
 

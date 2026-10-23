@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -617,7 +617,7 @@ describe("backend wiring (the seam that actually runs it)", () => {
         throw new Error(`unexpected fetch: ${u}`);
       }),
     );
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     const { readAudit } = await load();
 
     const out = await executeTool(ctxFor(projectDir), "add_citation", { ref: "10.5555/3295222.3295349" });
@@ -642,7 +642,7 @@ describe("backend wiring (the seam that actually runs it)", () => {
         throw new Error("offline");
       }),
     );
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
 
     const out = await executeTool(ctxFor(projectDir), "add_citation", { ref: "10.5555/3295222.3295349" });
 
@@ -663,7 +663,7 @@ describe("backend wiring (the seam that actually runs it)", () => {
         throw new Error(`unexpected fetch: ${u}`);
       }),
     );
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
 
     const out = await executeTool(ctxFor(projectDir), "audit_citations", {});
 
@@ -675,7 +675,7 @@ describe("backend wiring (the seam that actually runs it)", () => {
   it("audit_citations accepts a targeted key list from the model", async () => {
     writeBib(`${ATTENTION}\n\n${FABRICATED}`);
     vi.stubGlobal("fetch", vi.fn(async () => crossrefWork("Attention Is All You Need")));
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
 
     const out = await executeTool(ctxFor(projectDir), "audit_citations", { keys: ["vaswani2017attention"] });
 
@@ -686,7 +686,7 @@ describe("backend wiring (the seam that actually runs it)", () => {
 
 describe("both backends expose the verification tools", () => {
   it("advertises audit_citations in the shared tool catalog", async () => {
-    const { AGENT_TOOL_INFO } = await import("../src/backends/types.js");
+    const { AGENT_TOOL_INFO } = await import("../src/backends/tools.js");
     const names = AGENT_TOOL_INFO.map((t) => t.name);
     expect(names).toContain("audit_citations");
   });
@@ -699,7 +699,7 @@ describe("both backends expose the verification tools", () => {
   });
 
   it("maps the tool to a stable event name for the chat UI", async () => {
-    const { eventToolName } = await import("../src/backends/openai.js");
+    const { eventToolName } = await import("../src/backends/tools.js");
     expect(eventToolName("audit_citations")).toBe("mcp__blattbot__audit_citations");
   });
 
@@ -711,7 +711,7 @@ describe("both backends expose the verification tools", () => {
   // it always ends in a one-shot LLM call, which isn't mockable through
   // executeTool the way audit_citations' pure HTTP lookups are above.
   it("advertises verify_citation_support in the shared tool catalog", async () => {
-    const { AGENT_TOOL_INFO } = await import("../src/backends/types.js");
+    const { AGENT_TOOL_INFO } = await import("../src/backends/tools.js");
     const names = AGENT_TOOL_INFO.map((t) => t.name);
     expect(names).toContain("verify_citation_support");
   });
@@ -723,7 +723,7 @@ describe("both backends expose the verification tools", () => {
   });
 
   it("maps verify_citation_support to a stable event name for the chat UI", async () => {
-    const { eventToolName } = await import("../src/backends/openai.js");
+    const { eventToolName } = await import("../src/backends/tools.js");
     expect(eventToolName("verify_citation_support")).toBe("mcp__blattbot__verify_citation_support");
   });
 });

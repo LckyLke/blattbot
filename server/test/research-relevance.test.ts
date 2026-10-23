@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { topicRelevance } from "../src/research/relevance.js";
 import { graphNeighborhood, searchGraph } from "../../web/src/components/graph-model.js";
 const nodes = [
   { id: "W1", title: "Graph representation learning", abstract: "Relational prediction using message passing" },
@@ -7,16 +6,6 @@ const nodes = [
   { id: "W3", title: "Graph algorithms" },
 ];
 describe("transparent paper screening signals", () => {
-  it("distinguishes topic match from impact and leaves missing questions unscored", () => {
-    const scores = topicRelevance(nodes, "How does relational graph representation learning work?");
-    expect(scores.get("W1")!.score).toBeGreaterThan(scores.get("W3")!.score!);
-    expect(scores.get("W2")!.score).toBe(0);
-    expect(scores.get("W1")!.matchedTerms).toContain("relational");
-    expect(scores.get("W1")!.basis).toBe("title_abstract");
-    expect(scores.get("W3")!.basis).toBe("title");
-    expect(topicRelevance(nodes, "").get("W1")!.score).toBeNull();
-    expect(topicRelevance(nodes, "the and").get("W1")!.score).toBeNull();
-  });
   it("searches authors, DOI and keys without case/diacritic sensitivity", () => {
     const paper = { ...nodes[0], authors: ["Émilie Müller"], doi: "10.1234/graph", keys: ["smith2026"], inProject: true, resolved: true, referencesLoaded: true };
     expect(searchGraph([paper], "emilie muller")).toEqual([paper]);

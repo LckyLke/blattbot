@@ -466,8 +466,15 @@ const LOG_FORMAT = "%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%B%x00";
 /** Parse `git log -z --numstat` output written with LOG_FORMAT. */
 export function parseLog(out: string): RawCommit[] {
   const commits: RawCommit[] = [];
-  // Each record starts with \x1e and the full object id.
-  for (const record of out.split(/\x1e(?=[0-9a-f]{40}(?:[0-9a-f]{24})?\0)/)) {
+  // Each record starts with \x1e and the full object id; a \x1e anywhere
+  // else (in a message, say) stays part of the record it is in.
+  const records: string[] = [];
+  for (const piece of out.split("\x1e")) {
+    const id = piece.slice(0, Math.max(0, piece.indexOf("\0")));
+    if (/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(id)) records.push(piece);
+    else if (records.length > 0) records[records.length - 1] += `\x1e${piece}`;
+  }
+  for (const record of records) {
     const parts = record.split("\0");
     if (parts.length < 6 || !/^[0-9a-f]{40,64}$/.test(parts[0])) continue;
     const [sha, parents, authorName, authorEmail, authorDate, body] = parts;

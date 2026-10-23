@@ -164,7 +164,7 @@ export function downscaleSize(
 ): { width: number; height: number } {
   if (width <= 0 || height <= 0) return { width: 0, height: 0 };
   const fit = Math.min(1, Math.sqrt(maxBytes / Math.max(bytes, 1)));
-  const ratio = fit * Math.pow(0.85, attempt);
+  const ratio = fit * 0.85 ** attempt;
   return {
     width: Math.max(1, Math.round(width * ratio)),
     height: Math.max(1, Math.round(height * ratio)),
@@ -283,6 +283,7 @@ const TOOL_LABELS: Record<string, string> = {
   TodoWrite: "Planning",
   Task: "Delegating",
   AskUserQuestion: "Asking you",
+  mcp__blattbot__search_files: "Searching files",
   mcp__blattbot__compile_latex: "Compiling LaTeX",
   mcp__blattbot__search_papers: "Searching literature",
   mcp__blattbot__add_citation: "Adding citation",

@@ -197,6 +197,16 @@ describe("history", () => {
       expect((await history.unreadSince(project(), "0000000")).unread).toBe(0);
     });
 
+    it("keeps a record separator inside a message as text", async () => {
+      write("main.tex", BASE);
+      await git.commitAll(dir, `odd\x1e${"a".repeat(40)} subject`);
+      write("main.tex", withLine(BASE, 1, "x"));
+      await git.commitAll(dir, "next");
+      const commits = (await history.listHistory(project())).commits;
+      expect(commits.map((c) => c.subject)).toEqual(["next", `odd\x1e${"a".repeat(40)} subject`]);
+      expect(commits[1].files).toEqual([{ path: "main.tex", additions: 40, deletions: 0 }]);
+    });
+
     it("handles a repository without commits", async () => {
       expect(await history.listHistory(project())).toEqual({ head: null, commits: [], nextOffset: null });
       expect(await history.unreadSince(project(), "abcdef0")).toEqual({ head: null, unread: 0 });

@@ -78,21 +78,21 @@ export default function InlineQuestion({ projectId }: { projectId: string }) {
         setCandidate({ text, context: context.slice(0, 16000), location, x: rect.left, y: rect.top });
       }, 30);
     }
-    function escape(event: KeyboardEvent) {
+    function onEscape(event: KeyboardEvent) {
       if (event.key === "Escape") { setCandidate(null); }
     }
     function dismiss() { setCandidate(null); }
     function resize() { dismiss(); setViewport({ width: window.innerWidth, height: window.innerHeight }); }
     document.addEventListener("pointerup", capture);
     document.addEventListener("keyup", capture);
-    document.addEventListener("keydown", escape);
+    document.addEventListener("keydown", onEscape);
     window.addEventListener("resize", resize);
     document.addEventListener("scroll", dismiss, true);
     return () => {
       clearTimeout(timer);
       document.removeEventListener("pointerup", capture);
       document.removeEventListener("keyup", capture);
-      document.removeEventListener("keydown", escape);
+      document.removeEventListener("keydown", onEscape);
       window.removeEventListener("resize", resize);
       document.removeEventListener("scroll", dismiss, true);
     };

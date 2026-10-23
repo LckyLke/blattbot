@@ -18,7 +18,7 @@ import {
   sourceCurrent,
   sourceVersion,
   type SourceVersion,
-} from "./evidence.js";
+} from "./sources.js";
 import {
   assertResearchActive,
   digest,
