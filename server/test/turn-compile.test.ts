@@ -43,7 +43,9 @@ async function turn(edit: () => void) {
   });
   expect((await call(`/api/projects/${id}/chat`, { message: "Fixture turn" })).statusCode).toBe(200);
   for (let i = 0; i < 100; i++) {
-    if (!(await call(`/api/projects/${id}`)).json().turnActive) return;
+    // The refresh build runs after the turn ends: wait for both.
+    const d = (await call(`/api/projects/${id}`)).json();
+    if (!d.turnActive && !d.compiling) return;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   throw new Error("Turn did not settle");
@@ -90,7 +92,8 @@ it("detects added and deleted files, but ignores Git bookkeeping", async () => {
 
 async function settle() {
   for (let i = 0; i < 100; i++) {
-    if (!(await call(`/api/projects/${id}`)).json().turnActive) return;
+    const d = (await call(`/api/projects/${id}`)).json();
+    if (!d.turnActive && !d.compiling) return;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
   throw new Error("Turn did not settle");

@@ -11,6 +11,7 @@ import { OverleafAuthError } from "../overleaf/olclient.js";
 import * as sync from "../sync.js";
 import { getAccount, updateAccount } from "../accounts.js";
 import { diffPaths } from "../http-helpers.js";
+import { withDiscardCheckpoint } from "../checkpoints.js";
 
 export function registerReviewRoutes(app: FastifyInstance): void {
   app.get<{ Params: { id: string } }>("/api/projects/:id/diff", async (req, reply) => {
@@ -153,13 +154,28 @@ export function registerReviewRoutes(app: FastifyInstance): void {
     },
   );
 
+  // Every discard first saves a restore point (refs/blattbot/discard/<id>);
+  // the returned discardId undoes it through POST …/discards/:id/restore.
+  const RESTORE_POINT_FAILED = "Nothing was discarded: the restore point could not be saved";
+
   app.post<{ Params: { id: string } }>("/api/projects/:id/reject", async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
-    if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
-    await withProjectLock(project.id, () => git.discard(projectDir(project.id)));
-    broadcast(project.id, { type: "rejected" });
-    return { ok: true };
+    if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress — discard once the turn ends" });
+    const dir = projectDir(project.id);
+    let saved: { discardId?: string; files?: unknown };
+    try {
+      saved = await withProjectLock(project.id, () =>
+        withDiscardCheckpoint(dir, async () => {
+          await git.discard(dir);
+          return true;
+        }),
+      );
+    } catch (err: any) {
+      return reply.code(422).send({ error: `${RESTORE_POINT_FAILED} (${err?.message ?? err}).` });
+    }
+    broadcast(project.id, { type: "rejected", ...(saved.discardId ? { discardId: saved.discardId } : {}) });
+    return { ok: true, ...(saved.discardId ? { discardId: saved.discardId, files: saved.files } : {}) };
   });
 
   app.post<{ Params: { id: string }; Body: { path?: string } }>(
@@ -167,7 +183,7 @@ export function registerReviewRoutes(app: FastifyInstance): void {
     async (req, reply) => {
       const project = getProject(req.params.id);
       if (!project) return reply.code(404).send({ error: "unknown project" });
-      if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
+      if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress — discard once the turn ends" });
       const rel = (req.body?.path ?? "").trim();
       if (!rel) return reply.code(400).send({ error: "path is required" });
       const dir = projectDir(project.id);
@@ -175,16 +191,24 @@ export function registerReviewRoutes(app: FastifyInstance): void {
       if (abs === dir || !abs.startsWith(dir + sep)) {
         return reply.code(400).send({ error: "invalid path" });
       }
-      const diff = await withProjectLock(project.id, async () => {
-        if (!diffPaths(await git.workingDiff(dir)).has(rel)) return null;
-        await git.discardPath(dir, rel);
-        return git.workingDiff(dir);
-      });
-      if (diff === null) {
+      let outcome: { diff: string; discardId?: string } | null;
+      try {
+        outcome = await withProjectLock(project.id, async () => {
+          if (!diffPaths(await git.workingDiff(dir)).has(rel)) return null;
+          const saved = await withDiscardCheckpoint(dir, async () => {
+            await git.discardPath(dir, rel);
+            return true;
+          });
+          return { diff: await git.workingDiff(dir), discardId: saved.discardId };
+        });
+      } catch (err: any) {
+        return reply.code(422).send({ error: `${RESTORE_POINT_FAILED} (${err?.message ?? err}).` });
+      }
+      if (outcome === null) {
         return reply.code(409).send({ error: "that file has no pending changes — refresh the proof" });
       }
-      broadcast(project.id, { type: "diff", diff });
-      return { ok: true, diff };
+      broadcast(project.id, { type: "diff", diff: outcome.diff });
+      return { ok: true, diff: outcome.diff, ...(outcome.discardId ? { discardId: outcome.discardId } : {}) };
     },
   );
 
@@ -193,21 +217,30 @@ export function registerReviewRoutes(app: FastifyInstance): void {
     async (req, reply) => {
       const project = getProject(req.params.id);
       if (!project) return reply.code(404).send({ error: "unknown project" });
-      if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress" });
+      if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn in progress — discard once the turn ends" });
       const patch = req.body?.patch ?? "";
       if (!patch.trim()) return reply.code(400).send({ error: "patch is required" });
       const dir = projectDir(project.id);
-      const diff = await withProjectLock(project.id, async () => {
-        try {
-          await git.applyReverse(dir, patch);
-        } catch {
-          return null;
-        }
-        return git.workingDiff(dir);
-      });
-      if (diff === null) return reply.code(409).send({ error: "hunk no longer applies — refresh the proof" });
-      broadcast(project.id, { type: "diff", diff });
-      return { ok: true, diff };
+      let outcome: { diff: string; discardId?: string } | null;
+      try {
+        outcome = await withProjectLock(project.id, async () => {
+          const saved = await withDiscardCheckpoint(dir, async () => {
+            try {
+              await git.applyReverse(dir, patch);
+              return true;
+            } catch {
+              return null;
+            }
+          });
+          if (saved.result === null) return null;
+          return { diff: await git.workingDiff(dir), discardId: saved.discardId };
+        });
+      } catch (err: any) {
+        return reply.code(422).send({ error: `${RESTORE_POINT_FAILED} (${err?.message ?? err}).` });
+      }
+      if (outcome === null) return reply.code(409).send({ error: "hunk no longer applies — refresh the proof" });
+      broadcast(project.id, { type: "diff", diff: outcome.diff });
+      return { ok: true, diff: outcome.diff, ...(outcome.discardId ? { discardId: outcome.discardId } : {}) };
     },
   );
 

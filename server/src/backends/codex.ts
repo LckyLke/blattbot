@@ -250,7 +250,7 @@ async function run({ prompt, instructions, settings, signal, model, ctx, images 
 export const codexBackend: AgentBackend = {
   id: "codex", label: "Codex", description: "Runs the local Codex CLI with your existing login, persistent conversations, and BlattBot's project tools.",
   async runTurn(ctx) {
-    await run({ ctx, prompt: ctx.prompt, instructions: buildOpenaiSystemPrompt(ctx.systemAppend),
+    await run({ ctx, prompt: ctx.prompt, instructions: buildOpenaiSystemPrompt(ctx.systemAppend, { fullCatalog: true }),
       settings: ctx.settings, signal: ctx.signal, model: ctx.model });
   },
 };

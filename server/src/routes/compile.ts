@@ -5,22 +5,23 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } 
 import { join } from "node:path";
 import { buildDir, getProject, projectDir } from "../config.js";
 import * as git from "../git.js";
-import { compileProject, compileRev, revPdfPath } from "../compile.js";
+import { compileRev, revPdfPath } from "../compile.js";
+import { compileWorkingTree, getLastCompile, publicCompile } from "../compile-service.js";
 import { listFiles } from "../latex.js";
 import { locateInSources } from "../locate.js";
-import { broadcast } from "../events.js";
 import * as sync from "../sync.js";
-import { compilePublic, lastCompile, lastRemoteCompile } from "../app-state.js";
+import { lastRemoteCompile } from "../app-state.js";
 
 export function registerCompileRoutes(app: FastifyInstance): void {
-  app.post<{ Params: { id: string } }>("/api/projects/:id/compile", async (req, reply) => {
+  app.post<{ Params: { id: string }; Body: { force?: boolean } | undefined }>("/api/projects/:id/compile", async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
-    broadcast(project.id, { type: "compile_start" });
-    const result = await compileProject(project.id, projectDir(project.id), project.mainTex);
-    lastCompile.set(project.id, result);
-    broadcast(project.id, { type: "compile", ...compilePublic(result) });
-    return compilePublic(result);
+    // Unchanged sources reuse the last successful build unless forced (Recompile).
+    try {
+      return publicCompile(await compileWorkingTree(project.id, { force: req.body?.force === true }));
+    } catch (err: any) {
+      return reply.code(422).send({ error: `Compile failed: ${err?.message ?? err}` });
+    }
   });
 
   // Verify on Overleaf: run the remote instance's own compiler on the project's
@@ -103,7 +104,7 @@ export function registerCompileRoutes(app: FastifyInstance): void {
         reply.header("Content-Disposition", `inline; filename="${safeName}-overleaf.pdf"`);
         return reply.type("application/pdf").send(createReadStream(remotePath));
       }
-      const compile = lastCompile.get(project.id);
+      const compile = getLastCompile(project.id);
       if (!compile?.pdfPath || !existsSync(compile.pdfPath)) {
         return reply.code(404).send({ error: "no compiled PDF — run compile first" });
       }

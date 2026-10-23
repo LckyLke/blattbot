@@ -27,9 +27,11 @@ import { z } from "zod";
 import { DATA_DIR } from "../config.js";
 import type { Settings } from "../settings.js";
 import { attachmentBase64, type TurnAttachment } from "../chatimages.js";
-import { PROJECT_TOOLS, eventToolName, executeTool, summarizeToolInput } from "./tools.js";
+import { PROJECT_TOOLS, eventToolName, executeTool, modeTools, summarizeToolInput } from "./tools.js";
 import {
   SYSTEM_APPEND,
+  SYSTEM_APPEND_LEAN,
+  leanPrompt,
   PAPER_READING_RULES,
   attachmentNote,
   resultHead,
@@ -170,9 +172,13 @@ function fnDef(name: string, description: string, properties: Record<string, unk
   };
 }
 
-/** OpenAI function-calling tool definitions; read-only modes drop every editing tool. */
-export function toolDefinitions(readOnly: boolean) {
-  return PROJECT_TOOLS.filter((tool) => !(readOnly && tool.writes)).map((tool) => {
+/**
+ * OpenAI function-calling tool definitions; read-only modes drop every
+ * editing tool, and `mode` trims the catalog (see modeTools). Codex passes no
+ * mode: its catalog stays the same for the whole conversation.
+ */
+export function toolDefinitions(readOnly: boolean, mode?: string) {
+  return modeTools(mode).filter((tool) => !(readOnly && tool.writes)).map((tool) => {
     const schema = z.toJSONSchema(z.object(tool.shape)) as { properties?: Record<string, unknown>; required?: string[] };
     return fnDef(tool.name, tool.description, schema.properties, schema.required);
   });
@@ -209,15 +215,24 @@ ${PAPER_READING_RULES}
  * SYSTEM_APPEND, which this backend replaces with OPENAI_SYSTEM_PROMPT.
  */
 export function appendBlocks(systemAppend: string): string {
-  const rest = systemAppend.startsWith(SYSTEM_APPEND)
-    ? systemAppend.slice(SYSTEM_APPEND.length)
-    : systemAppend;
+  const base = [SYSTEM_APPEND, SYSTEM_APPEND_LEAN].find((b) => systemAppend.startsWith(b));
+  const rest = base ? systemAppend.slice(base.length) : systemAppend;
   return rest.trim();
 }
 
-export function buildOpenaiSystemPrompt(systemAppend: string): string {
+/** The base prompt for the modes without literature tools (see leanPrompt). */
+export const OPENAI_SYSTEM_PROMPT_LEAN = leanPrompt(OPENAI_SYSTEM_PROMPT);
+
+/**
+ * `fullCatalog`: the turn offers every tool whatever the mode (Codex), so the
+ * prompt keeps every tool's instructions too.
+ */
+export function buildOpenaiSystemPrompt(systemAppend: string, options: { fullCatalog?: boolean } = {}): string {
   const blocks = appendBlocks(systemAppend);
-  return blocks ? `${OPENAI_SYSTEM_PROMPT}\n\n${blocks}` : OPENAI_SYSTEM_PROMPT;
+  // The append was built on the lean base exactly when the mode is a lean one.
+  const lean = !options.fullCatalog && systemAppend.startsWith(SYSTEM_APPEND_LEAN);
+  const base = lean ? OPENAI_SYSTEM_PROMPT_LEAN : OPENAI_SYSTEM_PROMPT;
+  return blocks ? `${base}\n\n${blocks}` : base;
 }
 
 // ---- Streaming --------------------------------------------------------------
@@ -496,7 +511,10 @@ export const openaiBackend: AgentBackend = {
       ...loadHistory(sessionId),
       { role: "user", content: buildOpenaiUserContent(ctx.prompt, ctx.attachments) },
     ];
-    const tools = toolDefinitions(ctx.readOnly);
+    const tools = toolDefinitions(ctx.readOnly, ctx.mode);
+    // Tools the mode leaves out are refused too (editing tools in read-only
+    // modes keep their own, clearer refusal).
+    const toolCtx: BackendTurnContext = { ...ctx, toolset: new Set(modeTools(ctx.mode).map((t) => t.name)) };
     /** Index of the message carrying the images — rewritten by the fallback. */
     const userIndex = messages.length - 1;
     /** The vision retry is allowed once per turn, on the first request only. */
@@ -616,7 +634,7 @@ export const openaiBackend: AgentBackend = {
         });
         const outcome = badArgs
           ? { content: `${name} failed: the tool call arguments were not valid JSON`, isError: true }
-          : await executeTool(ctx, name, args);
+          : await executeTool(toolCtx, name, args);
         // Summaries key off the EVENT name (read_file → Read etc.) so both
         // backends share one read-only allowlist; edit tools stay opaque.
         const head = resultHead(eventToolName(name), outcome.content);

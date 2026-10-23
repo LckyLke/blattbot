@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ChildProcess } from "node:child_process";
 import type { BackendTurnContext, AgentEvent } from "../src/backends/types.js";
 
-vi.mock("../src/compile.js", () => ({ compileProject: vi.fn(async () => ({ ok: true, engine: "mock", durationMs: 1, mainTex: "main.tex" })) }));
+vi.mock("../src/compile.js", async (importOriginal) => ({ ...(await importOriginal<typeof import("../src/compile.js")>()), compileProject: vi.fn(async () => ({ ok: true, engine: "mock", durationMs: 1, mainTex: "main.tex", errors: [], logTail: "" })) }));
 
 let data: string;
 let ctx: BackendTurnContext;

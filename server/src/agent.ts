@@ -19,6 +19,7 @@ import { codexBackend, forgetCodexToolset, runOneShotCodex } from "./backends/co
 import { selectedBackend, type BackendId } from "./settings.js";
 import {
   SYSTEM_APPEND,
+  SYSTEM_APPEND_LEAN,
   attachmentNote,
   resolveModel,
   type AgentBackend,
@@ -36,6 +37,7 @@ export {
   MODEL_ALIASES,
 } from "./backends/types.js";
 export { AGENT_TOOL_INFO } from "./backends/tools.js";
+import { LEAN_MODES } from "./backends/tools.js";
 export { SYSTEM_APPEND, resolveModel };
 export type { AgentEvent } from "./backends/types.js";
 
@@ -313,6 +315,11 @@ export function validateProjectSettingsPatch(body: unknown): Partial<ProjectSett
 
 // ---- Prompt assembly ---------------------------------------------------------
 
+/** BlattBot's base append for a mode: without the literature-tool rules where those tools are left out. */
+export function systemBaseFor(mode: string): string {
+  return LEAN_MODES.has(mode) ? SYSTEM_APPEND_LEAN : SYSTEM_APPEND;
+}
+
 /**
  * Assemble the system-prompt append for one turn, in this order: BlattBot's
  * base append → the mode block → the project's own style instructions
@@ -326,7 +333,7 @@ export function buildSystemAppend(
   settings: Settings,
   contextDirs: string[] = contextDirectories(project),
 ): string {
-  let append = SYSTEM_APPEND;
+  let append = systemBaseFor(modeInfo.id);
   if (modeInfo.prompt) append += `\n\n${modeInfo.prompt}`;
   // Per-project style/instructions — directly after the mode block, clearly
   // attributed. Re-capped here in case projects.json was edited by hand.
@@ -423,6 +430,7 @@ export async function runTurn(
     contextDirs,
     attachments,
     readOnly: Boolean(modeInfo.readOnly),
+    mode: modeInfo.id,
     staticCodeReview: mode === "code",
     session: {
       sessionId: session ? session.sessionId : project.sessionId,

@@ -13,12 +13,18 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { unzipSync } from "fflate";
-import { BIN_DIR, buildDir } from "./config.js";
+import { BIN_DIR, buildDir, getProject } from "./config.js";
 import { archiveZip } from "./git.js";
 import { findMainTex } from "./latex.js";
 import { loadSettings } from "./settings.js";
 
 const execFileP = promisify(execFile);
+
+/** The TeX program a document is written for (Overleaf's "compiler" setting). */
+export type TexProgram = "pdflatex" | "xelatex" | "lualatex" | "latex";
+
+/** Where the program came from: the main file, the Overleaf project, the build log, or the default. */
+export type ProgramSource = "magic comment" | "Overleaf" | "log" | "default";
 
 export interface CompileResult {
   ok: boolean;
@@ -30,6 +36,57 @@ export interface CompileResult {
   /** Tail of the raw log, for the curious. */
   logTail: string;
   durationMs: number;
+  /** The TeX program the build ran for (tectonic always runs XeTeX). */
+  program?: TexProgram;
+  programSource?: ProgramSource;
+}
+
+const PROGRAM_ALIASES: Record<string, TexProgram> = {
+  pdflatex: "pdflatex",
+  pdftex: "pdflatex",
+  xelatex: "xelatex",
+  xetex: "xelatex",
+  lualatex: "lualatex",
+  luatex: "lualatex",
+  latex: "latex",
+};
+
+export function normalizeProgram(raw: unknown): TexProgram | undefined {
+  return typeof raw === "string" ? PROGRAM_ALIASES[raw.trim().toLowerCase()] : undefined;
+}
+
+/** `% !TEX program = xelatex` (or `TS-program`) near the top of a file. */
+export function magicProgram(source: string): TexProgram | undefined {
+  for (const line of source.split(/\r?\n/).slice(0, 50)) {
+    const m = /^\s*%\s*!\s*TeX\s+(?:TS-)?program\s*=\s*([A-Za-z]+)/i.exec(line);
+    if (m) return normalizeProgram(m[1]);
+  }
+  return undefined;
+}
+
+/** Magic comment in the main file, else the Overleaf project's compiler, else pdflatex. */
+export function resolveTexProgram(
+  sourceDir: string,
+  main: string,
+  overleafCompiler?: string,
+): { program: TexProgram; source: ProgramSource } {
+  let text = "";
+  try {
+    text = readFileSync(join(sourceDir, main), "utf8").slice(0, 16_384);
+  } catch {
+    /* unreadable main file — the engine reports it */
+  }
+  const fromComment = magicProgram(text);
+  if (fromComment) return { program: fromComment, source: "magic comment" };
+  const fromOverleaf = normalizeProgram(overleafCompiler);
+  if (fromOverleaf) return { program: fromOverleaf, source: "Overleaf" };
+  return { program: "pdflatex", source: "default" };
+}
+
+/** The compiler the Overleaf project is set to (stored by the Overleaf sync). */
+function overleafCompilerOf(projectId: string): string | undefined {
+  const value = (getProject(projectId) as { overleafCompiler?: unknown } | undefined)?.overleafCompiler;
+  return typeof value === "string" ? value : undefined;
 }
 
 export interface Engine {
@@ -52,6 +109,22 @@ export const ENGINE_PRIORITY = ["latexmk", "pdflatex", "tectonic"] as const;
 export function engineOrder(preferred?: string): string[] {
   const rest = ENGINE_PRIORITY.filter((name) => name !== preferred);
   return preferred ? [preferred, ...rest] : [...rest];
+}
+
+/**
+ * Engines to try for a document written for `program`, best first. latexmk
+ * runs the program itself (-pdf / -xelatex / -lualatex / -pdfdvi); the direct
+ * engine is the program's own binary (the "pdflatex" setting means "run the
+ * program directly"); tectonic is XeTeX-based, which suits pdfLaTeX and
+ * XeLaTeX sources but not LuaLaTeX ones, so those try it last.
+ */
+export function compileOrder(program: TexProgram, preferred?: string): string[] {
+  const direct = program === "latex" ? undefined : program;
+  const base = ["latexmk", ...(direct ? [direct] : []), "tectonic"];
+  const pick = preferred === "pdflatex" ? direct : preferred;
+  let order = pick && base.includes(pick) ? [pick, ...base.filter((name) => name !== pick)] : base;
+  if (program === "lualatex" && order[0] === "tectonic") order = [...order.slice(1), "tectonic"];
+  return order;
 }
 
 /** name → where it lives (null = looked for, not installed here). */
@@ -151,18 +224,31 @@ export function parseErrors(log: string): string[] {
 }
 
 export async function compileProject(projectId: string, projectPath: string, mainTex?: string): Promise<CompileResult> {
-  return compileTree(projectPath, buildDir(projectId), mainTex);
+  return compileTree(projectPath, buildDir(projectId), mainTex, overleafCompilerOf(projectId));
 }
 
-function engineArgs(engine: string, outDir: string, main: string): string[] {
+const LATEXMK_PROGRAM_FLAG: Record<TexProgram, string> = {
+  pdflatex: "-pdf",
+  xelatex: "-xelatex",
+  lualatex: "-lualatex",
+  latex: "-pdfdvi",
+};
+
+function engineArgs(engine: string, outDir: string, main: string, program: TexProgram, force: boolean): string[] {
   if (engine === "tectonic") return ["--outdir", outDir, "--keep-logs", "--chatter", "minimal", main];
   if (engine === "latexmk") {
-    // -g: always reprocess. latexmk records a failed run in .fdb_latexmk and
-    // then refuses to redo anything until a source file changes ("Nothing to
-    // do ... gave an error in previous invocation"), which hides the actual
-    // TeX error from the second compile onwards. This build dir is scratch
-    // space for a verification compile, so a full run every time is the point.
-    return ["-g", "-pdf", "-interaction=nonstopmode", "-halt-on-error", `-outdir=${outDir}`, main];
+    // No -g by default: latexmk tracks the dependencies itself and skips work
+    // when nothing changed. -g (force) is the retry for a run latexmk refused
+    // because the previous one failed ("gave an error in previous invocation"),
+    // which would otherwise hide the actual TeX error.
+    return [
+      ...(force ? ["-g"] : []),
+      LATEXMK_PROGRAM_FLAG[program],
+      "-interaction=nonstopmode",
+      "-halt-on-error",
+      `-outdir=${outDir}`,
+      main,
+    ];
   }
   return ["-interaction=nonstopmode", "-halt-on-error", `-output-directory=${outDir}`, main];
 }
@@ -183,18 +269,65 @@ const ENGINE_SPECIFIC = [
   /not properly supported|requires (pdf|lua|xe)(la)?tex/i,
 ];
 
+/**
+ * Errors that name the TeX program the document needs: fontspec's "requires
+ * either XeTeX or LuaTeX", luacode's "LuaTeX is required", unicode-math's
+ * "Cannot be run with pdfLaTeX", and similar wordings.
+ */
+const PROGRAM_REQUIRED = [
+  /requires\s+(?:either\s+)?(?:the\s+)?(xe|lua)(?:la)?tex/i,
+  /\b(xe|lua)(?:la)?tex\s+(?:is\s+)?(?:required|needed)/i,
+  /(?:cannot|can't|must not)\s+be\s+(?:run|used|compiled)\s+with\s+(?:pdf)?(?:la)?tex/i,
+  /(?:must|has to)\s+be\s+(?:run|compiled|typeset)\s+with\s+(xe|lua)(?:la)?tex/i,
+  /only\s+(?:works|runs)\s+with\s+(xe|lua)(?:la)?tex/i,
+];
+
+/** The program a failed run's errors ask for, if any. */
+export function requiredProgram(errors: string[]): "xelatex" | "lualatex" | undefined {
+  for (const error of errors) {
+    for (const re of PROGRAM_REQUIRED) {
+      const m = re.exec(error);
+      if (!m) continue;
+      return m[1]?.toLowerCase() === "lua" ? "lualatex" : "xelatex";
+    }
+  }
+  return undefined;
+}
+
 /** Is a failed attempt worth repeating with the next engine? */
 export function isEngineSpecificFailure(errors: string[]): boolean {
   // No TeX error at all means the engine itself fell over — crash, timeout, or
   // a helper it could not run (tectonic exits "No such file or directory" when
   // a biblatex project has no biber on PATH). Always worth another engine.
   if (errors.length === 0) return true;
-  return errors.some((e) => ENGINE_SPECIFIC.some((re) => re.test(e)));
+  return errors.some((e) => ENGINE_SPECIFIC.some((re) => re.test(e)) || PROGRAM_REQUIRED.some((re) => re.test(e)));
 }
 
 /** Where a compile of `main` leaves its PDF. */
 function pdfPathFor(outDir: string, main: string): string {
   return join(outDir, main.split("/").pop()!.replace(/\.tex$/, ".pdf"));
+}
+
+/** Where a successful working-tree compile of the project leaves its PDF. */
+export function projectPdfPath(projectId: string, main: string): string {
+  return pdfPathFor(buildDir(projectId), main);
+}
+
+function logsIn(outDir: string): string[] {
+  try {
+    return readdirSync(outDir).filter((f) => f.endsWith(".log"));
+  } catch {
+    return [];
+  }
+}
+
+interface Attempt {
+  ok: boolean;
+  retryable: boolean;
+  /** latexmk did not run TeX because the previous run had failed. */
+  refused: boolean;
+  errors: string[];
+  logTail: string;
 }
 
 /** One engine run over a source tree; the caller decides what a failure means. */
@@ -203,20 +336,21 @@ async function runEngine(
   sourceDir: string,
   outDir: string,
   main: string,
-): Promise<{ ok: boolean; retryable: boolean; errors: string[]; logTail: string }> {
-  // The previous attempt's log would otherwise be read back as this one's errors.
-  try {
-    for (const f of readdirSync(outDir).filter((f) => f.endsWith(".log"))) {
-      rmSync(join(outDir, f), { force: true });
-    }
-  } catch {
-    /* nothing to clean */
+  program: TexProgram,
+  force: boolean,
+): Promise<Attempt> {
+  // An incremental latexmk run needs its previous log; every other run starts
+  // clean, so a previous attempt's log is never read back as this one's errors.
+  const incremental = engine.name === "latexmk" && !force;
+  if (!incremental) {
+    for (const f of logsIn(outDir)) rmSync(join(outDir, f), { force: true });
   }
 
+  const started = Date.now();
   let combined = "";
   let ok = true;
   try {
-    const { stdout, stderr } = await spawnEngine(engine.path, engineArgs(engine.name, outDir, main), {
+    const { stdout, stderr } = await spawnEngine(engine.path, engineArgs(engine.name, outDir, main, program, force), {
       cwd: sourceDir,
       maxBuffer: 64 * 1024 * 1024,
       timeout: 180_000,
@@ -227,17 +361,23 @@ async function runEngine(
     ok = false;
     combined = String(err.stdout ?? "") + "\n" + String(err.stderr ?? "") + "\n" + String(err.message ?? "");
   }
+  const engineOutput = combined;
 
-  // Include the .log file if the engine kept one — that's where TeX errors live.
-  try {
-    const logs = readdirSync(outDir).filter((f) => f.endsWith(".log"));
-    for (const f of logs) combined += "\n" + readFileSync(join(outDir, f), "utf8");
-  } catch {
-    /* no log */
+  // Include the .log file if the engine wrote one — that's where TeX errors live.
+  for (const f of logsIn(outDir)) {
+    try {
+      const path = join(outDir, f);
+      // A log latexmk left from an earlier run says nothing about this one.
+      if (incremental && statSync(path).mtimeMs < started - 1) continue;
+      combined += "\n" + readFileSync(path, "utf8");
+    } catch {
+      /* no log */
+    }
   }
 
   const built = ok && existsSync(pdfPathFor(outDir, main));
   const errors = built ? [] : parseErrors(combined);
+  const refused = !built && incremental && /previous invocation|nothing to do/i.test(engineOutput);
   // Judge the retry on what TeX itself said: the placeholder below is added
   // for the user's benefit and would otherwise read like a document error.
   const retryable = !built && isEngineSpecificFailure(errors);
@@ -245,15 +385,22 @@ async function runEngine(
     errors.push(`Compilation failed (${engine.name}) — see log tail for details.`);
   }
 
-  return { ok: built, retryable, errors, logTail: combined.split("\n").slice(-60).join("\n") };
+  return { ok: built, retryable, refused, errors, logTail: combined.split("\n").slice(-60).join("\n") };
 }
 
 /**
  * Run the installed engines on a source tree, best first, PDF and logs into
  * outDir. A failure that looks engine-specific (see isEngineSpecificFailure)
  * drops through to the next engine; a broken document stops at the first one.
+ * A document without a declared program whose errors ask for XeTeX or LuaTeX
+ * (fontspec, unicode-math) is retried once with that program.
  */
-async function compileTree(sourceDir: string, outDir: string, mainTex?: string): Promise<CompileResult> {
+async function compileTree(
+  sourceDir: string,
+  outDir: string,
+  mainTex?: string,
+  overleafCompiler?: string,
+): Promise<CompileResult> {
   const started = Date.now();
   const main = mainTex ?? findMainTex(sourceDir);
   if (!main) {
@@ -262,20 +409,29 @@ async function compileTree(sourceDir: string, outDir: string, mainTex?: string):
       logTail: "", durationMs: Date.now() - started,
     };
   }
-  const engines = await detectEngines(loadSettings().engine || undefined);
+  let { program, source } = resolveTexProgram(sourceDir, main, overleafCompiler);
+  const preferred = loadSettings().engine || undefined;
+  const installed = async (p: TexProgram) =>
+    (await Promise.all(compileOrder(p, preferred).map(resolveEngine))).filter((e): e is Engine => e !== null);
+  let engines = await installed(program);
   if (engines.length === 0) {
     return {
       ok: false, engine: "none", mainTex: main,
       errors: ["No LaTeX engine found. Install a TeX distribution (latexmk/pdflatex) or tectonic."],
-      logTail: "", durationMs: Date.now() - started,
+      logTail: "", durationMs: Date.now() - started, program, programSource: source,
     };
   }
 
   mkdirSync(outDir, { recursive: true });
 
   const tried: { engine: string; errors: string[]; logTail: string }[] = [];
-  for (const engine of engines) {
-    const attempt = await runEngine(engine, sourceDir, outDir, main);
+  let switched = false;
+  /** The attempts the failure report leads with: those for the final program. */
+  let reportFrom = 0;
+  for (let i = 0; i < engines.length; i++) {
+    const engine = engines[i];
+    let attempt = await runEngine(engine, sourceDir, outDir, main, program, false);
+    if (attempt.refused) attempt = await runEngine(engine, sourceDir, outDir, main, program, true);
     if (attempt.ok) {
       return {
         ok: true,
@@ -286,16 +442,29 @@ async function compileTree(sourceDir: string, outDir: string, mainTex?: string):
         // Explain an engine badge the user did not expect to see.
         logTail: [...tried.map(fallbackNote), attempt.logTail].join("\n"),
         durationMs: Date.now() - started,
+        program,
+        programSource: source,
       };
     }
     tried.push({ engine: engine.name, ...attempt });
+    const needed = source === "default" && !switched ? requiredProgram(attempt.errors) : undefined;
+    if (needed) {
+      // The document asks for another program: start over with its engines.
+      switched = true;
+      program = needed;
+      source = "log";
+      engines = await installed(program);
+      reportFrom = tried.length;
+      i = -1;
+      continue;
+    }
     if (!attempt.retryable) break;
   }
 
   // Nothing built it: lead with the first engine's verdict — that is the one
   // the user asked for — and keep every log for the details view. A stale PDF
   // from an earlier build stays addressable so the viewer can keep showing it.
-  const [first, ...rest] = tried;
+  const [first, ...rest] = reportFrom < tried.length ? tried.slice(reportFrom) : tried;
   const pdfPath = pdfPathFor(outDir, main);
   return {
     ok: false,
@@ -307,6 +476,8 @@ async function compileTree(sourceDir: string, outDir: string, mainTex?: string):
       : first.errors,
     logTail: tried.map((t) => `--- ${t.engine} ---\n${t.logTail}`).join("\n\n"),
     durationMs: Date.now() - started,
+    program,
+    programSource: source,
   };
 }
 
@@ -380,7 +551,7 @@ export async function compileRev(
 
   // The registered main may not exist at this revision — fall back to detection.
   const main = mainTex && existsSync(join(treeDir, mainTex)) ? mainTex : undefined;
-  const result = await compileTree(treeDir, revDir, main);
+  const result = await compileTree(treeDir, revDir, main, overleafCompilerOf(projectId));
   if (result.pdfPath) {
     renameSync(result.pdfPath, pdfPath);
     result.pdfPath = pdfPath;

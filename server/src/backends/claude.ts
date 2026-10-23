@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { projectDir, updateProject } from "../config.js";
 import { attachmentBase64, chatUploadsDir, type TurnAttachment } from "../chatimages.js";
 import { checkToolPaths, projectReadRoots, secretDenyRules } from "./paths.js";
-import { PROJECT_TOOLS, executeTool, summarizeToolInput } from "./tools.js";
+import { PROJECT_TOOLS, executeTool, modeTools, summarizeToolInput } from "./tools.js";
 import { loadSettings, type Settings } from "../settings.js";
 import { executableOptions } from "../sdkinfo.js";
 import { loadClaudeSdk } from "../claude-sdk.js";
@@ -37,7 +37,7 @@ export async function buildMcpServer(ctx: BackendTurnContext) {
   return createSdkMcpServer({
     name: "blattbot",
     version: currentVersion(),
-    tools: PROJECT_TOOLS.filter((entry) => entry.claude).map((entry) =>
+    tools: modeTools(ctx.mode).filter((entry) => entry.claude).map((entry) =>
       tool(entry.name, entry.description, entry.shape, async (args) => {
         const out = await executeTool(ctx, entry.name, args);
         return { content: [{ type: "text" as const, text: out.content }], ...(out.isError ? { isError: true } : {}) };
@@ -299,7 +299,7 @@ export function extractResultUsage(m: any): {
  * hook event. Exported for unit tests.
  */
 const CODE_AUDIT_BLOCKED_TOOLS = ["Bash", "Task", "Agent", "Skill"];
-export function makeFenceHook(projectId: string, contextDirs: string[] = [], staticCodeReview = false): HookCallback {
+export function makeFenceHook(projectId: string, contextDirs: string[] = [], staticCodeReview = false, scope?: string[]): HookCallback {
   const dir = projectDir(projectId);
   const extraReadRoots = projectReadRoots(projectId);
   return async (input) => {
@@ -312,7 +312,7 @@ export function makeFenceHook(projectId: string, contextDirs: string[] = [], sta
       input.tool_input && typeof input.tool_input === "object"
         ? (input.tool_input as Record<string, unknown>)
         : {};
-    const fence = checkToolPaths(input.tool_name, toolInput, dir, contextDirs, extraReadRoots);
+    const fence = checkToolPaths(input.tool_name, toolInput, dir, contextDirs, extraReadRoots, scope);
     if (fence.ok) return {};
     return {
       hookSpecificOutput: {
@@ -348,6 +348,7 @@ export function makeCanUseTool(
   emit: EventSink,
   signal: AbortSignal,
   contextDirs: string[] = [],
+  scope?: string[],
 ): CanUseTool {
   const dir = projectDir(projectId);
   // The project's own chat-image uploads are readable (never writable) — see
@@ -360,7 +361,7 @@ export function makeCanUseTool(
       // route here: the SDK's own tools can otherwise reach any path the OS
       // allows, which would leave "stay in the project" as a mere instruction
       // against untrusted file/web content.
-      const fence = checkToolPaths(toolName, input, dir, contextDirs, extraReadRoots);
+      const fence = checkToolPaths(toolName, input, dir, contextDirs, extraReadRoots, scope);
       if (!fence.ok) return { behavior: "deny", message: fence.message! };
       return { behavior: "allow", updatedInput: input };
     }
@@ -523,9 +524,9 @@ export const claudeBackend: AgentBackend = {
         allowDangerouslySkipPermissions: true,
         // Surfaces AskUserQuestion (which always "ask"s, even in bypass mode)
         // as an interactive question card in the chat; allows everything else.
-        canUseTool: makeCanUseTool(project.id, ctx.emit, ctx.signal, ctx.contextDirs),
+        canUseTool: makeCanUseTool(project.id, ctx.emit, ctx.signal, ctx.contextDirs, ctx.scope),
         // The file fence that bypass mode actually consults (see makeFenceHook).
-        hooks: { PreToolUse: [{ hooks: [makeFenceHook(project.id, ctx.contextDirs, ctx.staticCodeReview)] }] },
+        hooks: { PreToolUse: [{ hooks: [makeFenceHook(project.id, ctx.contextDirs, ctx.staticCodeReview, ctx.scope)] }] },
         // A safety-classifier decline asks the user (question card) whether to
         // retry on the fallback model — never a silent model swap.
         onUserDialog: makeOnUserDialog(project.id, ctx.emit, ctx.signal),

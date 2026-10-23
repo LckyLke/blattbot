@@ -38,7 +38,8 @@ import { getAccount, updateAccount, upsertAccount } from "../accounts.js";
 import { loadSettings } from "../settings.js";
 import { contextUploadsDir } from "../context.js";
 import { deleteChatUploads } from "../chatimages.js";
-import { compilePublic, lastCompile } from "../app-state.js";
+import { compileIdle, forgetCompiles, getLastCompile, isCompiling, publicCompile } from "../compile-service.js";
+import { clearQueue, queueState } from "../turn-queue.js";
 import { normalizeCookie } from "../http-helpers.js";
 
 /** Escape LaTeX-special characters so a project name is safe inside \title{…}. */
@@ -238,8 +239,13 @@ export function registerProjectRoutes(app: FastifyInstance): void {
     if (listResearchJobs(id).some((j) => ["queued", "running"].includes(j.state))) {
       return reply.code(409).send({ error: "Pause or cancel this project's research tasks before removing it." });
     }
+    // Queued messages belong to the project; a build still running after its
+    // turn would recreate the build folder.
+    clearQueue(id);
+    await compileIdle(id);
     await withProjectLock(id, async () => {
       removeProject(id);
+      forgetCompiles(id);
       rmSync(projectDir(id), { recursive: true, force: true });
       rmSync(buildDir(id), { recursive: true, force: true });
       rmSync(contextUploadsDir(id), { recursive: true, force: true });
@@ -259,15 +265,18 @@ export function registerProjectRoutes(app: FastifyInstance): void {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
     const dir = projectDir(project.id);
-    const compile = lastCompile.get(project.id);
+    const compile = getLastCompile(project.id);
     return {
       ...publicProject(project),
       files: listFiles(dir),
       turnActive: isTurnActive(project.id),
+      // The refresh build after a turn runs once the turn is over.
+      compiling: isCompiling(project.id),
+      queue: queueState(project.id),
       // A reload mid-turn restores the actionable question card from this.
       pendingQuestion: pendingQuestion(project.id) ?? null,
       hasChanges: await git.hasChanges(dir).catch(() => false),
-      lastCompile: compile ? compilePublic(compile) : null,
+      lastCompile: compile ? publicCompile(compile) : null,
     };
   });
 

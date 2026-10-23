@@ -21,11 +21,10 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { z } from "zod";
-import { getProject } from "../config.js";
-import { compileProject } from "../compile.js";
+import { compileWorkingTree } from "../compile-service.js";
 import { addCitation, formatAddCitationResult, readAllBibEntries } from "../citations.js";
 import { auditEntries, formatAuditReport, verifyEntry } from "../papers.js";
-import { listFiles } from "../latex.js";
+import { findBibFiles, listFiles } from "../latex.js";
 import { readPdfFile, readTextDocument, formatTextExcerpt } from "../pdftext.js";
 import { askUserQuestions, validateQuestions, MAX_HEADER, MAX_OPTIONS, MAX_QUESTIONS, MIN_OPTIONS } from "../questions.js";
 import { chatUploadsDir, imageSize, sniffImageMime } from "../chatimages.js";
@@ -228,7 +227,7 @@ const EDIT_TOOLS: ProjectTool[] = [
     { path: filePath, content: z.string().describe("Full new file content") },
     (ctx, args) => {
       if (ctx.readOnly) throw new Error("file edits are disabled in this read-only mode");
-      const abs = resolveWritePath(ctx.dir, ctx.contextDirs, args?.path);
+      const abs = resolveWritePath(ctx.dir, ctx.contextDirs, args?.path, ctx.scope);
       const content = requireString(args, "content");
       mkdirSync(dirname(abs), { recursive: true });
       writeFileSync(abs, content);
@@ -246,7 +245,7 @@ const EDIT_TOOLS: ProjectTool[] = [
     },
     (ctx, args) => {
       if (ctx.readOnly) throw new Error("file edits are disabled in this read-only mode");
-      const abs = resolveWritePath(ctx.dir, ctx.contextDirs, args?.path);
+      const abs = resolveWritePath(ctx.dir, ctx.contextDirs, args?.path, ctx.scope);
       const oldString = requireString(args, "old_string");
       const newString = requireString(args, "new_string");
       if (!oldString) throw new Error("old_string must not be empty");
@@ -308,13 +307,15 @@ const CITATION_TOOLS: ProjectTool[] = [
     "Compile the LaTeX project and report success or the exact compiler errors. Use this to verify your edits.",
     {},
     async (ctx) => {
-      const project = getProject(ctx.project.id);
-      const result = await compileProject(ctx.project.id, ctx.dir, project?.mainTex);
+      // The shared build: the PDF preview shows it, and the refresh after the
+      // turn reuses it when nothing changed since.
+      const result = await compileWorkingTree(ctx.project.id);
+      const engine = result.program && result.program !== result.engine ? `${result.engine} (${result.program})` : result.engine;
       if (result.ok) {
-        return `Compilation succeeded with ${result.engine} in ${result.durationMs}ms (main file: ${result.mainTex}).`;
+        return `Compilation succeeded with ${engine} in ${result.durationMs}ms (main file: ${result.mainTex}).`;
       }
       return (
-        `Compilation FAILED (engine: ${result.engine}, main file: ${result.mainTex || "not found"}).\n` +
+        `Compilation FAILED (engine: ${engine}, main file: ${result.mainTex || "not found"}).\n` +
         `Errors:\n${result.errors.join("\n---\n")}\n\nLog tail:\n${result.logTail.slice(-2000)}`
       );
     },
@@ -354,10 +355,16 @@ const CITATION_TOOLS: ProjectTool[] = [
     async (ctx, args) => {
       if (ctx.readOnly) throw new Error("adding citations is disabled in this read-only mode");
       const ref = requireString(args, "ref");
-      const bibFile = typeof args?.bibFile === "string" && args.bibFile.trim() ? args.bibFile.trim() : undefined;
-      // The write fence first (symlinks, .git, context dirs); addCitation then
-      // insists on a .bib target inside the project.
-      if (bibFile) resolveWritePath(ctx.dir, ctx.contextDirs, bibFile);
+      let bibFile = typeof args?.bibFile === "string" && args.bibFile.trim() ? args.bibFile.trim() : undefined;
+      // A scoped turn names its target up front (a scoped .bib when there is
+      // one), so the scope check below sees the file addCitation would write.
+      if (!bibFile && ctx.scope?.length) {
+        const bibs = findBibFiles(ctx.dir);
+        bibFile = ctx.scope.find((f) => f.endsWith(".bib")) ?? bibs[0] ?? "references.bib";
+      }
+      // The write fence first (symlinks, .git, context dirs, scope); addCitation
+      // then insists on a .bib target inside the project.
+      if (bibFile) resolveWritePath(ctx.dir, ctx.contextDirs, bibFile, ctx.scope);
       try {
         const result = await addCitation(ctx.dir, ref, bibFile);
         // Verify immediately: a bad reference must surface while the agent is
@@ -428,6 +435,45 @@ export const PROJECT_TOOLS: readonly ProjectTool[] = [...RESEARCH, ...FILE_TOOLS
 const BY_NAME = new Map(PROJECT_TOOLS.map((tool) => [tool.name, tool]));
 
 /**
+ * Literature and source tools: finding, adding, reading and checking papers,
+ * the paper library and the citation graph.
+ */
+const LITERATURE_TOOLS = [
+  "search_papers",
+  "add_citation",
+  "audit_citations",
+  "verify_citation_support",
+  "read_paper",
+  "search_library",
+  "library_index",
+  "query_citation_graph",
+  "update_citation_graph",
+  "inspect_paper_page",
+];
+
+/**
+ * Tools a mode leaves out of its catalog, so a turn does not carry their
+ * descriptions. Polish proofreads and keeps content and citations exactly as
+ * they are, so it needs neither literature nor repository tools. Every other
+ * mode keeps the whole catalog: drafting and research use the paper tools,
+ * and the read-only modes rely on the citation and claim checks. Codex keeps
+ * the whole catalog in every mode: its tools are fixed when a conversation
+ * starts.
+ */
+const MODE_EXCLUDED: Record<string, ReadonlySet<string>> = {
+  polish: new Set([...LITERATURE_TOOLS, "inspect_repository", "verify_code_claim", "list_code_evidence"]),
+};
+
+/** Modes whose prompt leaves out the literature-tool instructions too. */
+export const LEAN_MODES: ReadonlySet<string> = new Set(Object.keys(MODE_EXCLUDED));
+
+/** The tools a turn in `mode` is offered (all of them for an unknown or absent mode). */
+export function modeTools(mode?: string): readonly ProjectTool[] {
+  const excluded = mode ? MODE_EXCLUDED[mode] : undefined;
+  return excluded ? PROJECT_TOOLS.filter((tool) => !excluded.has(tool.name)) : PROJECT_TOOLS;
+}
+
+/**
  * The project tools the Claude backend serves besides the research tools,
  * with their descriptions — for the /api/agent/info transparency listing.
  */
@@ -446,6 +492,8 @@ export async function executeTool(ctx: BackendTurnContext, name: string, args: a
     ctx.signal.throwIfAborted();
     const tool = BY_NAME.get(name);
     if (!tool) return err(`unknown tool: ${name}`);
+    // A catalog trimmed for the mode (not Codex's fixed one) is also the allowlist.
+    if (ctx.toolset && !ctx.toolset.has(name)) return err(`${name} is not available in this mode`);
     const out = await tool.run(ctx, args);
     return typeof out === "string" ? ok(out) : out;
   } catch (e: any) {

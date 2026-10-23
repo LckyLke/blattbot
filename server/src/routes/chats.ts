@@ -33,6 +33,8 @@ import {
 } from "../chats.js";
 import { pruneOrphanChatUploads, resolveAttachments, type TurnAttachment } from "../chatimages.js";
 import { startTurn } from "../turn-runner.js";
+import { dropChatFromQueue, enqueueTurn, QueueFullError, queuedImageIds, queueState } from "../turn-queue.js";
+import { deleteChatTurnRefs } from "../checkpoints.js";
 
 /** Per project, when the last orphan sweep ran (see sweepChatUploads). */
 const lastUploadSweep = new Map<string, number>();
@@ -53,7 +55,10 @@ function sweepChatUploads(projectId: string): void {
   if (now - last < SWEEP_INTERVAL_MS) return;
   lastUploadSweep.set(projectId, now);
   try {
-    pruneOrphanChatUploads(projectId, referencedImageIds(projectId), now);
+    const referenced = referencedImageIds(projectId);
+    // Queued messages are not in a transcript yet, but their images are needed.
+    for (const id of queuedImageIds(projectId)) referenced.add(id);
+    pruneOrphanChatUploads(projectId, referenced, now);
   } catch {
     /* never fatal */
   }
@@ -114,6 +119,9 @@ export function registerChatRoutes(app: FastifyInstance): void {
       if (!deleteChat(project.id, req.params.chatId)) return reply.code(404).send({ error: "unknown chat" });
       // The OpenAI-compatible backend keeps the full conversation text on disk.
       if (sessionId) deleteSessionData(sessionId);
+      // The chat's turn checkpoints and waiting messages go with it.
+      dropChatFromQueue(project.id, req.params.chatId);
+      await deleteChatTurnRefs(projectDir(project.id), req.params.chatId).catch(() => {});
       // If the active chat went away this reactivates the newest remaining
       // conversation, or creates a fresh one when none is left.
       const active = ensureActiveChat(project.id);
@@ -147,14 +155,19 @@ export function registerChatRoutes(app: FastifyInstance): void {
 
   app.post<{
     Params: { id: string };
-    Body: { message: string; mode?: string; files?: string[]; images?: string[]; mentions?: unknown };
+    Body: { message: string; mode?: string; files?: string[]; images?: string[]; mentions?: unknown; chatId?: unknown };
   }>(
     "/api/projects/:id/chat",
     async (req, reply) => {
       const project = getProject(req.params.id);
       if (!project) return reply.code(404).send({ error: "unknown project" });
       const message = req.body?.message?.trim() ?? "";
-      if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn already in progress" });
+      // The chat the message was written in. Older clients send none and get
+      // the project's active chat, as before.
+      const requestedChat = req.body?.chatId;
+      if (requestedChat !== undefined && (typeof requestedChat !== "string" || !getChat(project.id, requestedChat))) {
+        return reply.code(404).send({ error: "unknown chat — reload the chat list" });
+      }
       // Attached images: ids from POST …/chat-image, resolved back to the files
       // stored outside the working tree.
       let attachments: TurnAttachment[];
@@ -169,7 +182,6 @@ export function registerChatRoutes(app: FastifyInstance): void {
       } catch (err: any) {
         return reply.code(400).send({ error: err.message });
       }
-      if (isTurnActive(project.id)) return reply.code(409).send({ error: "agent turn already in progress" });
       // "Here's a screenshot" with no words is the most natural way to use a
       // paste-an-image composer, so pictures alone are a complete message; the
       // attachment note the prompt carries tells the agent what it is looking at.
@@ -189,9 +201,23 @@ export function registerChatRoutes(app: FastifyInstance): void {
         }
       }
 
-      startTurn(project, { message, mode, scope, mentions, attachments });
+      const chatId = typeof requestedChat === "string" ? requestedChat : ensureActiveChat(project.id).id;
+      const request = { chatId, message, mode, scope, mentions, attachments };
+      // A message sent while a turn runs waits in the project's queue and
+      // starts on its own when the turn ends. No await between this check
+      // and startTurn (see startTurn).
+      if (isTurnActive(project.id)) {
+        try {
+          const queued = enqueueTurn(project.id, chatId, request);
+          return { ok: true, queued: true, queueId: queued.id, queue: queueState(project.id) };
+        } catch (err: any) {
+          if (err instanceof QueueFullError) return reply.code(409).send({ error: err.message });
+          throw err;
+        }
+      }
+      startTurn(project, request);
 
-      return { ok: true };
+      return { ok: true, chatId };
     },
   );
 

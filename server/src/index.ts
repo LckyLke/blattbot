@@ -35,6 +35,7 @@ import { registerCompileRoutes } from "./routes/compile.js";
 import { registerFileRoutes } from "./routes/files.js";
 import { registerRefRoutes } from "./routes/refs.js";
 import { registerChatRoutes } from "./routes/chats.js";
+import { registerTurnRoutes } from "./routes/turns.js";
 import { registerWsRoutes } from "./routes/ws.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -124,6 +125,7 @@ registerCompileRoutes(app);
 registerFileRoutes(app);
 registerRefRoutes(app);
 registerChatRoutes(app);
+registerTurnRoutes(app);
 registerInlineQuestions(app);
 registerWsRoutes(app);
 
