@@ -21,12 +21,14 @@ const SCRIPTS = [
   "file-mentions-ui",
   "graph-explorer",
   "history-ui",
+  "overleaf-review-ui",
   "pdf-links-ui",
   "refs-cleanup-ui",
   "research-ui",
   "sidebar-ui",
   "sync-ui",
   "turn-flow-ui",
+  "ui-fixes",
 ];
 
 const serverDir = join(dirname(fileURLToPath(import.meta.url)), "..");

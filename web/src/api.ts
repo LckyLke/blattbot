@@ -5,6 +5,8 @@ export interface Project {
   gitUrl: string;
   kind: "git" | "overleaf" | "local";
   mainTex?: string;
+  /** The user picked mainTex in the project settings. */
+  mainTexChosen?: boolean;
   sessionId?: string;
   createdAt: string;
   hasToken: boolean;
@@ -13,10 +15,16 @@ export interface Project {
   accountId?: string;
   /** Cumulative agent cost/turn totals — updated at every turn end. */
   stats?: ProjectStats;
+  /** List status (GET /api/projects): an agent turn is running. */
+  turnActive?: boolean;
+  /** List status: files with pending (unapproved) changes. */
+  pendingFiles?: number;
   /** Overleaf projects: when the last full sync finished. */
   lastSyncAt?: string;
   /** Overleaf projects: Overleaf's lastUpdated as of the last sync or push. */
   remoteLastUpdated?: string;
+  /** The compiler set in the Overleaf project (read on sync and push). */
+  overleafCompiler?: "pdflatex" | "xelatex" | "lualatex" | "latex";
 }
 
 /** Cumulative agent usage of a project (cost known only on the Claude backend). */
@@ -246,6 +254,19 @@ export interface FileContent {
   content: string;
 }
 
+/** Result of creating, renaming or deleting a project file. */
+export interface FileOpResult {
+  ok: boolean;
+  /** The file's (new) path. */
+  path: string;
+  /** The old path of a rename. */
+  from?: string;
+  /** The working diff afterwards. */
+  diff: string;
+  /** The project's file list afterwards. */
+  files: string[];
+}
+
 export interface ProjectDetail extends Project {
   files: string[];
   turnActive: boolean;
@@ -399,6 +420,8 @@ export interface ProjectSettings {
   model?: string;
   /** Mode preselected for new chats in this project ("" = Edit). */
   defaultMode?: string;
+  /** Overleaf projects: push in-place edits as tracked changes (experimental). */
+  trackChanges?: boolean;
   /** The model a turn on THIS project runs: override → global, aliases resolved. */
   resolvedModel: string;
 }
@@ -544,7 +567,7 @@ export function ensureAuth(): Promise<void> {
   return authReady;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   await ensureAuth();
   const res = await fetch(appUrl(path), {
     ...init,
@@ -676,6 +699,28 @@ export const api = {
     request<{ ok: boolean; diff: string }>(`/api/projects/${id}/file`, {
       method: "PUT",
       body: JSON.stringify({ path, content, base }),
+    }),
+  /** New project file (missing folders on its path are created). */
+  createFile: (id: string, path: string, content = "") =>
+    request<FileOpResult>(`/api/projects/${id}/files`, {
+      method: "POST",
+      body: JSON.stringify({ path, content }),
+    }),
+  renameFile: (id: string, from: string, to: string) =>
+    request<FileOpResult>(`/api/projects/${id}/files/rename`, {
+      method: "POST",
+      body: JSON.stringify({ from, to }),
+    }),
+  deleteFile: (id: string, path: string) =>
+    request<FileOpResult>(`/api/projects/${id}/files?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
+  /** The main-file choices: .tex files with a \documentclass, plus the current one. */
+  mainFiles: (id: string) =>
+    request<{ mainTex: string | null; chosen: boolean; candidates: string[] }>(`/api/projects/${id}/main-files`),
+  /** Pick the main file (sets mainTexChosen, so detection keeps it). */
+  setMainFile: (id: string, mainTex: string) =>
+    request<{ ok: boolean; project: Project }>(`/api/projects/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ mainTex }),
     }),
   cookieViaBrowser: (url: string) =>
     request<{ cookie: string; source: string }>("/api/cookies/browser", {
@@ -945,7 +990,7 @@ export const api = {
   projectSettings: (id: string) => request<ProjectSettings>(`/api/projects/${id}/settings`),
   saveProjectSettings: (
     id: string,
-    patch: { styleAppend?: string; model?: string; defaultMode?: string },
+    patch: { styleAppend?: string; model?: string; defaultMode?: string; trackChanges?: boolean },
   ) =>
     request<ProjectSettings>(`/api/projects/${id}/settings`, {
       method: "PUT",

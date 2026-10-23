@@ -38,13 +38,13 @@ describe("shared tool registry", () => {
 
   it("trims the Polish catalog for Claude and the OpenAI-compatible backend, never Codex's", async () => {
     const polish = modeTools("polish").map((t) => t.name);
-    expect(polish).toEqual(["read_url", "list_files", "search_files", "read_file", "write_file", "edit_file", "ask_user", "compile_latex", "list_citations"]);
+    expect(polish).toEqual(["read_url", "list_files", "search_files", "read_file", "write_file", "edit_file", "ask_user", "compile_latex", "list_citations", "list_overleaf_comments"]);
     for (const mode of ["edit", "research", "review", "understand", "code", undefined]) {
       expect(modeTools(mode)).toBe(PROJECT_TOOLS);
     }
     const server: any = await buildMcpServer({ ...ctx, mode: "polish" });
     const listed = await server.instance.server._requestHandlers.get("tools/list")({ method: "tools/list", params: {} }, {});
-    expect(listed.tools.map((t: any) => t.name).sort()).toEqual(["compile_latex", "list_citations", "read_url", "search_files"]);
+    expect(listed.tools.map((t: any) => t.name).sort()).toEqual(["compile_latex", "list_citations", "list_overleaf_comments", "read_url", "search_files"]);
     expect(codexTools().map((t) => t.name)).toEqual(PROJECT_TOOLS.map((t) => t.name));
     // The lean prompt names none of the tools the mode leaves out.
     expect(buildSystemAppend({ id: "p", name: "p", gitUrl: "", createdAt: "" } as any, AGENT_MODES.find((m) => m.id === "polish")!, undefined, { ...DEFAULT_SETTINGS }, []))

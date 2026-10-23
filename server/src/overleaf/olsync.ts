@@ -11,8 +11,9 @@ import { listFiles } from "../latex.js";
 import * as git from "../git.js";
 import { CONFLICT_LABELS, describeConflict, type RemoteConflict } from "../conflicts.js";
 import { mergeText } from "../merge.js";
-import type { OverleafClient, OlRealtimeSession, ProjectTree } from "./olclient.js";
-import { computeTextOp } from "./ot.js";
+import { generateIdSeed, type OverleafClient, type OlDocSnapshot, type OlRealtimeSession, type ProjectTree } from "./olclient.js";
+import { computeTextOpHunks, historyTextOperation } from "./ot.js";
+import { projectMetaFromTree, type OverleafProjectMeta } from "./metadata.js";
 
 export interface SyncInResult {
   changed: boolean;
@@ -312,6 +313,18 @@ export interface PushResult {
   /** Paths that did NOT reach Overleaf (each also carries a warning). */
   failed: string[];
   warnings: string[];
+  /** Overleaf's compiler / root document, read from the project join the push made anyway. */
+  remoteMeta?: OverleafProjectMeta;
+}
+
+export interface PushOptions {
+  /**
+   * Send in-place doc edits as tracked changes (`meta.tc`), one change per
+   * edited region. Experimental: whether an instance records them is checked
+   * after each doc and reported. Uploads, deletions and history-OT docs
+   * cannot be tracked; they get a warning instead.
+   */
+  trackChanges?: boolean;
 }
 
 /**
@@ -329,6 +342,7 @@ export async function pushChanges(
   toRef: string,
   /** The remote state the caller's conflict check approved (see applyChanges). */
   checkedSnapshot?: Map<string, Buffer>,
+  opts: PushOptions = {},
 ): Promise<PushResult> {
   const nameStatus = await git.diffNameStatus(dir, fromRef, toRef);
   // Content comes from the commit, not the worktree: after a partial approval
@@ -338,7 +352,7 @@ export async function pushChanges(
     if (!content) throw new Error(`${path} is missing from the approved commit`);
     return content;
   };
-  return applyChanges(client, remoteProjectId, read, parseNameStatus(nameStatus), checkedSnapshot);
+  return applyChanges(client, remoteProjectId, read, parseNameStatus(nameStatus), checkedSnapshot, opts);
 }
 
 /** Upload the entire working tree (used when publishing a local project). */
@@ -385,15 +399,18 @@ async function applyChanges(
   read: (path: string) => Promise<Buffer>,
   changes: PushChange[],
   checkedSnapshot?: Map<string, Buffer>,
+  opts: PushOptions = {},
 ): Promise<PushResult> {
   const result: PushResult = { uploaded: [], updatedInPlace: [], deleted: [], failed: [], warnings: [] };
   if (changes.length === 0) return result;
+  const track = opts.trackChanges === true;
 
   let tree: ProjectTree | null = null;
   const getTree = async (): Promise<ProjectTree | null> => {
     if (tree) return tree;
     try {
       tree = await client.joinProjectTree(remoteProjectId);
+      result.remoteMeta ??= projectMetaFromTree(tree);
       return tree;
     } catch (err: any) {
       result.warnings.push(`could not fetch the project file tree (${err?.message ?? err})`);
@@ -449,33 +466,62 @@ async function applyChanges(
    * applies it asynchronously and reports failures as a later otUpdateError),
    * so the edit is verified by re-joining the doc and byte-comparing its text
    * against the target — a mismatch or a pushed otUpdateError fails the doc.
+   *
+   * History-OT docs (newer Overleaf) take history text operations instead of
+   * sharejs ops; the same verification applies. With `track`, sharejs ops
+   * carry `meta.tc` and the re-join checks Overleaf recorded the change.
    */
   const updateDocInPlace = async (docId: string, target: string, path: string): Promise<void> => {
     const s = await getSession();
-    const { lines, version } = await s.joinDoc(docId);
+    const doc = await s.joinDoc(docId);
     const checked = checkedSnapshot ? decodeUtf8(checkedSnapshot.get(path) ?? Buffer.alloc(0)) : null;
     const assertUnchanged = (live: string) => {
       if (checkedSnapshot && !checkedSnapshot.has(path)) throw new RemoteDocChangedError();
       if (checked !== null && !sameDocText(live, checked)) throw new RemoteDocChangedError();
     };
+    /** Tracked-change id seeds sent in this doc's updates. */
+    const seeds: string[] = [];
+    const send = async (live: OlDocSnapshot): Promise<void> => {
+      const text = live.lines.join("\n");
+      if (live.type === "history-ot") {
+        await s.applyHistoryOtUpdate(docId, historyTextOperation(live.historyContent ?? text, live.hiddenSpans ?? [], target), live.version);
+      } else if (track) {
+        const tc = generateIdSeed();
+        seeds.push(tc);
+        await s.applyOtUpdate(docId, computeTextOpHunks(text, target), live.version, { tc });
+      } else {
+        // One edit per changed region (not one splice from the first change
+        // to the last), so comments anchored in untouched text between two
+        // edits keep their range.
+        await s.applyOtUpdate(docId, computeTextOpHunks(text, target), live.version);
+      }
+    };
     try {
-      const current = lines.join("\n");
+      const current = doc.lines.join("\n");
       if (current === target) return; // remote already matches
       assertUnchanged(current);
       try {
-        await s.applyOtUpdate(docId, computeTextOp(current, target), version);
+        await send(doc);
       } catch (err: any) {
         if (!/version/i.test(String(err?.message ?? err))) throw err;
         const fresh = await s.joinDoc(docId);
         if (fresh.lines.join("\n") === target) return;
         assertUnchanged(fresh.lines.join("\n"));
-        const op = computeTextOp(fresh.lines.join("\n"), target);
-        if (op.length > 0) await s.applyOtUpdate(docId, op, fresh.version);
+        await send(fresh);
       }
       const applied = await s.joinDoc(docId);
       if (s.otUpdateError) throw s.otUpdateError;
       if (applied.lines.join("\n") !== target) {
         throw new Error("doc text did not match the edit after the ack");
+      }
+      if (track && doc.type === "history-ot") {
+        result.warnings.push(
+          `${path}: this document uses Overleaf's newer history format, which BlattBot cannot push as tracked changes; the edit was applied as a normal edit`,
+        );
+      } else if (track && !applied.ranges.changes.some((c) => seeds.some((seed) => c.id.startsWith(seed)))) {
+        result.warnings.push(
+          `This Overleaf instance did not record tracked changes for ${path}; the edit was applied as a normal edit`,
+        );
       }
     } finally {
       await s.leaveDoc(docId).catch(() => {
@@ -495,6 +541,7 @@ async function applyChanges(
         }
         await client.deleteEntity(remoteProjectId, entity.type, entity.id);
         result.deleted.push(change.path);
+        if (track) result.warnings.push(`${change.path}: deleted on Overleaf — deleting a file cannot be a tracked change`);
       } else {
         const content = await read(change.path);
         // Existing text docs are edited in place over the websocket — never
@@ -520,6 +567,14 @@ async function applyChanges(
                 );
                 continue;
               }
+              if (track) {
+                // Replacing the whole doc would be neither tracked nor keep its comments.
+                result.failed.push(change.path);
+                result.warnings.push(
+                  `${change.path}: pushing it as a tracked change failed (${err?.message ?? err}) — not replaced as a whole file; still pending. Approve again to retry, or turn off "Push changes to Overleaf as tracked changes" in Project settings to push it as a normal edit`,
+                );
+                continue;
+              }
               result.warnings.push(
                 `${change.path}: in-place update failed (${err?.message ?? err}) — replacing the whole doc instead; comments/tracked changes on ${change.path} may not survive`,
               );
@@ -538,8 +593,14 @@ async function applyChanges(
             res = await client.uploadFile(remoteProjectId, change.path, content, await ensureFolderId(fileDir));
           }
         }
-        if (res.ok) result.uploaded.push(change.path);
-        else {
+        if (res.ok) {
+          result.uploaded.push(change.path);
+          if (track) {
+            result.warnings.push(
+              `${change.path}: uploaded as a whole file — Overleaf records only edits inside existing documents as tracked changes, not uploads`,
+            );
+          }
+        } else {
           result.failed.push(change.path);
           result.warnings.push(`${change.path}: upload failed (duplicate could not be replaced) — still pending, approve again to retry`);
         }

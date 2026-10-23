@@ -1,12 +1,17 @@
 import { useModelList } from "../models";
 import { useEffect, useState } from "react";
 import { api, type Project, type ProjectSettings as ProjectSettingsData } from "../api";
+import SharedInstructionsSettings from "./SharedInstructionsSettings";
+
+const COMPILER_LABELS: Record<string, string> = { pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX", latex: "LaTeX" };
 
 interface Props {
   project: Project;
   onClose: () => void;
   /** Called with the fresh settings after every successful save. */
   onSaved: (settings: ProjectSettingsData) => void;
+  /** The main file changed — App reloads the project and recompiles a visible PDF. */
+  onMainFileChanged?: () => void;
 }
 
 /** Mirrors AGENT_MODES on the server (which validates the id). */
@@ -22,29 +27,47 @@ const MAX_STYLE = 4000;
 
 /**
  * Per-project settings modal: writing style/instructions, a model override,
+ * the main file to compile,
  * and the default mode for new chats. Everything is optional — empty fields
  * fall back to the global settings.
  */
-export default function ProjectSettings({ project, onClose, onSaved }: Props) {
+export default function ProjectSettings({ project, onClose, onSaved, onMainFileChanged }: Props) {
   const [loaded, setLoaded] = useState(false);
   const [style, setStyle] = useState("");
   const [model, setModel] = useState("");
   const [defaultMode, setDefaultMode] = useState("");
+  const [trackChanges, setTrackChanges] = useState(false);
+  /** The instructions as last saved (blattbot.md is created from these). */
+  const [savedStyle, setSavedStyle] = useState("");
   const [saving, setSaving] = useState(false);
   const modelList = useModelList();
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Main-file choices (null until loaded or when the server could not list them). */
+  const [mainChoices, setMainChoices] = useState<string[] | null>(null);
+  const [mainFile, setMainFile] = useState("");
+  const [savedMain, setSavedMain] = useState("");
 
   useEffect(() => {
     api
       .projectSettings(project.id)
       .then((s) => {
         setStyle(s.styleAppend ?? "");
+        setSavedStyle(s.styleAppend ?? "");
+        setTrackChanges(s.trackChanges === true);
         setModel(s.model ?? "");
         setDefaultMode(s.defaultMode ?? "");
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoaded(true));
+    api
+      .mainFiles(project.id)
+      .then((m) => {
+        setMainChoices(m.candidates);
+        setMainFile(m.mainTex ?? "");
+        setSavedMain(m.mainTex ?? "");
+      })
+      .catch((err) => setError(`Couldn't list the main-file choices: ${err.message}`));
   }, [project.id]);
 
   useEffect(() => {
@@ -64,8 +87,15 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
         styleAppend: style,
         model: model.trim(),
         defaultMode,
+        ...(project.kind === "overleaf" ? { trackChanges } : {}),
       });
+      setSavedStyle(next.styleAppend ?? "");
       onSaved(next);
+      if (mainFile && mainFile !== savedMain) {
+        await api.setMainFile(project.id, mainFile);
+        setSavedMain(mainFile);
+        onMainFileChanged?.();
+      }
       setSavedMsg("Saved.");
       setTimeout(() => setSavedMsg(null), 2000);
     } catch (err: any) {
@@ -145,6 +175,33 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                 </datalist>
               </label>
 
+              {mainChoices && mainChoices.length > 0 && (
+                <label className="mt-3 block text-[11px] text-graphite">
+                  Main file{" "}
+                  <span className="text-graphite/60">
+                    (the document BlattBot compiles; Overleaf's own setting is unchanged)
+                  </span>
+                  <select
+                    value={mainFile}
+                    onChange={(e) => setMainFile(e.target.value)}
+                    aria-label="Main file"
+                    className="mt-1 block max-w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper"
+                  >
+                    {!mainFile && <option value="">detect automatically</option>}
+                    {mainChoices.map((path) => (
+                      <option key={path} value={path}>
+                        {path}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {mainChoices && mainChoices.length === 0 && (
+                <p className="mt-3 text-[11px] text-graphite">
+                  Main file: no .tex file with a \documentclass line yet.
+                </p>
+              )}
+
               <label className="mt-3 block text-[11px] text-graphite">
                 Default mode for new chats
                 <select
@@ -160,6 +217,34 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                 </select>
               </label>
 
+              {project.kind === "overleaf" && (
+                <div className="mt-3">
+                  <label className="flex items-start gap-2 text-[12px] text-paper-dim">
+                    <input
+                      type="checkbox"
+                      checked={trackChanges}
+                      onChange={(e) => setTrackChanges(e.target.checked)}
+                      className="mt-0.5 accent-[var(--color-leaf)]"
+                    />
+                    <span>
+                      Push changes to Overleaf as tracked changes{" "}
+                      <span className="rounded border border-gold/40 px-1 text-[10px] uppercase tracking-wide text-gold">experimental</span>
+                      <span className="mt-0.5 block text-[11px] leading-snug text-graphite">
+                        Co-authors can then accept or reject each approved edit in Overleaf's review panel. Needs review
+                        permission on the project; new files, uploads and deletions cannot be tracked. Not every Overleaf
+                        instance records them — BlattBot checks after each push and warns if it did not.
+                      </span>
+                    </span>
+                  </label>
+                  {project.overleafCompiler && (
+                    <p className="mt-2 text-[11px] text-graphite">
+                      Overleaf compiler: {COMPILER_LABELS[project.overleafCompiler] ?? project.overleafCompiler}
+                      {project.mainTex ? ` · main document: ${project.mainTex}` : ""}
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="mt-4 flex items-center gap-3">
                 {savedMsg && <span className="text-[12px] text-leaf">{savedMsg}</span>}
                 <button
@@ -171,6 +256,8 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                   {saving ? "Saving…" : "Save"}
                 </button>
               </div>
+
+              <SharedInstructionsSettings projectId={project.id} savedStyle={savedStyle} styleDirty={style !== savedStyle} />
             </>
           )}
         </div>

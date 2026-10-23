@@ -21,6 +21,7 @@ import {
   api,
   ensureAuth,
   ApproveConflictError,
+  HttpError,
   type Account,
   type ApproveSelection,
   type ChatMeta,
@@ -41,10 +42,15 @@ import Sidebar from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
 import ProjectSettings from "./components/ProjectSettings";
 import ChatView from "./components/Chat";
-import { countDrafts, subscribeDrafts } from "./drafts";
+import { countDrafts, flushDraftPersistence, subscribeDrafts, unpersistedDraftCount } from "./drafts";
+import { countAllFileSaves, subscribeFileSaves } from "./editor-sync";
+import { draftLeaveNotice, shouldWarnOnUnload } from "./leave-guard";
 import { useProjectSync } from "./useProjectSync";
 import { syncConflicts } from "./remote-change";
 import ProjectSyncNotice from "./components/ProjectSyncNotice";
+import { OpenInOverleaf } from "./components/ProjectStatus";
+import ShortcutSheet from "./components/ShortcutSheet";
+import { sendProofCommand, useShortcuts } from "./shortcuts";
 import { useHistoryStatus } from "./useHistoryStatus";
 import { defaultApproveMessage } from "./approve-message";
 import type { RevertResult } from "./api";
@@ -192,6 +198,8 @@ function AppShell() {
   const [listError, setListError] = useState<string | null>(null);
   const [view, setView] = useState<View>("dashboard");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [engine, setEngine] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -311,6 +319,8 @@ function AppShell() {
   const remoteSeenRef = useRef<(at?: string) => void>(() => {});
   // Mirrors `compiling` for use inside callbacks without stale closures.
   const compilingRef = useRef(false);
+  /** Rebuild once the running compile ends (it was started for an outdated main file). */
+  const recompileQueued = useRef(false);
   compilingRef.current = compiling;
   // True when the working tree may have changed since the last compile — the
   // PDF tab auto-compiles only then (or when nothing was compiled yet).
@@ -326,7 +336,10 @@ function AppShell() {
    * shows the error with a retry instead of an empty, first-run hub.
    * Resolves the fresh project list, or null when it could not be loaded.
    */
+  /** Bumped by every full list load: a status poll answered after one is stale. */
+  const listLoads = useRef(0);
   const refreshProjects = useCallback(async (): Promise<Project[] | null> => {
+    listLoads.current++;
     const [list, accts] = await Promise.allSettled([api.projects(), api.accounts()]);
     if (list.status === "fulfilled") setProjects(list.value);
     if (accts.status === "fulfilled") setAccounts(accts.value);
@@ -363,6 +376,33 @@ function AppShell() {
       .catch(() => {});
   }, []);
 
+  // The list's status fields (running turns, pending files) change on the
+  // server without an event for projects other than the open one: refresh
+  // an already loaded list while the tab is visible. An unchanged answer
+  // keeps the old array, so nothing re-renders for it.
+  useEffect(() => {
+    const poll = () => {
+      if (document.visibilityState !== "visible") return;
+      const loads = listLoads.current;
+      api
+        .projects()
+        .then((list) => {
+          // A project created or removed meanwhile: the full load that followed wins.
+          if (listLoads.current !== loads) return;
+          setProjects((prev) => (prev === null || JSON.stringify(prev) === JSON.stringify(list) ? prev : list));
+        })
+        .catch(() => {});
+    };
+    const timer = setInterval(poll, 15_000);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, []);
+  // The open project's pending files, live from the diff.
+  const pendingFileCount = useMemo(() => parseDiff(diff).length, [diff]);
+
   // Remember the current surface so a reload lands where the user left off.
   useEffect(() => {
     localStorage.setItem("blattbot.view", view);
@@ -380,7 +420,9 @@ function AppShell() {
     try {
       const versionAtRequest = pdfVersionRef.current;
       const d = await api.project(id);
-      if (selectedRef.current?.id !== id) return;
+      // By id, not by the listed project: a project opened right after it was
+      // created may not be in the (still loading) project list yet.
+      if (selectedIdRef.current !== id) return;
       setDetail(d);
       if (d.queue) setQueue(d.queue);
       if (d.lastCompile && versionAtRequest === pdfVersionRef.current) {
@@ -545,6 +587,12 @@ function AppShell() {
           setCompiling(false);
           dirtySinceCompile.current = false;
           acceptCompile(info as CompileInfo);
+          // The main file changed while this build ran: it built the old one.
+          if (recompileQueued.current) {
+            recompileQueued.current = false;
+            dirtySinceCompile.current = true;
+            setTimeout(() => void startCompileRef.current(), 0);
+          }
           break;
         }
         case "sync_warning":
@@ -585,11 +633,15 @@ function AppShell() {
           dirtySinceCompile.current = true;
           setSourceStamp((s) => s + 1);
           break;
+        case "project_updated":
+          // Overleaf's compiler or main document changed the project record.
+          void refreshProjects();
+          break;
         default:
           break;
       }
     },
-    [flushDelta, refreshDetail, refreshChats, selectedId, acceptCompile],
+    [flushDelta, refreshDetail, refreshChats, selectedId, acceptCompile, refreshProjects],
   );
 
   const handleEventRef = useRef(handleEvent);
@@ -778,7 +830,7 @@ function AppShell() {
 
   // Leaving the project view while the Proof holds unapproved changes, or
   // while the Source editor holds unsaved drafts: the edits stay (on disk,
-  // resp. in this tab), but out of sight they are easy to forget — ask
+  // resp. in this browser), but out of sight they are easy to forget — ask
   // before they disappear from view. Resolves true without a dialog when
   // there is nothing pending; approve/discard never navigate, so they are
   // unaffected.
@@ -803,11 +855,8 @@ function AppShell() {
         );
       }
       if (drafts > 0) {
-        parts.push(
-          `The editors hold unsaved edits in ${drafts === 1 ? "1 file" : `${drafts} files`} ` +
-            `of “${name}” — they are kept in this tab until you save or revert them, ` +
-            `but a page reload loses them.`,
-        );
+        flushDraftPersistence();
+        parts.push(draftLeaveNotice(drafts, project ? unpersistedDraftCount(project.id) : drafts, name));
       }
       return dialog.confirm({
         title: diff.trim() ? "Unapproved changes" : "Unsaved edits",
@@ -836,22 +885,33 @@ function AppShell() {
     void refreshProjects();
   }, [view, confirmLeave, refreshProjects]);
 
-  // Browser-level guard on closing/reloading the tab: armed only while
-  // unapproved changes are pending, an agent turn is still running, or the
-  // Source editor holds unsaved drafts (in any project — a reload loses them
-  // all) — a clean, idle state never nags.
+  // Browser-level guard on closing/reloading the tab (see leave-guard.ts):
+  // only for what a reload would actually lose or cut short — an agent turn
+  // still running, a save in flight, or editor drafts browser storage could
+  // not keep. Pending changes are safe on disk and drafts survive a reload,
+  // so neither nags. The listener is only attached while one of these could
+  // apply; the precise check runs when the page is about to unload.
   const draftTotal = useSyncExternalStore(subscribeDrafts, countDrafts);
-  const warnBeforeUnload = Boolean(diff.trim()) || busy || draftTotal > 0;
+  const saveTotal = useSyncExternalStore(subscribeFileSaves, countAllFileSaves);
+  const mayWarnBeforeUnload = busy || draftTotal > 0 || saveTotal > 0;
   useEffect(() => {
-    if (!warnBeforeUnload) return;
+    if (!mayWarnBeforeUnload) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Write the debounced drafts out first — those then survive the reload.
+      flushDraftPersistence();
+      const warn = shouldWarnOnUnload({
+        busy: busyRef.current,
+        unpersistedDrafts: unpersistedDraftCount(),
+        savesInFlight: countAllFileSaves(),
+      });
+      if (!warn) return;
       e.preventDefault();
       // Chromium additionally requires returnValue to be set.
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [warnBeforeUnload]);
+  }, [mayWarnBeforeUnload]);
 
   /**
    * Send one message. Resolves false when nothing was sent — the composer
@@ -1272,11 +1332,18 @@ function AppShell() {
   }, [selectedId, pushChat, offerUndoDiscard]);
 
   const rejectFile = useCallback(
-    async (path: string) => {
+    async (path: string, oldPath?: string) => {
       const id = selectedId;
       if (!id) return;
       try {
-        const r = await api.rejectFile(id, path);
+        let r = await api.rejectFile(id, path);
+        // A rename is two paths: discarding it also brings the old file back.
+        if (oldPath) {
+          r = await api.rejectFile(id, oldPath).catch((err) => {
+            if (err instanceof HttpError && err.status === 409) return r;
+            throw err;
+          });
+        }
         if (selectedRef.current?.id !== id) return;
         // The working tree just changed under the last compile/source view.
         dirtySinceCompile.current = true;
@@ -1365,6 +1432,14 @@ function AppShell() {
     setSourceStamp((s) => s + 1);
   }, []);
 
+  // Source created, renamed or deleted a file: show the new file list at once,
+  // and reload the project (a renamed or deleted main file moves its role).
+  const handleFilesChanged = useCallback((projectId: string, files: string[]) => {
+    if (selectedRef.current?.id !== projectId) return;
+    setDetail((d) => (d && d.id === projectId ? { ...d, files } : d));
+    void refreshProjects();
+  }, [refreshProjects]);
+
   // After a source save: if the PDF is on screen, refresh it immediately.
   const panesRef = useRef(panes);
   panesRef.current = panes;
@@ -1374,6 +1449,20 @@ function AppShell() {
       void startCompileRef.current();
     }
   }, []);
+
+  // Project settings picked another main file: the last PDF is of the old
+  // one. Reload the project (the Source tree's "main" badge) and rebuild a
+  // visible PDF now, otherwise on the next visit.
+  const handleMainFileChanged = useCallback(() => {
+    dirtySinceCompile.current = true;
+    void refreshProjects();
+    const p = panesRef.current;
+    if ((p.left === "pdf" || p.right === "pdf") && !busyRef.current) {
+      // A build already running is of the old main file: rebuild after it.
+      if (compilingRef.current) recompileQueued.current = true;
+      else void startCompileRef.current();
+    }
+  }, [refreshProjects]);
 
   // History tab: the unread badge for incoming commits, pending reverts, and
   // the Proof's default commit message derived from the chat.
@@ -1606,6 +1695,46 @@ function AppShell() {
 
   const inProject = view === "project" && selected !== null;
 
+  // ---- Keyboard shortcuts (shortcuts.ts) ----
+  const showShortcuts = useCallback(() => {
+    void dialog.alert({ title: "Keyboard shortcuts", body: <ShortcutSheet /> });
+  }, [dialog]);
+
+  /** Bring a view on screen: a pane already showing it stays; otherwise the
+   *  pane that is not the chat takes it (the only pane on a phone). */
+  const showView = (target: PaneView) => {
+    if (window.matchMedia("(max-width: 900px)").matches) {
+      selectView("left", target);
+      return;
+    }
+    if (panes.left === target || panes.right === target) return;
+    selectView(target === "chat" || panes.right === "chat" ? "left" : "right", target);
+  };
+
+  useShortcuts({
+    inProject,
+    help: showShortcuts,
+    showView,
+    focusChat: () => {
+      showView("chat");
+      // The chat panel may mount on this render: look for the composer a few frames.
+      let frames = 0;
+      const focus = () => {
+        const box = [...document.querySelectorAll<HTMLTextAreaElement>("textarea.chat-composer-input")].find(
+          (el) => el.offsetParent !== null,
+        );
+        if (box) box.focus();
+        else if (++frames < 30) requestAnimationFrame(focus);
+      };
+      requestAnimationFrame(focus);
+    },
+    proof: (command) => {
+      showView("proof");
+      // After the pane switch has rendered (the panel may still be loading — the bus waits).
+      setTimeout(() => sendProofCommand(command), 0);
+    },
+  });
+
   // The left pane is the flexible one, the right pane fixed at panelW; CSS
   // order places the physical panes (the sidebar keeps order 0 and comes first).
   const paneClass = (side: PaneSide) =>
@@ -1715,6 +1844,8 @@ function AppShell() {
             onQuoteToChat={quoteToChat}
             onSaved={handleSourceSaved}
             reveal={sourceReveal}
+            overleaf={selected!.kind === "overleaf"}
+            onFilesChanged={handleFilesChanged}
           />
         );
       case "pdf":
@@ -1889,6 +2020,9 @@ function AppShell() {
             {selected!.name}
           </span>
         )}
+        {inProject && selected!.kind === "overleaf" && (
+          <OpenInOverleaf project={selected!} className="header-overleaf-link shrink-0" />
+        )}
         <div className="ml-auto flex items-center gap-4 text-xs text-graphite">
           {busy && (
             <span className="flex items-center gap-1.5 text-leaf">
@@ -1949,6 +2083,9 @@ function AppShell() {
               onSync={selected!.kind === "local" ? undefined : syncNow}
               syncing={syncing}
               update={update}
+              pendingChanges={pendingFileCount}
+              agentWorking={busy}
+              onShowShortcuts={showShortcuts}
             />
 
             {/* Two physical panes; `flipped` decides which sits left. CSS order
@@ -2013,6 +2150,7 @@ function AppShell() {
           project={selected}
           onClose={() => setProjSettingsOpen(false)}
           onSaved={setProjSettings}
+          onMainFileChanged={handleMainFileChanged}
         />
       )}
     </div>

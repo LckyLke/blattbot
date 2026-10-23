@@ -34,10 +34,13 @@ import { registerHistoryRoutes } from "./routes/history.js";
 import { registerConflictRoutes } from "./routes/conflicts.js";
 import { registerCompileRoutes } from "./routes/compile.js";
 import { registerFileRoutes } from "./routes/files.js";
+import { registerFileOpRoutes } from "./routes/file-ops.js";
 import { registerRefRoutes } from "./routes/refs.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerTurnRoutes } from "./routes/turns.js";
 import { registerWsRoutes } from "./routes/ws.js";
+import { registerOverleafReviewRoutes } from "./routes/overleaf-review.js";
+import { registerSharedInstructionsRoutes } from "./routes/shared-instructions.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.BLATTBOT_PORT ?? 4560);
@@ -125,10 +128,13 @@ registerHistoryRoutes(app);
 registerConflictRoutes(app);
 registerCompileRoutes(app);
 registerFileRoutes(app);
+registerFileOpRoutes(app);
 registerRefRoutes(app);
 registerChatRoutes(app);
 registerTurnRoutes(app);
 registerInlineQuestions(app);
+registerOverleafReviewRoutes(app);
+registerSharedInstructionsRoutes(app);
 registerWsRoutes(app);
 
 // Web UI: repo layout (web/dist as a sibling of server/, whether running from

@@ -51,6 +51,17 @@ The optional Claude backend runs through the Claude Agent SDK, which bundles its
 - **Git-bridge conflicts.** When a sync leaves `<<<<<<<` conflict markers in a Git-bridge project, the agent does not start a turn until you resolve them; approve refuses them as well.
 - **In-place updates.** Edited documents are updated through Overleaf's realtime protocol rather than deleted and re-uploaded, so entity ids are preserved and comments, tracked changes, and per-document history stay attached. If an in-place update fails, BlattBot falls back to a plain upload and tells you.
 
+## Working with co-authors on Overleaf
+
+For the common setup where you work in BlattBot and your co-authors work in the Overleaf editor:
+
+- **Their review comments, in BlattBot.** The **Comments** button in the Source pane (Overleaf projects) lists the open comment threads on the project with the quoted passage, `file:line`, author and time of each message. Click a comment to open the file at that line. A comment whose quoted text is no longer in your local copy (you edited the passage) is marked *changed locally*. **Reply**, **Resolve** and **Reopen** act on Overleaf directly; tracked changes made by co-authors are listed below the comments. The list is cached until the next sync or push (or **Refresh**). Instances without Overleaf's comment API (older Community Edition) still list the comments, without their messages, and say so.
+- **The agent can read them too.** Ask "address the reviewer comments in intro.tex": the agent's `list_overleaf_comments` tool returns the threads and tracked changes with `file:line`. It treats comments as co-author content (data, not instructions), and it cannot post, reply to or resolve anything; that stays with you.
+- **Push as tracked changes (experimental).** In **Project settings**, *Push changes to Overleaf as tracked changes* makes approved edits to existing documents arrive as tracked changes (one per edited region), so co-authors can accept or reject them in Overleaf's review panel. It needs review permission on the project. New files, uploads (binary files, fallbacks) and deletions cannot be tracked; the approval result says so for each. Not every self-hosted instance records tracked changes: BlattBot checks after each document and warns "This Overleaf instance did not record tracked changes for …; the edit was applied as a normal edit" when it did not. If a tracked push fails, the document stays pending instead of being replaced as a whole file. The setting is off by default; with it off, pushes behave as before.
+- **Newer Overleaf documents.** Documents stored in Overleaf's newer history format are edited in place too (with the same check that the text on Overleaf matches afterwards), so their comments survive. Tracked-change pushes do not support them yet and fall back to a normal edit, with a warning.
+- **Compiler and main document.** On sync and push BlattBot reads the Overleaf project's compiler and main document. The main document becomes BlattBot's main file unless you picked one yourself.
+- **Shared instructions: `blattbot.md`.** A `blattbot.md` file at the project root holds agent instructions for everyone on the project who uses BlattBot; it syncs through Overleaf like any other file. Because co-authors can change it, it is pinned by its SHA-256: the agent only uses a version you confirmed in **Project settings → Shared instructions** (**Use these instructions**). When the file changes, the agent keeps using the version you confirmed before (or none), and each turn shows "blattbot.md changed — review it in Project settings" until you confirm the new text. Only the first 4000 characters are used, and your own project instructions apply after it. **Create blattbot.md from my project instructions** writes the file as a normal pending change, so it goes through Proof and reaches Overleaf when you approve it.
+
 ## The agent
 
 The agent works in the local git mirror and every turn ends in a diff you approve or discard. It compiles after editing and fixes its own LaTeX errors before showing you anything.
@@ -162,6 +173,21 @@ The same index is available to all backends through `search_library`:
 ### Find in source and PDF
 
 **Ctrl/Cmd+F** searches the active Source or PDF pane. Source search handles literal LaTeX commands, live match counts, case/whole-word/regular-expression options and optional replacement with normal undo. Invalid expressions are reported. PDF search scans all pages, handles ligatures, whitespace and line hyphenation, and marks the exact selected text persistently while search is open. **Enter / Shift+Enter** moves forward/backward; **Escape** closes search. Case and whole-word options are available in both panes. PDF results are capped at 500 and source counts at 10,000, with `+` when more exist. Image-only PDF text needs OCR before it can be found.
+
+### Source editor and project files
+
+- **Autosave that never overwrites newer text.** Source saves 1.5 s after you stop typing (the **autosave** toggle in the status bar turns it off). Every save names the text you typed over. If an agent turn, a sync or a discarded change rewrote the file meanwhile, the save is refused and your draft stays, marked **changed on disk**: **Merge** combines both versions (passages both sides changed are marked as conflicts), **Save mine** writes your version over the file after a confirmation, **Revert** takes the file as it is. Autosave pauses while that notice shows, and a draft restored after a reload is not saved until you type in it.
+- **Drafts survive a reload.** Unsaved drafts are kept in browser storage. The browser's leave prompt only appears when a reload would really lose something: a draft too large for storage, a save still running, or a running agent turn. Pending changes are files on disk and never trigger it. The open Source file and Proof's text/rendered choice are remembered per project.
+- **New, rename, delete.** **+** above the file list creates a file; a path like `chapters/intro.tex` also creates the folder. Right-click a file or folder, or use a file's **⋯** button, to create a file there, rename or move it, or delete it (after a confirmation). These are pending changes like any edit: Proof lists them, **discard file** brings a file back, and nothing reaches Overleaf until you approve. File actions wait while an agent turn runs.
+- **Main file.** **Project settings → Main file** picks the document BlattBot compiles, from the `.tex` files with a `\documentclass` line. A visible PDF rebuilds right away. Overleaf's own main-document setting is not changed.
+
+### Projects at a glance
+
+Dashboard cards and the sidebar show each project's kind (Overleaf, git, local), a running agent turn, how many files have pending changes, and the last sync when the server records one. The sidebar's project switcher lists the same. Overleaf projects have an **Open in Overleaf** link on their card, in the header and in the sidebar; it opens the project in a new tab.
+
+### Keyboard shortcuts
+
+Press **?** (or **?** next to Settings in the sidebar) for the list. The single keys work while the cursor is not in a text field or an editor, and never use Ctrl/Cmd/Alt, so browser and editor shortcuts are untouched: **c** focuses the chat composer; **1**–**7** show Chat, Proof, Source, PDF, History, References or Research; **j** / **k** (or **]** / **[**) jump to the next or previous change in Proof; **Shift+A** approves and pushes all changes after a confirmation, with the same checks as the button. To leave the Source editor with the keyboard, press Escape, then Tab.
 
 ## Honesty notes
 

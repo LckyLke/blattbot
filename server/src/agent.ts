@@ -13,6 +13,12 @@ import { contextDirectories, formatContextManifest } from "./context.js";
 import { repositoryManifest } from "./repositories.js";
 import { citationPassages, unreadCitationChanges } from "./sourcecoverage.js";
 import { abortQuestion } from "./questions.js";
+import {
+  MAX_SHARED_INSTRUCTIONS,
+  SHARED_INSTRUCTIONS_FILE,
+  sharedInstructionsNotice,
+  sharedInstructionsState,
+} from "./shared-instructions.js";
 import { claudeBackend, runOneShot as runOneShotClaude } from "./backends/claude.js";
 import { deleteHistory, openaiBackend, runOneShotOpenai } from "./backends/openai.js";
 import { codexBackend, forgetCodexToolset, runOneShotCodex } from "./backends/codex.js";
@@ -295,6 +301,10 @@ export function validateProjectSettingsPatch(body: unknown): Partial<ProjectSett
     if (typeof v !== "string") throw new Error(`${key} must be a string`);
     patch[key] = v;
   }
+  if (raw.trackChanges !== undefined) {
+    if (typeof raw.trackChanges !== "boolean") throw new Error("trackChanges must be true or false");
+    patch.trackChanges = raw.trackChanges;
+  }
   if (patch.styleAppend !== undefined && patch.styleAppend.length > MAX_STYLE_APPEND) {
     throw new Error(`styleAppend is too long — the limit is ${MAX_STYLE_APPEND} characters`);
   }
@@ -322,9 +332,10 @@ export function systemBaseFor(mode: string): string {
 
 /**
  * Assemble the system-prompt append for one turn, in this order: BlattBot's
- * base append → the mode block → the project's own style instructions
- * (labelled, capped) → the scope restriction → the external-context block →
- * the user's global settings append. Pure, so tests can assert the layout.
+ * base append → the mode block → the confirmed shared instructions
+ * (blattbot.md) → the project's own style instructions (labelled, capped) →
+ * the scope restriction → the external-context block → the user's global
+ * settings append. Pure apart from the defaults, so tests can assert the layout.
  */
 export function buildSystemAppend(
   project: Project,
@@ -332,9 +343,17 @@ export function buildSystemAppend(
   scope: string[] | undefined,
   settings: Settings,
   contextDirs: string[] = contextDirectories(project),
+  sharedInstructions: string | null = sharedInstructionsState(project).active,
 ): string {
   let append = systemBaseFor(modeInfo.id);
   if (modeInfo.prompt) append += `\n\n${modeInfo.prompt}`;
+  // Only a version the user confirmed (pinned by hash) ever gets here.
+  const shared = sharedInstructions?.trim();
+  if (shared) {
+    append +=
+      `\n\nShared project instructions (from ${SHARED_INSTRUCTIONS_FILE} in the project, synced with co-authors; ` +
+      `the user reviewed and confirmed this version):\n${shared.slice(0, MAX_SHARED_INSTRUCTIONS)}`;
+  }
   // Per-project style/instructions — directly after the mode block, clearly
   // attributed. Re-capped here in case projects.json was edited by hand.
   const styleAppend = project.settings?.styleAppend?.trim();
@@ -408,6 +427,7 @@ export async function runTurn(
   const settings = loadSettings();
   const modeInfo = AGENT_MODES.find((m) => m.id === mode) ?? AGENT_MODES[0];
   const contextDirs = contextDirectories(project);
+  const shared = sharedInstructionsState(project);
   const backend = activeBackend(settings);
   let beforeCitations: ReturnType<typeof citationPassages> | undefined;
   try { beforeCitations = citationPassages(dir); } catch { /* disclose unconfirmed coverage at turn end */ }
@@ -423,7 +443,7 @@ export async function runTurn(
     // Both backends send the images as message content; the note names their
     // on-disk paths so the agent can re-open one later in the turn.
     prompt: text + attachmentNote(attachments),
-    systemAppend: buildSystemAppend(project, modeInfo, scope, settings, contextDirs),
+    systemAppend: buildSystemAppend(project, modeInfo, scope, settings, contextDirs, shared.active),
     model: resolveBackendModel(project, settings),
     dir,
     scope,
@@ -462,6 +482,8 @@ export async function runTurn(
   // marked busy forever.
   activeControllers.set(project.id, controller);
   try {
+    const sharedNotice = sharedInstructionsNotice(shared);
+    if (sharedNotice) onEvent({ type: "notice", tone: "warn", text: sharedNotice });
     await backend.runTurn(ctx);
   } catch (err: any) {
     if (controller.signal.aborted) {

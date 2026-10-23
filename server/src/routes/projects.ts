@@ -41,6 +41,7 @@ import { deleteChatUploads } from "../chatimages.js";
 import { compileIdle, forgetCompiles, getLastCompile, isCompiling, publicCompile } from "../compile-service.js";
 import { clearQueue, queueState } from "../turn-queue.js";
 import { normalizeCookie } from "../http-helpers.js";
+import { FileOpError, checkMainTex } from "../project-files.js";
 
 /** Escape LaTeX-special characters so a project name is safe inside \title{…}. */
 function texEscape(s: string): string {
@@ -94,7 +95,17 @@ function projectSettingsView(project: Project) {
 }
 
 export function registerProjectRoutes(app: FastifyInstance): void {
-  app.get("/api/projects", async () => listProjects().map(publicProject));
+  // Each entry carries its live status for the dashboard and the sidebar
+  // switcher: a running agent turn and how many files have pending changes.
+  app.get("/api/projects", async () =>
+    Promise.all(
+      listProjects().map(async (p) => ({
+        ...publicProject(p),
+        turnActive: isTurnActive(p.id),
+        pendingFiles: await git.pendingFileCount(projectDir(p.id)).catch(() => 0),
+      })),
+    ),
+  );
 
   app.post<{
     Body: {
@@ -211,9 +222,22 @@ export function registerProjectRoutes(app: FastifyInstance): void {
     },
   );
 
-  app.patch<{ Params: { id: string }; Body: { cookie?: string } }>("/api/projects/:id", async (req, reply) => {
+  app.patch<{ Params: { id: string }; Body: { cookie?: string; mainTex?: unknown } }>("/api/projects/:id", async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
+    // The user picks the main file: detection (and Overleaf metadata) must
+    // not replace it afterwards — mainTexChosen records that.
+    if (req.body?.mainTex !== undefined) {
+      let mainTex: string;
+      try {
+        mainTex = checkMainTex(projectDir(project.id), req.body.mainTex);
+      } catch (err) {
+        if (err instanceof FileOpError) return reply.code(err.status).send({ error: err.message });
+        throw err;
+      }
+      const updated = updateProject(project.id, { mainTex, mainTexChosen: true })!;
+      return { ok: true, project: publicProject(updated) };
+    }
     if (req.body?.cookie?.trim()) {
       const cookie = normalizeCookie(req.body.cookie);
       // Sessions live on accounts now; fall back to the legacy per-project field.
@@ -290,7 +314,7 @@ export function registerProjectRoutes(app: FastifyInstance): void {
 
   app.put<{
     Params: { id: string };
-    Body: { styleAppend?: string; model?: string; defaultMode?: string };
+    Body: { styleAppend?: string; model?: string; defaultMode?: string; trackChanges?: boolean };
   }>("/api/projects/:id/settings", async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
@@ -308,7 +332,8 @@ export function registerProjectRoutes(app: FastifyInstance): void {
       else delete merged.modelBackend;
     }
     for (const key of Object.keys(merged) as (keyof ProjectSettings)[]) {
-      if (!merged[key]?.trim()) delete merged[key];
+      const value = merged[key];
+      if (typeof value === "string" ? !value.trim() : value !== true) delete merged[key];
     }
     const updated = updateProject(project.id, { settings: merged })!;
     return projectSettingsView(updated);

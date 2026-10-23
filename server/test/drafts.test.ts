@@ -30,6 +30,7 @@ import {
   resetDrafts,
   stashDraft,
   subscribeDrafts,
+  unpersistedDraftCount,
   type DraftStorage,
 } from "../../web/src/drafts.js";
 
@@ -182,5 +183,75 @@ describe("draft persistence", () => {
     flushDraftPersistence();
     expect(store.map.size).toBe(0);
     expect(hasDraft("p1", "big.tex")).toBe(true);
+  });
+});
+
+describe("what a reload would lose", () => {
+  beforeEach(() => {
+    configureDraftStorage(null);
+    resetDrafts();
+  });
+
+  it("counts only drafts storage refused", () => {
+    configureDraftStorage(fakeStorage());
+    stashDraft("p1", "small.tex", { content: "x", base: "" });
+    stashDraft("p1", "big.tex", { content: "x".repeat(MAX_PERSISTED_CHARS + 1), base: "" });
+    stashDraft("p2", "other.tex", { content: "y", base: "" });
+    flushDraftPersistence();
+    expect(unpersistedDraftCount()).toBe(1);
+    expect(unpersistedDraftCount("p1")).toBe(1);
+    expect(unpersistedDraftCount("p2")).toBe(0);
+    // Saved or reverted: nothing left to lose.
+    dropDraft("p1", "big.tex");
+    expect(unpersistedDraftCount()).toBe(0);
+  });
+
+  it("counts a draft whose write failed (quota) until a later write succeeds", () => {
+    const store = fakeStorage();
+    let full = true;
+    configureDraftStorage({
+      ...store,
+      setItem: (k, v) => {
+        if (full) throw new Error("quota");
+        store.setItem(k, v);
+      },
+    });
+    stashDraft("p1", "a.tex", { content: "1", base: "" });
+    flushDraftPersistence();
+    expect(unpersistedDraftCount("p1")).toBe(1);
+    full = false;
+    stashDraft("p1", "a.tex", { content: "12", base: "" });
+    flushDraftPersistence();
+    expect(unpersistedDraftCount("p1")).toBe(0);
+  });
+
+  it("without storage every draft is lost on a reload", () => {
+    stashDraft("p1", "a.tex", { content: "1", base: "" });
+    expect(unpersistedDraftCount()).toBe(1);
+  });
+
+  it("remembers the open file across a reload", () => {
+    const store = fakeStorage();
+    configureDraftStorage(store);
+    rememberOpenFile("p1", "chapters/intro.tex");
+    expect(store.map.get("blattbot.openFile:p1")).toBe("chapters/intro.tex");
+    // A fresh page: memory empty, storage still holds the entry.
+    const saved = new Map(store.map);
+    resetDrafts();
+    for (const [k, v] of saved) store.map.set(k, v);
+    expect(lastOpenFile("p1")).toBe("chapters/intro.tex");
+    rememberOpenFile("p1", null);
+    expect(store.map.has("blattbot.openFile:p1")).toBe(false);
+  });
+
+  it("survives a storage that throws on every access", () => {
+    const denied = () => {
+      throw new Error("denied");
+    };
+    configureDraftStorage({ getItem: denied, setItem: denied, removeItem: denied, keys: denied });
+    expect(() => rememberOpenFile("p1", "main.tex")).not.toThrow();
+    expect(lastOpenFile("p1")).toBe("main.tex");
+    expect(() => resetDrafts()).not.toThrow();
+    expect(lastOpenFile("p1")).toBeUndefined();
   });
 });
