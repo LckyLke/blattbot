@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { SyncIssue } from "../useProjectSync";
+import { changeTime } from "../remote-change";
 
 interface Props {
   projectName: string;
@@ -7,6 +8,8 @@ interface Props {
   popup?: boolean;
   syncing?: boolean;
   reconnecting?: boolean;
+  /** Overleaf changed since the last sync (its lastUpdated); a sync had to wait. */
+  remoteChangedAt?: string | null;
   canReconnect: boolean;
   onDismiss: () => void;
   onSync: () => void;
@@ -25,7 +28,20 @@ export default function ProjectSyncNotice(props: Props) {
     element.showModal();
     return () => element.close();
   }, [open]);
-  if (!issue) return syncing ? <div role="status" className="shrink-0 border-b border-rule bg-ink-2 px-4 py-2 text-xs text-paper-dim">Syncing project with remote…</div> : null;
+  if (!issue) {
+    if (syncing) return <div role="status" className="shrink-0 border-b border-rule bg-ink-2 px-4 py-2 text-xs text-paper-dim">Syncing project with remote…</div>;
+    // Non-blocking: work goes on; the next turn, approve or "Sync now" brings it in.
+    if (props.remoteChangedAt) {
+      const time = changeTime(props.remoteChangedAt);
+      return <div role="status" aria-label="Overleaf changed" className="flex shrink-0 items-center gap-2 border-b border-gold/30 bg-gold/5 px-4 py-1.5 text-xs text-paper-dim">
+        <span className="inline-block h-1.5 w-1.5 rounded-full bg-gold" />
+        <span>Overleaf changed{time ? ` at ${time}` : ""}</span>
+        <span className="text-graphite">·</span>
+        <button className="text-gold underline decoration-gold/40 underline-offset-2 hover:decoration-gold disabled:opacity-50" disabled={reconnecting} onClick={props.onSync}>Sync now</button>
+      </div>;
+    }
+    return null;
+  }
   const button = "rounded border border-rule px-3 py-1.5 text-xs text-paper hover:border-graphite disabled:opacity-50";
   const actions = <>
     {issue.kind === "session" && (props.canReconnect ? <>

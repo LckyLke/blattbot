@@ -264,6 +264,13 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
       if (Array.isArray(ev.absorbedRemote) && ev.absorbedRemote.length > 0) {
         next.push(notice(`${uid}:absorbed`, "info", `Also picked up Overleaf changes to: ${ev.absorbedRemote.join(", ")}`));
       }
+      // Co-author edits to other lines of the same files were merged in.
+      if (Array.isArray(ev.mergedRemote) && ev.mergedRemote.length > 0) {
+        next.push(notice(`${uid}:merged`, "info", `Merged Overleaf's edits to ${ev.mergedRemote.join(", ")} with yours, line by line.`));
+      }
+      if (Array.isArray(ev.drift) && ev.drift.length > 0) {
+        next.push(notice(`${uid}:drift`, "warn", `Overleaf also changed ${ev.drift.join(", ")} where you have pending edits — see Proof.`));
+      }
       return next;
     }
     case "rejected":

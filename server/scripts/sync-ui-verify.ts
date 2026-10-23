@@ -1,12 +1,25 @@
 /** Project-entry sync, expiry notices, recovery, conflicts and navigation races. */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { startMockOverleaf } from "./mock-overleaf.js";
+
+/** A free local port, so parallel checkouts running this check never collide. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address() as AddressInfo;
+      probe.close(() => resolve(port));
+    });
+  });
+}
 
 const root = mkdtempSync(join(tmpdir(), "blattbot-sync-ui-"));
 process.env.BLATTBOT_DATA_DIR = join(root, "data");
@@ -15,27 +28,34 @@ const accounts = await import("../src/accounts.js");
 const git = await import("../src/git.js");
 config.ensureDirs();
 const remoteId = "aaaa1111bbbb2222cccc3333";
-const mock = await startMockOverleaf(4598, remoteId);
-const account = accounts.upsertAccount({ baseUrl: "http://127.0.0.1:4598", cookie: "overleaf_session2=mock-session" });
+const mockPort = await freePort();
+const serverPort = await freePort();
+const mock = await startMockOverleaf(mockPort, remoteId);
+const account = accounts.upsertAccount({ baseUrl: `http://127.0.0.1:${mockPort}`, cookie: "overleaf_session2=mock-session" });
 const project = config.addProject({ name: "Sync test paper", kind: "overleaf", gitUrl: "", accountId: account.id, overleafBaseUrl: account.baseUrl, overleafProjectId: remoteId, mainTex: "main.tex" });
 const local = config.addProject({ name: "Local notes", kind: "local", gitUrl: "", mainTex: "main.tex" });
 const original = "\\documentclass{article}\n\\begin{document}\nOriginal.\n\\end{document}\n";
+// A second file, long enough that edits to its first and last notes merge.
+const notesText = ["\\section{Notes}", "", "First note.", "", "Second note.", "", "Third note."].join("\n") + "\n";
 for (const p of [project, local]) {
   const dir = config.projectDir(p.id);
   mkdirSync(dir, { recursive: true });
   await git.initRepo(dir);
   writeFileSync(join(dir, "main.tex"), original);
+  writeFileSync(join(dir, "notes.tex"), notesText);
   await git.commitAll(dir, "Initial fixture");
 }
 const main = join(config.projectDir(project.id), "main.tex");
+const notes = join(config.projectDir(project.id), "notes.tex");
 const remote = original.replace("Original.", "Incoming collaborator edit.");
 mock.files.set("main.tex", Buffer.from(remote));
-const base = "http://127.0.0.1:4597";
+mock.files.set("notes.tex", Buffer.from(notesText));
+const base = `http://127.0.0.1:${serverPort}`;
 let logs = "";
 function startServer() {
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
     cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
-    env: { ...process.env, BLATTBOT_PORT: "4597" }, stdio: "pipe",
+    env: { ...process.env, BLATTBOT_PORT: String(serverPort) }, stdio: "pipe",
   });
   child.stdout.on("data", chunk => { logs += chunk; });
   child.stderr.on("data", chunk => { logs += chunk; });
@@ -68,7 +88,7 @@ try {
       localStorage.setItem("blattbot.selectedProject", id);
       localStorage.setItem("blattbot.view", "project");
       localStorage.setItem("blattbot.paneLeft.v2", "chat");
-      localStorage.setItem("blattbot.paneRight.v2", "source");
+      localStorage.setItem("blattbot.paneRight.v2", "proof");
     }
   }, { id: project.id });
   let syncCount = 0;
@@ -124,14 +144,119 @@ try {
   await popup.getByText("main.tex", { exact: true }).waitFor();
   assert.equal(readFileSync(main, "utf8"), edited);
   await popup.getByRole("button", { name: "Review changes" }).click();
-  await page.getByRole("tabpanel", { name: "Proof", exact: true }).waitFor();
-  await page.getByRole("tabpanel", { name: "Proof", exact: true }).getByText(/My local edit\./).first().waitFor();
+  const proof = page.getByRole("tabpanel", { name: "Proof", exact: true });
+  await proof.waitFor();
+  await proof.getByText(/My local edit\./).first().waitFor();
   await warning.waitFor();
+  // The Proof marks the drifted file before any approve, and shows what
+  // each side changed in the overlapping region.
+  const banner = page.getByRole("region", { name: "Overleaf conflicts" });
+  await banner.getByText("Overleaf also changed 1 file you edited — the edits overlap").waitFor();
+  await banner.getByText("Another remote edit.", { exact: true }).waitFor();
+  await banner.getByText("My local edit.", { exact: true }).waitFor();
+  await proof.getByText("changed on Overleaf too", { exact: true }).waitFor();
+  await page.screenshot({ path: "/tmp/blattbot-sync-drift-banner.png" });
+  // "Resolve in editor": both versions with markers, on top of Overleaf's.
+  await banner.getByRole("button", { name: "Resolve main.tex in the editor" }).click();
+  await banner.waitFor({ state: "hidden" });
+  assert.match(readFileSync(main, "utf8"), /<<<<<<< yours\nMy local edit\.\n=======\nAnother remote edit\.\n>>>>>>> Overleaf\n/);
+  await page.getByRole("tablist", { name: "Left pane view" }).getByRole("tab", { name: "Proof" }).click();
+  await proof.getByText("conflict markers — resolve before approving", { exact: true }).waitFor();
+  // Approve refuses the markers; nothing reaches Overleaf.
+  await proof.getByRole("button", { name: "Approve & push" }).click();
+  await page.getByText(/main\.tex first — they still contain <<<<<<< conflict markers/).first().waitFor();
+  assert.equal(mock.files.get("main.tex")!.toString(), original.replace("Original.", "Another remote edit."));
   await git.discard(config.projectDir(project.id));
   const retry = syncResponse();
   await warning.getByRole("button", { name: "Retry sync" }).click();
   assert((await retry).ok());
   await warning.waitFor({ state: "hidden" });
+
+  // Approve-time conflicts in two files: per-file choices, bulk actions that
+  // say they act on all of them.
+  const synced = () => original.replace("Original.", "Another remote edit.");
+  writeFileSync(main, synced().replace("Another remote edit.", "Main, mine."));
+  writeFileSync(notes, notesText.replace("Second note.", "Second note, mine."));
+  const reloadSync = syncResponse();
+  await page.reload();
+  assert((await reloadSync).ok());
+  await proof.getByText("Main, mine.").first().waitFor();
+  mock.files.set("main.tex", Buffer.from(synced().replace("Another remote edit.", "Main, theirs.")));
+  mock.files.set("notes.tex", Buffer.from(notesText.replace("Second note.", "Second note, theirs.")));
+  await proof.getByRole("button", { name: "Approve & push" }).click();
+  await banner.getByText("Overleaf changed 2 files you also edited — nothing was pushed").waitFor();
+  await banner.getByRole("button", { name: "Keep Overleaf's version of all 2 files" }).waitFor();
+  await banner.getByRole("button", { name: "Overwrite Overleaf with all 2 files" }).waitFor();
+  await page.screenshot({ path: "/tmp/blattbot-sync-approve-conflicts.png" });
+  // Overwrite only notes.tex (after a confirmation); main.tex stays in conflict.
+  await banner.getByRole("button", { name: "Overwrite notes.tex on Overleaf" }).click();
+  const confirmOverwrite = page.getByRole("dialog", { name: "Overwrite notes.tex on Overleaf?" });
+  await confirmOverwrite.getByRole("button", { name: "Overwrite Overleaf" }).click();
+  await banner.getByText("Overleaf also changed 1 file you edited — the edits overlap").waitFor();
+  assert.equal(mock.files.get("notes.tex")!.toString(), notesText.replace("Second note.", "Second note, mine."));
+  assert.equal(mock.files.get("main.tex")!.toString(), synced().replace("Another remote edit.", "Main, theirs."));
+  const backups = join(config.projectDir(project.id), ".git", "blattbot", "remote-backup");
+  const [stamp] = readdirSync(backups);
+  assert.deepEqual(readdirSync(join(backups, stamp)), ["notes.tex"]);
+  // Keep Overleaf's version of main.tex: the conflict is gone, nothing pending.
+  await banner.getByRole("button", { name: "Keep Overleaf's version of main.tex" }).click();
+  await banner.waitFor({ state: "hidden" });
+  await proof.getByText(/No pending changes/).waitFor();
+  assert.equal(readFileSync(main, "utf8"), synced().replace("Another remote edit.", "Main, theirs."));
+
+  // Different lines of one file: the approve merges and pushes both edits.
+  const coAuthored = notesText.replace("Second note.", "Second note, mine.").replace("Third note.", "Third note, theirs.");
+  writeFileSync(notes, notesText.replace("Second note.", "Second note, mine.").replace("First note.", "First note, mine."));
+  const mergeSync = syncResponse();
+  await page.reload();
+  assert((await mergeSync).ok());
+  await proof.getByText("First note, mine.").first().waitFor();
+  mock.files.set("notes.tex", Buffer.from(coAuthored));
+  await proof.getByRole("button", { name: "Approve & push" }).click();
+  await page.getByText("Merged Overleaf's edits to notes.tex with yours, line by line.").waitFor();
+  await proof.getByText(/No pending changes/).waitFor();
+  const both = coAuthored.replace("First note.", "First note, mine.");
+  assert.equal(mock.files.get("notes.tex")!.toString(), both);
+  assert.equal(readFileSync(notes, "utf8"), both);
+
+  // "Overleaf changed": with pending edits the minute check only tells…
+  const notice = page.getByRole("status", { name: "Overleaf changed" });
+  writeFileSync(main, readFileSync(main, "utf8").replace("\\begin{document}", "\\begin{document}\n% my pending comment"));
+  const dirtySync = syncResponse();
+  await page.reload();
+  assert((await dirtySync).ok());
+  await proof.getByText("% my pending comment").first().waitFor();
+  const syncsBefore = syncCount;
+  mock.files.set("notes.tex", Buffer.from(both.replace("Third note, theirs.", "Third note, theirs again.")));
+  await page.clock.fastForward(60_001);
+  await notice.waitFor();
+  assert.match(await notice.innerText(), /Overleaf changed at \d{1,2}.\d{2}/);
+  assert.equal(syncCount, syncsBefore, "a dirty tree is not synced automatically");
+  await page.screenshot({ path: "/tmp/blattbot-sync-overleaf-changed.png" });
+  const sync = syncResponse();
+  await notice.getByRole("button", { name: "Sync now" }).click();
+  assert((await sync).ok());
+  await notice.waitFor({ state: "hidden" });
+  assert.match(readFileSync(notes, "utf8"), /Third note, theirs again\./);
+  assert.match(readFileSync(main, "utf8"), /% my pending comment/);
+  // …and with nothing pending it syncs on its own, without a notice.
+  await proof.getByRole("button", { name: "Approve & push" }).click();
+  await proof.getByText(/No pending changes/).waitFor();
+  assert.match(mock.files.get("main.tex")!.toString(), /% my pending comment/);
+  mock.files.set("notes.tex", Buffer.from(both.replace("Third note, theirs.", "Third note, synced quietly.")));
+  const autoSync = syncResponse();
+  await page.clock.fastForward(60_001);
+  assert((await autoSync).ok());
+  assert.match(readFileSync(notes, "utf8"), /Third note, synced quietly\./);
+  assert.equal(await notice.count(), 0);
+  // Nothing changed since: the next check lists, and does not sync.
+  const quiet = syncCount;
+  const listed = page.waitForResponse(response => response.url().endsWith(`/api/accounts/${account.id}/projects`));
+  await page.clock.fastForward(60_001);
+  await listed;
+  await page.waitForTimeout(300);
+  assert.equal(syncCount, quiet, "no sync without a remote change");
+  assert.equal(await notice.count(), 0);
 
   // Non-authentication failures on startup also get a popup and retry.
   await page.route(`**/api/projects/${project.id}/sync`, route => route.fulfill({ status: 422, json: { error: "Remote is unreachable — connection refused" } }));
@@ -191,7 +316,7 @@ try {
   await warning.waitFor({ state: "hidden" });
   assert.equal(localSyncCount, 0, "local projects do not sync");
   assert.deepEqual(errors, []);
-  console.log("Project sync UI passed: open/reload/restart, automatic expiry detection, persistent warning, popup deduplication, reconnect/retry, safe conflicts, late responses and local-project exclusion.");
+  console.log("Project sync UI passed: open/reload/restart, automatic expiry detection, persistent warning, popup deduplication, reconnect/retry, safe conflicts, drift badges and conflict banner (resolve in editor, markers block approve, per-file overwrite with backup, keep Overleaf), line merge on approve, the \"Overleaf changed\" notice and quiet auto-sync, late responses and local-project exclusion.");
 } finally {
   await browser?.close();
   if (server.exitCode === null) await stopServer();

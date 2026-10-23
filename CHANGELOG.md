@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Overleaf sync merges line by line: a co-author's edit to other lines of a file you also changed is merged in on sync (your edits stay pending on top) and on approve (the push carries both edits; unapproved edits stay pending). Only same-line edits, binary files and delete-vs-edit still conflict.
+- Conflicts show per file what Overleaf changed next to the original and your version, with per-file **Keep Overleaf's version**, **Resolve in editor** (writes conflict markers into the file; approve refuses files that still contain them) and **Overwrite Overleaf** (that file only, backed up first). Buttons for all listed files say so. Fixed: "Discard my changes to these files" discarded every conflicted file at once.
+- Files a sync found changed on Overleaf too are marked in Proof before you approve, and "Review changes" scrolls to them.
+- New "Overleaf changed at HH:MM · Sync now" notice: the per-minute session check now also detects remote changes; with nothing pending, BlattBot syncs on its own.
+- Agent turns start faster: the pre-turn sync skips the project download when Overleaf's project list shows no change since the last full sync (a full sync still runs at least every 10 minutes).
+- Git-bridge projects: a turn no longer starts on top of `<<<<<<<` conflict markers left by a sync, and a sync no longer fails after you resolved such a conflict by hand.
+- Fixed: polling the project status during a sync or approve could make Git fail with "index.lock exists".
+
 - Approve part of a diff in Proof: **✓** on a change pushes just that passage, **approve file** a whole file, and everything else stays pending for later review. Partial approvals get the same Overleaf conflict check (limited to what is approved), backups on overwrite and rollback on a failed push as a full approval; a change the file no longer contains is refused instead of pushed.
 - Added Codex Fast mode in the chat toolbar and Settings → Agent, with persistent Standard/Fast/CLI-default choices for new chats, resumed turns, and background helpers.
 - Fixed: when a push to Overleaf failed partway through an approval, the approved edits stayed committed locally and the next sync could overwrite them with Overleaf's versions. They now stay pending — approve again to retry. A single file that fails to upload stays pending while the rest of the approval is committed. Git-bridge projects un-commit the same way when the pull or push fails, and are never left mid-rebase.

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, HttpError, type Project } from "./api";
+import { isLater, laterOf, remoteChangeAction, remoteChangedAt } from "./remote-change";
 
 type SyncResult = Awaited<ReturnType<typeof api.sync>>;
 export interface SyncIssue {
@@ -16,17 +17,23 @@ function failure(error: unknown): SyncIssue {
 }
 
 /** One lifecycle per visit: ignore late results after navigation, share pending
- * syncs across visits, and check authentication without pulling every minute. */
+ * syncs across visits, and check authentication without pulling every minute.
+ * The same minute check notices Overleaf changes: it syncs right away when
+ * nothing local is pending, otherwise it reports `remoteChangedAt`. */
 export function useProjectSync(project: Project | null, reconnectVersion: number, callbacks: {
   onSynced: (id: string, result: SyncResult, manual: boolean) => void;
   onAccountChanged: () => void;
+  /** True when a sync cannot touch anything in progress (no pending changes, no running turn). */
+  canAutoSync?: () => boolean;
 }) {
-  const [state, setState] = useState<{ id: string; syncing: boolean; reconnecting: boolean; issue: SyncIssue | null; popup: boolean } | null>(null);
+  const [state, setState] = useState<{ id: string; syncing: boolean; reconnecting: boolean; issue: SyncIssue | null; popup: boolean; remoteChangedAt: string | null } | null>(null);
   const callbacksRef = useRef(callbacks);
   callbacksRef.current = callbacks;
+  const projectRef = useRef(project);
+  projectRef.current = project;
   const syncs = useRef(new Map<string, Promise<SyncResult>>());
-  const actions = useRef({ sync: () => {}, reconnect: (_mode: "import" | "browser") => {}, warn: (_message: string, _paths?: string[]) => {} });
-  const id = project?.id, kind = project?.kind, accountId = project?.accountId;
+  const actions = useRef({ sync: () => {}, reconnect: (_mode: "import" | "browser") => {}, warn: (_message: string, _paths?: string[]) => {}, seen: (_at?: string) => {} });
+  const id = project?.id, kind = project?.kind, accountId = project?.accountId, remoteId = project?.overleafProjectId;
 
   useEffect(() => {
     if (!id || kind === "local") return;
@@ -37,24 +44,35 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
     let revision = 0;
     let issue: SyncIssue | null = null;
     let lastNotice = "";
+    // Overleaf's lastUpdated the mirror last caught up with, and a later one
+    // the minute check saw while a sync had to wait.
+    let seen = projectRef.current?.remoteLastUpdated;
+    let changedAt: string | null = null;
+    const noteSeen = (at?: string) => {
+      seen = laterOf(seen, at);
+      if (changedAt && !isLater(changedAt, seen)) {
+        changedAt = null;
+        if (!cancelled) setState(prev => prev?.id === id ? { ...prev, remoteChangedAt: null } : prev);
+      }
+    };
     const report = (next: SyncIssue) => {
       if (cancelled) return;
       issue = next;
       const signature = next.kind === "session" ? `${next.kind}:${next.title}` : JSON.stringify(next);
       const popup = signature !== lastNotice;
       lastNotice = signature;
-      setState(prev => ({ id, syncing, reconnecting, issue, popup: popup || Boolean(prev?.id === id && prev.popup) }));
+      setState(prev => ({ id, syncing, reconnecting, issue, popup: popup || Boolean(prev?.id === id && prev.popup), remoteChangedAt: changedAt }));
     };
     const clear = () => {
       issue = null;
       lastNotice = "";
-      setState({ id, syncing, reconnecting, issue, popup: false });
+      setState({ id, syncing, reconnecting, issue, popup: false, remoteChangedAt: changedAt });
     };
     const run = async (manual = false) => {
       if (cancelled || syncing || reconnecting) return;
       revision++;
       syncing = true;
-      setState(prev => ({ id, syncing, reconnecting, issue, popup: Boolean(prev?.id === id && prev.popup) }));
+      setState(prev => ({ id, syncing, reconnecting, issue, popup: Boolean(prev?.id === id && prev.popup), remoteChangedAt: changedAt }));
       try {
         let pending = syncs.current.get(id);
         if (!pending) {
@@ -66,6 +84,9 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
         const result = await pending;
         if (cancelled) return;
         if (!result.ok) throw new Error(result.output || "Sync did not complete. Try again.");
+        // The mirror now holds Overleaf's latest state: no notice for it.
+        changedAt = null;
+        noteSeen(result.remoteLastUpdated);
         callbacksRef.current.onSynced(id, result, manual);
         if (result.drift?.length) {
           report({ kind: "conflict", title: "Sync needs your attention", message: kind === "git"
@@ -79,7 +100,7 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
         if (!cancelled) report(failure(error));
       } finally {
         syncing = false;
-        if (!cancelled) setState(prev => prev?.id === id ? { ...prev, syncing: false } : prev);
+        if (!cancelled) setState(prev => prev?.id === id ? { ...prev, syncing: false, remoteChangedAt: changedAt } : prev);
       }
     };
     const checkSession = async () => {
@@ -87,8 +108,22 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
       checking = true;
       const checkedRevision = revision;
       try {
-        await api.accountProjects(accountId);
-        if (!cancelled && checkedRevision === revision && issue?.kind === "session") await run();
+        const listing = await api.accountProjects(accountId);
+        if (cancelled || checkedRevision !== revision) return;
+        if (issue?.kind === "session") {
+          await run();
+          return;
+        }
+        // The list carries Overleaf's lastUpdated: later than what the mirror
+        // last saw means someone changed the project on Overleaf.
+        const at = remoteChangedAt(listing.projects, remoteId, seen);
+        const action = remoteChangeAction(at, Boolean(callbacksRef.current.canAutoSync?.()));
+        if (action === "sync") {
+          await run();
+        } else if (action === "notice" && at !== changedAt) {
+          changedAt = at;
+          setState(prev => prev?.id === id ? { ...prev, remoteChangedAt: at } : prev);
+        }
       } catch (error) {
         // A failed connection check does not imply an expired session. Keep
         // sync/conflict errors until a successful sync actually resolves them.
@@ -98,6 +133,7 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
     };
     actions.current = {
       sync: () => { void run(true); },
+      seen: noteSeen,
       warn: (message, paths) => report(paths?.length
         ? { kind: "conflict", title: "Sync needs your attention", message, paths }
         : failure(new Error(message))),
@@ -132,13 +168,15 @@ export function useProjectSync(project: Project | null, reconnectVersion: number
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
-      actions.current = { sync: () => {}, reconnect: () => {}, warn: () => {} };
+      actions.current = { sync: () => {}, reconnect: () => {}, warn: () => {}, seen: () => {} };
     };
-  }, [id, kind, accountId, reconnectVersion]);
+  }, [id, kind, accountId, remoteId, reconnectVersion]);
 
   const syncNow = useCallback(() => actions.current.sync(), []);
   const reconnect = useCallback((mode: "import" | "browser") => actions.current.reconnect(mode), []);
   const reportWarning = useCallback((message: string, paths?: string[]) => actions.current.warn(message, paths), []);
   const dismiss = useCallback(() => setState(prev => prev ? { ...prev, popup: false } : prev), []);
-  return { ...(state?.id === id ? state : null), syncNow, reconnect, reportWarning, dismiss };
+  /** Overleaf state the mirror caught up with elsewhere (a push, a pre-turn sync, another tab). */
+  const noteRemote = useCallback((at?: string) => actions.current.seen(at), []);
+  return { ...(state?.id === id ? state : null), syncNow, reconnect, reportWarning, dismiss, noteRemote };
 }
