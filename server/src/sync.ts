@@ -235,7 +235,7 @@ export async function approve(
   const approvedPaths = await stageApproval(dir, opts.selection);
   if (project.kind === "local") {
     // No remote — approval is just the local commit.
-    await git.commitStagedExcept(dir, message, []);
+    await git.commitStagedExcept(dir, message, [], await git.approverIdentity());
     return { pushed: false };
   }
   if (project.kind === "overleaf") {
@@ -289,7 +289,7 @@ export async function approve(
       }
     };
     const base = await git.revParse(dir, "HEAD");
-    const committed = await git.commitStagedExcept(dir, message, []);
+    const committed = await git.commitStagedExcept(dir, message, [], await git.approverIdentity());
     if (!committed) {
       const absorbWarn = await absorb();
       const allWarnings = [...warnings, ...(absorbWarn ? [absorbWarn] : [])];
@@ -316,7 +316,7 @@ export async function approve(
     const { failed, ...pushed } = result;
     if (failed.length > 0) {
       await git.resetSoft(dir, base);
-      await git.commitStagedExcept(dir, message, failed);
+      await git.commitStagedExcept(dir, message, failed, await git.approverIdentity());
     }
     const absorbWarn = await absorb();
     return {
@@ -339,7 +339,7 @@ export async function approve(
     throw new Error(`Resolve the Git conflicts in ${conflicted.join(", ")} first — they still contain <<<<<<< conflict markers.`);
   }
   await moveRemoteCredentials(project);
-  if (!(await git.commitStagedExcept(dir, message, []))) return { pushed: false };
+  if (!(await git.commitStagedExcept(dir, message, [], await git.approverIdentity()))) return { pushed: false };
   return git.pushHead(dir, project.token);
 }
 

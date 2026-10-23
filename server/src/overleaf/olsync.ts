@@ -54,7 +54,7 @@ export async function applySnapshot(dir: string, snapshot: Map<string, Buffer>, 
     }
     writeFileSync(target, content);
   }
-  return git.commitAll(dir, message);
+  return git.commitAll(dir, message, git.OVERLEAF_AUTHOR);
 }
 
 export type RemoteChangeKind = "modified" | "added" | "deleted";
@@ -109,7 +109,7 @@ export async function mergeRemotePaths(
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, content);
   }
-  return git.commitPaths(dir, message, paths);
+  return git.commitPaths(dir, message, paths, git.OVERLEAF_AUTHOR);
 }
 
 /**
