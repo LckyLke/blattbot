@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Compartment, EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -53,6 +53,7 @@ import {
   subscribeDrafts,
 } from "../drafts";
 import { merge3 } from "../merge3";
+import { CONFLICT_MARK, CONFLICT_MESSAGE, saveBase, saveWithBase, shouldAutosave } from "../source-save";
 import { isFileSaving, notifyEditors, startFileSave, subscribeEditors } from "../editor-sync";
 import { useDialog } from "./Dialog";
 
@@ -679,7 +680,6 @@ const WRAP_KEY = "blattbot.sourceWrap";
 const AUTOSAVE_KEY = "blattbot.sourceAutosave";
 /** Idle time after the last keystroke before an autosave (when enabled). */
 const AUTOSAVE_MS = 1500;
-const CONFLICT_MARK = "<<<<<<< yours";
 
 /**
  * Nonce of the last reveal request acted on. Module-level on purpose: the
@@ -699,7 +699,17 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState<string | null>(null);
   /** The server copy of the open file moved under an unsaved draft. */
-  const [diskChanged, setDiskChanged] = useState(false);
+  const [diskChanged, setDiskChangedState] = useState(false);
+  // Mirrored in a ref so the autosave timer sees it at once, not a render later.
+  const diskChangedRef = useRef(false);
+  const setDiskChanged = useCallback((value: boolean) => {
+    diskChangedRef.current = value;
+    setDiskChangedState(value);
+  }, []);
+  /** The user typed into this document since it was loaded, restored, merged
+   *  or refused — autosave waits for that (a restored draft is not re-saved
+   *  on its own). */
+  const userTypedRef = useRef(false);
   const [wrap, setWrap] = useState(() => localStorage.getItem(WRAP_KEY) === "1");
   /** Save after idle typing by default; preserve an explicit opt-out. */
   const [autosave, setAutosave] = useState(() => localStorage.getItem(AUTOSAVE_KEY) !== "0");
@@ -727,7 +737,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   savingRef.current = saving;
   const selRef = useRef(sel);
   selRef.current = sel;
-  const saveRef = useRef<() => void>(() => {});
+  const saveRef = useRef<(opts?: { auto?: boolean }) => void>(() => {});
   const onDiffRef = useRef(onDiff);
   onDiffRef.current = onDiff;
   const onSavedRef = useRef(onSaved);
@@ -811,6 +821,9 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               projectId: projRef.current, path, origin: editorId,
               kind: "document", content: text, saved: savedRef.current,
             });
+          }
+          if (!receiving.current && u.transactions.some((tr) => tr.annotation(Transaction.userEvent) != null)) {
+            userTypedRef.current = true;
           }
           if (isDirty && !receiving.current) armAutosave();
         }
@@ -941,21 +954,31 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   /**
    * Autosave: an idle-timer save. Never while the agent holds the tree or a
-   * save is in flight (save() refuses those; the finally below re-arms), and
-   * never with unresolved merge conflict markers in the text — a manual save
-   * is the user's explicit decision there.
+   * save is in flight (save() refuses those; the finally below re-arms), never
+   * while "changed on disk" shows, never for a restored draft nobody typed in
+   * yet, and never with unresolved merge conflict markers in the text — a
+   * manual save is the user's explicit decision there (see source-save.ts).
    */
+  const autosaveAllowed = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return false;
+    return shouldAutosave({
+      enabled: autosaveRef.current,
+      text: view.state.doc.toString(),
+      saved: savedRef.current,
+      diskChanged: diskChangedRef.current,
+      userTyped: userTypedRef.current,
+      busy: busyRef.current,
+      saving: savingRef.current,
+    });
+  }, []);
   const armAutosave = useCallback(() => {
     if (!autosaveRef.current) return;
     clearTimeout(autosaveTimer.current);
     autosaveTimer.current = setTimeout(() => {
-      const view = viewRef.current;
-      if (!view || !autosaveRef.current) return;
-      const text = view.state.doc.toString();
-      if (text === savedRef.current || text.includes(CONFLICT_MARK)) return;
-      saveRef.current();
+      if (autosaveAllowed()) saveRef.current({ auto: true });
     }, AUTOSAVE_MS);
-  }, []);
+  }, [autosaveAllowed]);
   useEffect(() => () => clearTimeout(autosaveTimer.current), []);
   useEffect(() => {
     localStorage.setItem(AUTOSAVE_KEY, autosave ? "1" : "0");
@@ -963,12 +986,25 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     else clearTimeout(autosaveTimer.current);
   }, [autosave, armAutosave]);
 
-  const save = useCallback(async () => {
+  /**
+   * Write the editor text. Every save carries the base it was typed over, so
+   * the server refuses it (409) when the file moved meanwhile; the draft then
+   * stays and "changed on disk" offers Merge / Save mine / Revert. While that
+   * notice shows, only an explicit, confirmed "Save mine" (`overwrite`, which
+   * names the disk text the user was shown as the base) may write.
+   */
+  const save = useCallback(async (opts: { auto?: boolean; overwrite?: boolean } = {}) => {
     const view = viewRef.current;
     const path = selRef.current;
     if (!view || !path || savingRef.current || busyRef.current) return;
+    if (opts.auto && !autosaveAllowed()) return;
+    if (diskChangedRef.current && !opts.overwrite) {
+      if (!opts.auto) void saveMineRef.current();
+      return;
+    }
     const content = view.state.doc.toString();
     if (content === savedRef.current) return; // clean doc — nothing to save
+    const base = saveBase(readDraft(projectId, path)?.base, savedRef.current, Boolean(opts.overwrite));
     const finishSave = startFileSave(projectId, path, editorId);
     if (!finishSave) return;
     let live = content;
@@ -981,7 +1017,35 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     setSaving(true);
     setSaveErr(null);
     try {
-      const res = await api.saveFile(projectId, path, content);
+      const outcome = await saveWithBase(
+        {
+          save: (b) => api.saveFile(projectId, path, content, b),
+          fetchDisk: async () => {
+            const f = await api.file(projectId, path);
+            if (f.binary) throw new Error("the file is no longer text");
+            return f.content;
+          },
+        },
+        base,
+      );
+      if (outcome.kind === "error") throw new Error(outcome.message);
+      if (outcome.kind === "conflict") {
+        // Refused: nothing was written. Keep the draft (and the base it was
+        // typed over, which Merge needs) and show the disk version's state.
+        const draftBase = readDraft(projectId, path)?.base ?? base;
+        if (live !== outcome.disk) stashDraft(projectId, path, { content: live, base: draftBase });
+        else dropDraft(projectId, path);
+        if (projRef.current === projectId && docPathRef.current === path) {
+          savedRef.current = outcome.disk;
+          userTypedRef.current = false;
+          setDirty(live !== outcome.disk);
+          setDiskChanged(live !== outcome.disk);
+          setSaveErr(live !== outcome.disk ? CONFLICT_MESSAGE : null);
+        }
+        notifyEditors({ projectId, path, origin: editorId, kind: "document", content: live, saved: outcome.disk });
+        return;
+      }
+      const res = outcome;
       // The draft is shared: it also includes typing in the other pane and
       // survives closing this editor or selecting a different file mid-save.
       if (live !== content) stashDraft(projectId, path, { content: live, base: content });
@@ -1007,8 +1071,23 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
       // Typed on during the round-trip: the idle timer picks it up again.
       if (view.state.doc.toString() !== savedRef.current) armAutosave();
     }
-  }, [projectId, armAutosave, editorId]);
+  }, [projectId, armAutosave, autosaveAllowed, editorId, setDiskChanged]);
   saveRef.current = save;
+
+  /** "Save mine": overwrite the changed disk version, after a confirmation. */
+  const saveMineRef = useRef<() => Promise<void>>(async () => {});
+  saveMineRef.current = async () => {
+    if (!viewRef.current || !selRef.current || savingRef.current || busyRef.current) return;
+    const ok = await dialog.confirm({
+      title: "Overwrite the changed file?",
+      body:
+        "This file changed on disk while you were editing (an agent turn, a sync or a rejected change). " +
+        "Saving yours replaces that version; Merge keeps both instead.",
+      confirmLabel: "Save mine",
+      danger: true,
+    });
+    if (ok) await save({ overwrite: true });
+  };
 
   /**
    * Three-way merge of the draft with the disk version (merge3.ts): base is
@@ -1024,6 +1103,8 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     const theirs = savedRef.current;
     const base = readDraft(projectId, path)?.base ?? theirs;
     const { text, conflicts } = merge3(base, ours, theirs);
+    // The merged text is saved by the user (or after they type on), not by the timer.
+    userTypedRef.current = false;
     if (text !== ours) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
     }
@@ -1141,6 +1222,8 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     const pid = projRef.current;
     if (docPathRef.current !== file.path) {
       docPathRef.current = file.path;
+      // A restored draft is not autosaved until the user types in it again.
+      userTypedRef.current = false;
       savingRef.current = isFileSaving(pid, file.path);
       setSaving(savingRef.current);
       savedRef.current = file.content;
@@ -1343,7 +1426,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               {dirty && diskChanged && (
                 <span
                   className="rounded-lg border border-pencil/40 bg-pencil/10 px-1.5 py-px text-[10.5px] text-pencil"
-                  title="This file changed on disk (an agent turn, a sync, or a rejected hunk) while you were editing. Save writes your version over it; Revert drops your edits and shows the disk version."
+                  title="This file changed on disk (an agent turn, a sync, or a rejected hunk) while you were editing. Autosave is paused. Merge combines both versions; Save mine writes your version over it after a confirmation; Revert drops your edits and shows the disk version."
                 >
                   changed on disk
                 </span>
@@ -1375,13 +1458,24 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                       Revert
                     </button>
                   )}
-                  <button
-                    onClick={() => void save()}
-                    disabled={!dirty || saving || busy}
-                    className="rounded-lg bg-leaf-deep px-2.5 py-0.5 text-[11.5px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
-                  >
-                    {saving ? "Saving…" : "Save"}
-                  </button>
+                  {dirty && diskChanged ? (
+                    <button
+                      onClick={() => void saveMineRef.current()}
+                      disabled={saving || busy}
+                      title="Write your version over the changed file (asks first)"
+                      className="rounded-lg border border-pencil/50 px-2.5 py-0.5 text-[11.5px] font-medium text-pencil transition-colors hover:bg-pencil/10 disabled:opacity-50"
+                    >
+                      {saving ? "Saving…" : "Save mine"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => void save()}
+                      disabled={!dirty || saving || busy}
+                      className="rounded-lg bg-leaf-deep px-2.5 py-0.5 text-[11.5px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
+                    >
+                      {saving ? "Saving…" : "Save"}
+                    </button>
+                  )}
                 </>
               )}
             </span>
@@ -1440,7 +1534,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
             <button
               onClick={() => setAutosave((a) => !a)}
               aria-pressed={autosave}
-              title="Autosave: write the file 1.5 s after you stop typing (never while the agent works, never with unresolved conflict markers)"
+              title="Autosave: write the file 1.5 s after you stop typing (never while the agent works, never while the file changed on disk under your edits, never with unresolved conflict markers)"
               className={`ml-auto rounded-lg border px-1.5 py-px transition-colors ${
                 autosave
                   ? "border-leaf/60 text-leaf"
