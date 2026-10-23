@@ -20,7 +20,7 @@ npm workspaces: `server/` is the published `blattbot` package, `web/` is the app
 
 | Path | What lives there |
 | --- | --- |
-| `server/src/` | Fastify + TypeScript server. HTTP routes live in `server/src/index.ts` and `server/src/routes/` (Research routes in `server/src/research/routes.ts`). |
+| `server/src/` | Fastify + TypeScript server. `index.ts` only bootstraps the app; HTTP routes live in `server/src/routes/`, one module per area (Research routes in `server/src/research/routes.ts`). The agent-turn pipeline is `turn-runner.ts`; model tools are defined once in `backends/tools.ts`; Overleaf sync and push are in `sync.ts` and `overleaf/`. |
 | `server/src/backends/` | Agent harnesses: Codex (default), Claude Agent SDK, OpenAI-compatible. |
 | `server/src/overleaf/` | Overleaf cookie sync, browser cookie discovery, realtime (OT) client. |
 | `server/src/research/` | Research workspace: library, citation graph, evidence checks. |
