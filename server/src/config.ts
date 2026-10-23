@@ -61,6 +61,8 @@ export interface Project {
   cookie?: string;
   /** Relative path of the main .tex file, auto-detected on clone. */
   mainTex?: string;
+  /** The user picked mainTex in the project settings — detection and Overleaf's root document must not replace it. */
+  mainTexChosen?: boolean;
   /** Agent SDK session id, for conversation continuity across turns.
    *  Legacy: sessions now live per chat (chats.ts); kept in sync for rollback. */
   sessionId?: string;
@@ -82,8 +84,6 @@ export interface Project {
   remoteLastUpdated?: string;
   /** The compiler set in the Overleaf project (read on sync and push; see overleaf/metadata.ts). */
   overleafCompiler?: "pdflatex" | "xelatex" | "lualatex" | "latex";
-  /** The user picked the main file; Overleaf's root document must not override mainTex then. */
-  mainTexChosen?: boolean;
   /** The blattbot.md version the user confirmed (see shared-instructions.ts). */
   sharedInstructions?: ConfirmedSharedInstructions;
   createdAt: string;

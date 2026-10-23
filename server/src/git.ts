@@ -169,6 +169,16 @@ export async function hasChanges(dir: string): Promise<boolean> {
 }
 
 /**
+ * How many files differ from HEAD, for status badges. Runs outside the
+ * project lock, so it must never take .git/index.lock: GIT_OPTIONAL_LOCKS=0
+ * skips status's opportunistic index refresh.
+ */
+export async function pendingFileCount(dir: string): Promise<number> {
+  const out = await gitWithEnv(dir, { GIT_OPTIONAL_LOCKS: "0" }, ["status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"]);
+  return out.split("\0").filter(Boolean).length;
+}
+
+/**
  * Paths whose working-tree state differs from HEAD (modified, added, deleted,
  * or untracked). -z output: NUL-separated, unquoted even for non-ASCII names;
  * renames/copies carry the original path as an extra NUL field.

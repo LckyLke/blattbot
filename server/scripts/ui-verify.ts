@@ -495,7 +495,7 @@ async function main() {
     await styleBox.waitFor({ timeout: 5_000 }); // the form renders after the async GET
     await styleBox.fill("Use British English. Prefer \\autoref.");
     await projDlg.getByPlaceholder("global default").fill("fable");
-    await projDlg.locator("select").selectOption("research");
+    await projDlg.getByLabel("Default mode for new chats").selectOption("research");
     await shot("23f-project-settings");
     await projDlg.getByRole("button", { name: "Save project settings" }).click();
     await projDlg.getByText("Saved.").waitFor({ timeout: 5_000 });
@@ -1051,22 +1051,13 @@ async function main() {
     });
     await proofEditor().getByRole("button", { name: "Back to diff", exact: false }).click();
 
-    // ---- Leave warning: with the manual tweak still unapproved, the tab-close
-    // guard is armed (a synthetic beforeunload comes back defaultPrevented)…
-    await page
-      .waitForFunction(
-        () => {
-          const ev = new Event("beforeunload", { cancelable: true });
-          window.dispatchEvent(ev);
-          return ev.defaultPrevented;
-        },
-        { timeout: 5_000 },
-      )
-      .catch(() => {});
+    // ---- Leave warning: the manual tweak is saved but unapproved. Pending
+    // changes are safe on disk, so the tab-close guard stays quiet (a
+    // synthetic beforeunload is not defaultPrevented)…
     const leaveUnloadArmedOk = await page.evaluate(() => {
       const ev = new Event("beforeunload", { cancelable: true });
       window.dispatchEvent(ev);
-      return ev.defaultPrevented;
+      return !ev.defaultPrevented;
     });
 
     // …and navigating away (the wordmark) opens the in-app confirm naming the
@@ -2790,7 +2781,7 @@ async function main() {
     if (!leaveWarnStayOk) throw new Error("'Stay' did not keep the project view with its pending proof");
     if (!leaveWarnLeaveOk) throw new Error("'Go to dashboard' did not navigate to the dashboard");
     if (!leaveUnloadArmedOk) {
-      throw new Error("beforeunload guard was not armed while unapproved changes were pending");
+      throw new Error("beforeunload guard fired for pending changes alone — they are safe on disk");
     }
     if (!leaveUnloadClearedOk) {
       throw new Error("beforeunload guard did not disarm once the pending changes were gone");

@@ -56,6 +56,18 @@ export function findMainTex(root: string): string | undefined {
   return withDocclass[0];
 }
 
+/** The .tex files that can be a main file: those with a \documentclass line. */
+export function mainTexCandidates(root: string): string[] {
+  return listFiles(root).filter((rel) => {
+    if (!rel.endsWith(".tex")) return false;
+    try {
+      return /^[^%\n]*\\documentclass/m.test(readFileSync(join(root, rel), "utf8").slice(0, 4000));
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function findBibFiles(root: string): string[] {
   return listFiles(root).filter((f) => f.endsWith(".bib"));
 }
