@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- New **History** tab: a timeline of every sync from Overleaf (or the git remote) and every approval, grouped by day, with author, changed files and each commit's diff. Filter by **From Overleaf** (what co-authors changed) or **Pushed by me**; a badge counts incoming changes since you last looked.
+- **Revert** a push from History: its reverse becomes new pending changes in Proof (later edits are kept; overlapping ones get conflict markers and are listed), and you approve it like any other change. Nothing is committed or pushed directly, merge commits are refused, and an approval that still contains the revert's conflict markers is refused.
+- The Overleaf versions backed up by **Overwrite Overleaf** are listed under History → Overleaf backups, where you can view or download them.
+- Approval commits are authored with your global git identity when `user.name` and `user.email` are set (otherwise BlattBot), and sync commits as "Overleaf". The commit message now defaults to the agent prompt behind the changes ("Agent: …"), "Manual edits", or a revert's subject; for Overleaf projects the field is labelled "local history only" because Overleaf does not store it.
+- Approval outcomes (pushed files, warnings, picked-up Overleaf changes, backups) are saved to the chat and survive a reload.
+
 - `npx blattbot` no longer downloads the Claude Agent SDK and its ~230 MB Claude Code binary, since Codex is the default backend. To use the Claude backend, click **Install** in Settings → Agent (it installs the tested SDK version into the data directory), or install `@anthropic-ai/claude-agent-sdk@0.3.278` globally next to a global BlattBot. If you upgrade and already use Claude, install it once this way. Without the SDK, a Claude turn ends with an error that says how to install it. `blattbot doctor` shows whether the SDK is installed.
 - Added `search_files` for every backend: literal or regex text search across project files (or an attached context folder), with a path prefix, case option, context lines and a result cap. It uses `read_file`'s path checks and never searches `.git`. Existing Codex chats switch to a new Codex session on their next turn to pick it up; the chat keeps its messages.
 - Removed the code behind the retired Evidence, Checks, Memory and Discover workflows. Files they saved stay in the data directory, and saved tasks of those kinds are kept but no longer run. Paper details in the citation graph no longer point to the retired Memory view.

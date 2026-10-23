@@ -44,6 +44,9 @@ import { countDrafts, subscribeDrafts } from "./drafts";
 import { useProjectSync } from "./useProjectSync";
 import { syncConflicts } from "./remote-change";
 import ProjectSyncNotice from "./components/ProjectSyncNotice";
+import { useHistoryStatus } from "./useHistoryStatus";
+import { defaultApproveMessage } from "./approve-message";
+import type { RevertResult } from "./api";
 
 /**
  * A panel module, loaded on first use and memoized: App hands every panel
@@ -62,6 +65,7 @@ const PdfPanel = lazyPanel(() => import("./components/PdfPanel"));
 const RefsPanel = lazyPanel(() => import("./components/RefsPanel"));
 const ResearchPanel = lazyPanel(() => import("./components/ResearchPanel"));
 const SourcePanel = lazyPanel(() => import("./components/SourcePanel"));
+const HistoryPanel = lazyPanel(() => import("./components/HistoryPanel"));
 const SettingsModal = lazy(() => import("./components/SettingsModal"));
 const Chat = memo(ChatView);
 
@@ -120,6 +124,7 @@ const PANE_TABS = [
   ["proof", "Proof"],
   ["source", "Source"],
   ["pdf", "PDF"],
+  ["history", "History"],
   ["refs", "References"],
   ["research", "Research"],
 ] as const;
@@ -258,6 +263,7 @@ function AppShell() {
     proof: "b",
     source: "b",
     pdf: "b",
+    history: "b",
     refs: "b",
     research: "b",
   });
@@ -1238,6 +1244,32 @@ function AppShell() {
     }
   }, []);
 
+  // History tab: the unread badge for incoming commits, pending reverts, and
+  // the Proof's default commit message derived from the chat.
+  const historyVisible = view === "project" && (panes.left === "history" || panes.right === "history");
+  const historyStamp = sourceStamp + turnStamp + reconnectVersion;
+  const historyStatus = useHistoryStatus(view === "project" ? selectedId : null, historyStamp, historyVisible);
+  const approveMessage = useMemo(
+    () => defaultApproveMessage(chat, historyStatus.pendingRevert?.message),
+    [chat, historyStatus.pendingRevert?.message],
+  );
+  // A revert landed as pending changes: show them in Proof, where the
+  // History tab was (unless Proof is already on screen).
+  const handleReverted = useCallback((projectId: string, r: RevertResult) => {
+    if (selectedRef.current?.id !== projectId) return;
+    if (r.changed.length === 0) return;
+    dirtySinceCompile.current = true;
+    diffRef.current = r.diff;
+    setDiff(r.diff);
+    setSourceStamp((s) => s + 1);
+    setPanes((p) => {
+      if (p.left === "proof" || p.right === "proof") return p;
+      if (p.left === "history") return { ...p, left: "proof" };
+      if (p.right === "history") return { ...p, right: "proof" };
+      return p;
+    });
+  }, []);
+
   // "Quote in chat" from the PDF: bump the nonce so Chat appends exactly once.
   const quoteToChat = useCallback((text: string, source = "the PDF") => {
     setChatQuote((prev) => ({ text, source, nonce: (prev?.nonce ?? 0) + 1 }));
@@ -1506,6 +1538,20 @@ function AppShell() {
             onRejectHunk={rejectHunk}
             onJump={revealInSource}
             onResolveConflicts={resolveConflicts}
+            defaultMessage={approveMessage}
+          />
+        );
+      case "history":
+        return (
+          <HistoryPanel
+            key={selectedId!}
+            projectId={selectedId!}
+            projectKind={selected!.kind}
+            stamp={historyStamp}
+            visible={historyVisible}
+            busy={busy}
+            seenSha={historyStatus.seenAtOpen}
+            onReverted={handleReverted}
           />
         );
       case "source":
@@ -1603,6 +1649,15 @@ function AppShell() {
               {label}
               {key === "proof" && diff.trim() && (
                 <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-gold align-middle" />
+              )}
+              {key === "history" && historyStatus.unread > 0 && (
+                <span
+                  title={`${historyStatus.unread} new from ${selected!.kind === "git" ? "the remote" : "Overleaf"}`}
+                  className="ml-1.5 inline-block min-w-[16px] rounded-full bg-leaf px-1 text-center align-middle text-[10px] font-medium leading-[16px] text-ink"
+                >
+                  {historyStatus.unread > 99 ? "99+" : historyStatus.unread}
+                  <span className="sr-only"> new</span>
+                </span>
               )}
               {key === "pdf" && compiling && (
                 <span className="working-dot ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-gold align-middle" />

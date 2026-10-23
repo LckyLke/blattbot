@@ -3,6 +3,7 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalSt
 import { tabStripKeyDown } from "../a11y";
 import { buildHunkPatch, parseDiff, type DiffFile, type DiffHunk } from "../diff";
 import type { ApproveSelection, CompileInfo, SyncConflict } from "../api";
+import { FALLBACK_MESSAGE, partMessage } from "../approve-message";
 import { useDialog } from "./Dialog";
 import { HunkLines } from "./DiffView";
 import ConflictBanner from "./ConflictBanner";
@@ -55,6 +56,8 @@ interface Props {
   onRejectHunk: (patch: string) => void;
   /** Open a changed line in the Source editor for manual tweaks. */
   onJump?: (file: string, line: number) => void;
+  /** Commit message used when the field is left empty (from the latest agent turn, a revert, …). */
+  defaultMessage?: string;
   /**
    * Conflict banner, per file: keep Overleaf's version (drops the local
    * edits to those files only), or write both versions with conflict markers
@@ -87,7 +90,10 @@ export default function ProofPanel({
   onRejectHunk,
   onJump,
   onResolveConflicts,
+  defaultMessage,
 }: Props) {
+  const fallbackMessage = defaultMessage?.trim() || FALLBACK_MESSAGE;
+  const messageLabel = projectKind === "overleaf" ? "Commit message (local history only)" : "Commit message";
   const files = useMemo(() => parseDiff(diff), [diff]);
   const [message, setMessage] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -147,7 +153,7 @@ export default function ProofPanel({
     setActing("push");
     setApproving(part?.key ?? null);
     try {
-      await onApprove(message.trim() || (part ? `BlattBot edit: ${part.path}` : "BlattBot edit"), force, part?.selection);
+      await onApprove(message.trim() || (part ? partMessage(fallbackMessage, part.path) : fallbackMessage), force, part?.selection);
     } finally {
       setActing(null);
       setApproving(null);
@@ -401,11 +407,24 @@ export default function ProofPanel({
           </span>
           {busy && <span className="text-gold">agent still working…</span>}
         </div>
+        <label
+          htmlFor={`proof-message-${projectId}`}
+          className="mb-1 block text-[11px] text-graphite"
+          title={
+            projectKind === "overleaf"
+              ? "Overleaf does not store commit messages: this one is kept in BlattBot's History only."
+              : undefined
+          }
+        >
+          {messageLabel}
+        </label>
         <div className="flex gap-2">
           <input
+            id={`proof-message-${projectId}`}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="Commit message (optional)"
+            placeholder={fallbackMessage}
+            title={`Leave empty to use: ${fallbackMessage}`}
             className="min-w-0 flex-1 rounded-lg border border-rule bg-ink px-3 py-2 text-[13px] text-paper placeholder:text-graphite/60"
           />
           <button

@@ -12,6 +12,7 @@ import * as sync from "../sync.js";
 import { getAccount, updateAccount } from "../accounts.js";
 import { diffPaths } from "../http-helpers.js";
 import { withDiscardCheckpoint } from "../checkpoints.js";
+import * as history from "../history.js";
 
 export function registerReviewRoutes(app: FastifyInstance): void {
   app.get<{ Params: { id: string } }>("/api/projects/:id/diff", async (req, reply) => {
@@ -116,17 +117,20 @@ export function registerReviewRoutes(app: FastifyInstance): void {
       }
       const dir = projectDir(project.id);
       try {
-        const { result, remaining } = await withProjectLock(project.id, async () => {
-          const result = await sync.approve(project, message, {
+        const { result, remaining, notes, chatId } = await withProjectLock(project.id, async () => {
+          // Trailers record what kind of commit this is and which chat it came from.
+          const plan = await history.planApproval(project, selection);
+          const result = await sync.approve(project, history.withTrailers(message, plan.trailers), {
             force: req.body?.force === true,
             forcePaths: forcePaths as string[] | undefined,
             selection,
           });
+          const notes = await history.finishApproval(project, plan, result);
           // What is still pending: the unapproved rest, or files that failed to upload.
           const remaining = selection || result.pending ? await git.workingDiff(dir) : null;
-          return { result, remaining };
+          return { result, remaining, notes, chatId: plan.chatId };
         });
-        broadcast(project.id, {
+        const approved = {
           type: "approved",
           pushed: result.pushed,
           uploaded: result.uploaded,
@@ -138,7 +142,12 @@ export function registerReviewRoutes(app: FastifyInstance): void {
           conflicts: result.conflicts,
           remoteLastUpdated: result.remoteLastUpdated,
           ...(selection ? { partial: true } : {}),
-        });
+          projectKind: project.kind,
+          ...notes,
+        };
+        broadcast(project.id, approved);
+        // Persisted too, so the outcome is still in the chat after a reload.
+        history.recordChatEvent(project.id, approved, chatId);
         // "approved" clears the review; whatever is left stays in it.
         if (remaining !== null) broadcast(project.id, { type: "diff", diff: remaining, changed: false });
         return { ok: true, ...result, ...(remaining !== null ? { diff: remaining } : {}) };
@@ -149,6 +158,7 @@ export function registerReviewRoutes(app: FastifyInstance): void {
           return reply.code(409).send({ error: err.message, conflicts: err.conflicts });
         }
         if (err instanceof sync.SelectionError) return reply.code(409).send({ error: err.message });
+        if (err instanceof history.HistoryError) return reply.code(err.status).send({ error: err.message });
         return reply.code(422).send({ error: err.message });
       }
     },

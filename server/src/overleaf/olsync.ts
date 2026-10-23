@@ -65,7 +65,7 @@ export async function applySnapshot(dir: string, snapshot: Map<string, Buffer>, 
     }
     writeFileSync(target, content);
   }
-  return git.commitAll(dir, message);
+  return git.commitAll(dir, message, git.OVERLEAF_AUTHOR);
 }
 
 export type RemoteChangeKind = "modified" | "added" | "deleted";
@@ -111,7 +111,7 @@ export async function mergeRemotePaths(
   message = "Sync from Overleaf",
 ): Promise<boolean> {
   writeRemoteVersions(dir, snapshot, paths);
-  return git.commitPaths(dir, message, paths);
+  return git.commitPaths(dir, message, paths, git.OVERLEAF_AUTHOR);
 }
 
 /** Write Overleaf's version of `paths` into the worktree (deleting what it no longer has). */
@@ -165,7 +165,12 @@ export async function applyRemoteVersions(
   // written equals Overleaf's version, which the next sync recognises.
   writeRemoteVersions(dir, snapshot, plain);
   const head = await git.revParse(dir, "HEAD");
-  const changed = await git.commitContents(dir, message, new Map(paths.map((p) => [p, snapshot.get(p) ?? null])));
+  const changed = await git.commitContents(
+    dir,
+    message,
+    new Map(paths.map((p) => [p, snapshot.get(p) ?? null])),
+    git.OVERLEAF_AUTHOR,
+  );
   await git.resetIndexPaths(dir, paths);
   try {
     for (const [rel, file] of rebased) writeFileSync(join(dir, rel), file.content);

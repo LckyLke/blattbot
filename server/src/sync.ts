@@ -451,7 +451,7 @@ export async function approve(
   const approvedPaths = await stageApproval(dir, opts.selection);
   if (project.kind === "local") {
     // No remote — approval is just the local commit.
-    await git.commitStagedExcept(dir, message, []);
+    await git.commitStagedExcept(dir, message, [], await git.approverIdentity());
     return { pushed: false };
   }
   // A sync conflict (Git autostash, or "Resolve in editor" on Overleaf)
@@ -521,7 +521,7 @@ export async function approve(
       // co-author's edits and the approved ones; the rest stays pending.
       const before = await git.revParse(dir, "HEAD");
       try {
-        await git.commitContents(dir, "Sync from Overleaf", new Map(merges.map((m) => [m.path, m.remote])));
+        await git.commitContents(dir, "Sync from Overleaf", new Map(merges.map((m) => [m.path, m.remote])), git.OVERLEAF_AUTHOR);
         await git.setIndexContents(dir, new Map(merges.map((m) => [m.path, m.staged])));
         for (const m of merges) writeFileSync(join(dir, m.path), m.worktree);
       } catch (err) {
@@ -570,7 +570,7 @@ export async function approve(
       };
     };
     const base = await git.revParse(dir, "HEAD");
-    const committed = await git.commitStagedExcept(dir, message, []);
+    const committed = await git.commitStagedExcept(dir, message, [], await git.approverIdentity());
     if (!committed) {
       const absorbWarn = await absorb();
       const allWarnings = [...warnings, ...(absorbWarn ? [absorbWarn] : [])];
@@ -597,7 +597,7 @@ export async function approve(
     const { failed, ...pushed } = result;
     if (failed.length > 0) {
       await git.resetSoft(dir, base);
-      await git.commitStagedExcept(dir, message, failed);
+      await git.commitStagedExcept(dir, message, failed, await git.approverIdentity());
     }
     const absorbWarn = await absorb();
     // Our own push must not read as a co-author's change: re-read Overleaf's
@@ -620,7 +620,7 @@ export async function approve(
     };
   }
   await moveRemoteCredentials(project);
-  if (!(await git.commitStagedExcept(dir, message, []))) return { pushed: false };
+  if (!(await git.commitStagedExcept(dir, message, [], await git.approverIdentity()))) return { pushed: false };
   return git.pushHead(dir, project.token);
 }
 
@@ -737,7 +737,7 @@ export async function publishLocal(project: Project, account: OlAccount): Promis
   if (project.kind !== "local") throw new Error("only local projects can be published");
   const dir = projectDir(project.id);
   // Commit any pending edits so the published state matches a commit.
-  await git.commitAll(dir, "Publish to Overleaf");
+  await git.commitAll(dir, "Publish to Overleaf", await git.approverIdentity());
   const client = new OverleafClient(account.baseUrl, account.cookie);
   const { remoteProjectId, ...result } = await publishTree(client, project.name, dir);
   const updated = updateProject(project.id, {
