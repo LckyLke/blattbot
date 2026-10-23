@@ -32,6 +32,15 @@ export interface ProjectSettings {
   modelBackend?: "codex" | "claude" | "openai";
   /** Mode preselected for new chats in this project (a client-side concern). */
   defaultMode?: string;
+  /** Overleaf projects: push in-place doc edits as tracked changes (experimental, default off). */
+  trackChanges?: boolean;
+}
+
+/** The blattbot.md version the user confirmed for the agent (see shared-instructions.ts). */
+export interface ConfirmedSharedInstructions {
+  sha256: string;
+  content: string;
+  confirmedAt: string;
 }
 
 export interface Project {
@@ -71,6 +80,12 @@ export interface Project {
    * co-author (or the user, on Overleaf) changed something since.
    */
   remoteLastUpdated?: string;
+  /** The compiler set in the Overleaf project (read on sync and push; see overleaf/metadata.ts). */
+  overleafCompiler?: "pdflatex" | "xelatex" | "lualatex" | "latex";
+  /** The user picked the main file; Overleaf's root document must not override mainTex then. */
+  mainTexChosen?: boolean;
+  /** The blattbot.md version the user confirmed (see shared-instructions.ts). */
+  sharedInstructions?: ConfirmedSharedInstructions;
   createdAt: string;
 }
 

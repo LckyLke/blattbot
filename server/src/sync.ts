@@ -32,6 +32,8 @@ import {
   type RemoteMergeResult,
 } from "./overleaf/olsync.js";
 import { cookieForProject, getAccount, refreshFromBrowsers, updateAccount, type OlAccount } from "./accounts.js";
+import { invalidateOverleafReview } from "./overleaf/comments.js";
+import { applyOverleafMeta, refreshOverleafMeta } from "./overleaf/metadata.js";
 
 export type { ConflictHunk, RemoteConflict } from "./conflicts.js";
 
@@ -44,7 +46,7 @@ export function overleafClient(project: Project): OverleafClient {
 }
 
 /** Run an Overleaf operation, auto-refreshing the account session once on auth failure. */
-async function withSession<T>(project: Project, fn: (client: OverleafClient) => Promise<T>): Promise<T> {
+export async function withSession<T>(project: Project, fn: (client: OverleafClient) => Promise<T>): Promise<T> {
   try {
     return await fn(overleafClient(project));
   } catch (err) {
@@ -183,9 +185,14 @@ export async function syncIn(project: Project, opts: SyncOptions = {}): Promise<
     const tree = result.inSync && outcome.listed ? await git.revParse(dir, "HEAD^{tree}") : null;
     writeSyncState(dir, tree ? { lastUpdated: outcome.listed!, tree } : null);
     recordRemote(project, { lastSyncAt: new Date().toISOString(), remoteLastUpdated: outcome.listed });
+    // Overleaf review state and project settings (compiler, root document):
+    // separate from the file sync, throttled, never fatal (see overleaf/metadata.ts).
+    invalidateOverleafReview(project.id);
+    const metaWarning = await refreshOverleafMeta(project, (fn) => withSession(project, fn));
     const rebased = result.rebased ?? [];
     const plain = (result.merged ?? []).filter((p) => !rebased.includes(p));
     const parts: string[] = [];
+    if (metaWarning) parts.push(metaWarning);
     if (plain.length > 0) parts.push(`merged remote changes to: ${plain.join(", ")}`);
     else if (result.changed && rebased.length === 0) parts.push("picked up remote changes");
     if (rebased.length > 0) {
@@ -588,13 +595,19 @@ export async function approve(
     let result: PushResult;
     try {
       result = await withSession(project, (client) =>
-        pushChanges(client, project.overleafProjectId!, dir, base, head, snapshot),
+        pushChanges(client, project.overleafProjectId!, dir, base, head, snapshot, {
+          trackChanges: project.settings?.trackChanges === true,
+        }),
       );
     } catch (err: any) {
       await git.resetSoft(dir, base);
       throw new Error(`Push to Overleaf failed (${err?.message ?? err}) — your changes are still pending; approve again to retry`, { cause: err });
     }
-    const { failed, ...pushed } = result;
+    const { failed, remoteMeta, ...pushed } = result;
+    // The push joined the project anyway: keep its compiler / root document, and
+    // drop the cached comments (their offsets moved with the edit).
+    if (remoteMeta) applyOverleafMeta(project.id, remoteMeta);
+    invalidateOverleafReview(project.id);
     if (failed.length > 0) {
       await git.resetSoft(dir, base);
       await git.commitStagedExcept(dir, message, failed, await git.approverIdentity());
