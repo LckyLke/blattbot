@@ -1,0 +1,41 @@
+name: Overleaf CE
+
+# Runs BlattBot's sync against a real Overleaf Community Edition in Docker.
+# The unit tests use a hand-written mock; this catches where the real
+# protocol differs (rate limits, history versions, missing review API, ...).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
+  pull_request:
+    paths:
+      - "server/src/sync.ts"
+      - "server/src/overleaf/**"
+      - "server/scripts/overleaf-ce-*"
+      - ".github/workflows/overleaf-ce.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: overleaf-ce-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  overleaf-ce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: Start Overleaf Community Edition
+        run: server/scripts/overleaf-ce-up.sh >> "$GITHUB_ENV"
+      - name: Check sync against Overleaf
+        run: npm run test:overleaf-ce --workspace=server
+      - name: Overleaf logs
+        if: failure()
+        run: docker logs blattbot-ce 2>&1 | tail -200

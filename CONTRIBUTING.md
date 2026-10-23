@@ -79,6 +79,19 @@ npm run test:ui --workspace=server       # the big UI walkthrough; compiles real
 
 `server/scripts/e2e.ts` and `ui-e2e.ts` run real agent turns and cost model usage; run them only on purpose.
 
+### Checking against a real Overleaf
+
+The mock is hand-written, so `server/scripts/overleaf-ce-verify.ts` also runs BlattBot's sync against a real Overleaf Community Edition: line merges, conflicts, comments, per-region pushes, tracked changes, history labels, the download limit and Overleaf's own compiler. With Docker available:
+
+```bash
+cd server
+eval "$(scripts/overleaf-ce-up.sh)"     # starts CE on :8090, creates a user, prints the two variables
+npm run test:overleaf-ce
+scripts/overleaf-ce-up.sh --down        # removes the containers
+```
+
+Set `DOCKER="sudo docker"` if your user cannot reach the Docker daemon. CI runs the same check weekly and on pull requests that touch the sync code (`.github/workflows/overleaf-ce.yml`). Community Edition has no comment-thread API, so the reply/resolve check is skipped there.
+
 ## Windows pitfalls
 
 CI runs the unit tests on Windows, so keep code and tests portable:

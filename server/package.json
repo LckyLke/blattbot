@@ -56,6 +56,7 @@
     "test:turn-flow-ui": "tsx scripts/turn-flow-ui-verify.ts",
     "test:overleaf-review-ui": "tsx scripts/overleaf-review-ui-verify.ts",
     "test:ui-fixes": "tsx scripts/ui-fixes-verify.ts",
+    "test:overleaf-ce": "tsx scripts/overleaf-ce-verify.ts",
     "verify:ui": "tsx scripts/verify-ui.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
