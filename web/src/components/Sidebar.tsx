@@ -183,7 +183,7 @@ export default function Sidebar({
             <div className="flex items-center">
               <button type="button" disabled={busy} onClick={() => onSelectChat(chat.id)}
                 aria-label={`Open chat ${chat.title}`} aria-current={chat.id === activeChatId ? "page" : undefined}
-                title={`${chat.title} · Updated ${new Date(chat.updatedAt).toLocaleString()}`}
+                title={busy && chat.id !== activeChatId ? `${chat.title} — you can switch chats when the current turn ends` : `${chat.title} · Updated ${new Date(chat.updatedAt).toLocaleString()}`}
                 className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-2.5 text-left text-[12px] transition-colors disabled:opacity-50 ${chat.id === activeChatId ? "text-paper" : "text-paper-dim hover:text-paper"}`}>
                 {busy && chat.id === activeChatId ? <span className="working-dot mx-1 h-1.5 w-1.5 shrink-0 rounded-full bg-leaf" /> : <SidebarIcon name="chat" className="h-3.5 w-3.5 text-graphite" />}
                 <span className="min-w-0 truncate">{chat.title}</span>
@@ -203,7 +203,7 @@ export default function Sidebar({
           </li>)}
         </ul>
         {!visibleChats.length && <p className="px-2 py-3 text-[11px] text-graphite">{chatFilter ? "No matching chats." : "Start a chat about this project."}</p>}
-        {busy && <p className="px-2 pt-3 text-[10px] leading-relaxed text-graphite">Chat switching is available when the current operation finishes.</p>}
+        {busy && <p className="px-2 pt-3 text-[10px] leading-relaxed text-graphite">Chat switching is available when the current turn ends. Messages you send now wait in the queue of this chat.</p>}
       </div>
 
       {/* External read-only context: reference material the agent may read but never edits. */}

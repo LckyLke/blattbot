@@ -67,6 +67,42 @@ interface Props {
     paths: string[],
     keep: "overleaf" | "markers",
   ) => Promise<{ path: string; conflicts: number; line?: number }[] | void>;
+  /** The newest discard's restore point (kept until the next discard). */
+  lastDiscard?: { id: string; label: string } | null;
+  onRestoreDiscard?: (id: string) => void | Promise<void>;
+}
+
+/** Why approve and discard are off while the agent works. */
+const TURN_LOCK_TITLE = "Available when the agent turn ends — approving or discarding now would race the agent's edits.";
+
+function RestoreDiscard({
+  last,
+  disabled,
+  onRestore,
+}: {
+  last: { id: string; label: string };
+  disabled: boolean;
+  onRestore: (id: string) => void | Promise<void>;
+}) {
+  const [running, setRunning] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={disabled || running}
+      onClick={async () => {
+        setRunning(true);
+        try {
+          await onRestore(last.id);
+        } finally {
+          setRunning(false);
+        }
+      }}
+      title={`Put back what “${last.label}” threw away — edits made since are kept`}
+      className="rounded-lg border border-rule px-2 py-0.5 text-[11px] text-paper-dim transition-colors hover:border-leaf hover:text-leaf disabled:opacity-50"
+    >
+      {running ? "Restoring…" : "Restore last discard"}
+    </button>
+  );
 }
 
 export default function ProofPanel({
@@ -91,6 +127,8 @@ export default function ProofPanel({
   onJump,
   onResolveConflicts,
   defaultMessage,
+  lastDiscard,
+  onRestoreDiscard,
 }: Props) {
   const fallbackMessage = defaultMessage?.trim() || FALLBACK_MESSAGE;
   const messageLabel = projectKind === "overleaf" ? "Commit message (local history only)" : "Commit message";
@@ -249,10 +287,15 @@ export default function ProofPanel({
   if (files.length === 0 && !editing && draftCount === 0 && saveCount === 0) {
     return (
       <div className="flex h-full items-center justify-center px-8">
-        <p className="max-w-xs text-center font-sans text-sm leading-relaxed text-graphite">
-          No pending changes. When BlattBot edits the project, the proof appears here for your
-          review.
-        </p>
+        <div className="flex max-w-xs flex-col items-center gap-3">
+          <p className="text-center font-sans text-sm leading-relaxed text-graphite">
+            No pending changes. When BlattBot edits the project, the proof appears here for your
+            review.
+          </p>
+          {lastDiscard && onRestoreDiscard && (
+            <RestoreDiscard last={lastDiscard} disabled={busy} onRestore={onRestoreDiscard} />
+          )}
+        </div>
       </div>
     );
   }
@@ -341,7 +384,8 @@ export default function ProofPanel({
                 files={[editing.path]}
                 embedded={editing}
                 stamp={sourceStamp}
-                busy={busy || acting !== null}
+                busy={acting !== null}
+                turnActive={busy}
                 onDiff={onDiff}
                 onSaved={onSaved}
               />
@@ -405,7 +449,16 @@ export default function ProofPanel({
             <span className="text-leaf">+{totals.add}</span>{" "}
             <span className="text-pencil">−{totals.del}</span>
           </span>
-          {busy && <span className="text-gold">agent still working…</span>}
+          <span className="flex items-center gap-2">
+            {busy && (
+              <span role="status" className="text-gold" title={TURN_LOCK_TITLE}>
+                agent still working — approve and discard once the turn ends
+              </span>
+            )}
+            {lastDiscard && onRestoreDiscard && (
+              <RestoreDiscard last={lastDiscard} disabled={busy || acting !== null} onRestore={onRestoreDiscard} />
+            )}
+          </span>
         </div>
         <label
           htmlFor={`proof-message-${projectId}`}
@@ -430,6 +483,7 @@ export default function ProofPanel({
           <button
             onClick={() => void approve()}
             disabled={actionsLocked || files.length === 0}
+            title={busy ? TURN_LOCK_TITLE : undefined}
             className="flex items-center gap-1.5 rounded-lg bg-leaf-deep px-4 py-2 text-[13px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
           >
             {acting === "push" && (
@@ -449,6 +503,7 @@ export default function ProofPanel({
             <button
               onClick={() => setConfirmDiscard(true)}
               disabled={actionsLocked || files.length === 0}
+              title={busy ? TURN_LOCK_TITLE : "Discard every pending change — you can undo it right after, or later with Restore last discard"}
               className="flex items-center gap-1.5 rounded-lg border border-rule px-3 py-2 text-[13px] text-paper-dim transition-colors hover:border-pencil hover:text-pencil disabled:opacity-50"
             >
               {acting === "discard" && (

@@ -64,7 +64,41 @@ export type ChatItemData =
       /** Size of the largest request this turn (≈ the conversation) and the model's window. */
       contextTokens?: number;
       contextWindow?: number;
+      /** The turn's checkpoint ("<chatId>.<n>"): Show changes and Undo turn use it. */
+      turnRef?: string;
+      /** The files the turn changed (the list may be capped; fileCount is the total). */
+      files?: TurnFile[];
+      fileCount?: number;
+      additions?: number;
+      deletions?: number;
+      interrupted?: boolean;
+      /** Set once the turn was undone (the undo's own summary line). */
+      undone?: string;
     };
+
+/** One file an agent turn changed, as its turn_end lists it. */
+export interface TurnFile {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  additions: number;
+  deletions: number;
+  binary?: boolean;
+}
+
+function turnFiles(v: unknown): TurnFile[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((f: any) =>
+    f && typeof f.path === "string"
+      ? [{
+          path: f.path,
+          status: f.status === "added" || f.status === "deleted" ? f.status : "modified",
+          additions: typeof f.additions === "number" ? f.additions : 0,
+          deletions: typeof f.deletions === "number" ? f.deletions : 0,
+          ...(f.binary ? { binary: true } : {}),
+        } as TurnFile]
+      : [],
+  );
+}
 
 /**
  * A chat entry plus `uid`, its stable list identity (the React key). Per-item
@@ -226,7 +260,25 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
             ? { ...it, status: "dismissed" as const }
             : it,
       );
-      if (ev.interrupted) return [...closed, notice(uid, "warn", "Turn interrupted.")];
+      const files = turnFiles(ev.files);
+      const turnRef = str(ev.turnRef);
+      const checkpoint =
+        turnRef && files.length > 0
+          ? {
+              turnRef,
+              files,
+              fileCount: num(ev.fileCount) ?? files.length,
+              additions: num(ev.additions) ?? files.reduce((n, f) => n + f.additions, 0),
+              deletions: num(ev.deletions) ?? files.reduce((n, f) => n + f.deletions, 0),
+            }
+          : {};
+      if (ev.interrupted) {
+        const stopped = notice(uid, "warn", "Turn interrupted.");
+        // What the stopped turn already changed stays reviewable and undoable.
+        return turnRef && files.length > 0
+          ? [...closed, stopped, { uid: `${uid}:card`, kind: "turn_end", interrupted: true, ...checkpoint }]
+          : [...closed, stopped];
+      }
       return [
         ...closed,
         {
@@ -238,8 +290,27 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
           contextWindow: num(ev.contextWindow),
           inputTokens: num(ev.inputTokens),
           outputTokens: num(ev.outputTokens),
+          ...checkpoint,
         },
       ];
+    }
+    case "turn_undone": {
+      // The undo's outcome, and its turn's card shows it was undone.
+      const turnRef = str(ev.turnRef);
+      const text = str(ev.text) ?? "Turn undone.";
+      const i = turnRef ? findLast(items, (it) => it.kind === "turn_end" && it.turnRef === turnRef) : -1;
+      const marked = i < 0 ? items : replaceAt(items, i, { ...(items[i] as Extract<ChatItem, { kind: "turn_end" }>), undone: text });
+      const tone = ev.tone === "warn" ? "warn" : "ok";
+      return [...marked, notice(uid, tone, text)];
+    }
+    case "turn_redone": {
+      // The undo was reverted: the turn's changes are back.
+      const turnRef = str(ev.turnRef);
+      const i = turnRef ? findLast(items, (it) => it.kind === "turn_end" && it.turnRef === turnRef) : -1;
+      const card = i < 0 ? null : (items[i] as Extract<ChatItem, { kind: "turn_end" }>);
+      const { undone: _undone, ...restored } = card ?? {};
+      const marked = card ? replaceAt(items, i, restored as ChatItem) : items;
+      return [...marked, notice(uid, ev.tone === "warn" ? "warn" : "ok", str(ev.text) ?? "Turn restored.")];
     }
     case "notice":
       return appendChatItem(

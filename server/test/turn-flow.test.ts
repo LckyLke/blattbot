@@ -113,9 +113,11 @@ describe("turn checkpoints", () => {
     expect((await transcript(id, chatId)).at(-1)).toMatchObject({ type: "turn_undone", turnRef: end.turnRef, tone: "ok" });
 
     // The undo has its own restore point.
-    const back = await call("POST", `/api/projects/${id}/discards/${undone.json().discardId}/restore`);
+    const back = await call("POST", `/api/projects/${id}/discards/${undone.json().discardId}/restore`, { turnRef: end.turnRef });
     expect(back.statusCode, back.body).toBe(200);
+    expect(back.json()).toMatchObject({ reported: true, text: expect.stringContaining("Turn restored") });
     expect(readFileSync(join(dir, "agent-notes.tex"), "utf8")).toBe("notes\n");
+    expect((await transcript(id, chatId)).at(-1)).toMatchObject({ type: "turn_redone", turnRef: end.turnRef });
 
     expect((await call("GET", `/api/projects/${id}/turns/${chatId}.9/diff`)).statusCode).toBe(404);
     expect((await call("GET", `/api/projects/${id}/turns/bad..ref/diff`)).statusCode).toBe(400);

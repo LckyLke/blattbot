@@ -9,7 +9,7 @@ import {
   MAX_CHAT_IMAGE_LABEL,
   api,
 } from "../api";
-import type { AgentQuestion, ChatMeta, FileMention, ProjectStats, Settings } from "../api";
+import type { AgentQuestion, ChatMeta, ChatQueue, FileMention, ProjectStats, Settings } from "../api";
 import type { ChatAttachment, ChatItem } from "../chat-events";
 import UsageLimits from "./UsageLimits";
 import EffortSelect from "./EffortSelect";
@@ -17,13 +17,25 @@ import SpeedSelect from "./SpeedSelect";
 import DiffView from "./DiffView";
 import Markdown from "./Markdown";
 import { useDialog } from "./Dialog";
+import { QueueList, TurnActionsContext, TurnCard, type TurnActions } from "./TurnFlow";
 
 // The item model lives with the event reducer that builds it (chat-events.ts).
 export type { ChatAttachment, ChatItem } from "../chat-events";
 
 interface Props {
   items: ChatItem[];
+  /** An agent turn runs: messages sent now wait in the queue. */
   busy: boolean;
+  /** Switching chats: the composer waits until the new chat is shown. */
+  navigating?: boolean;
+  /** Messages waiting for the running turn (null until known). */
+  queue?: ChatQueue | null;
+  onRemoveQueued?: (itemId: string) => void;
+  onResumeQueue?: () => void;
+  /** Open the Proof view (the turn card's Review). */
+  onReviewTurn?: () => void;
+  /** Undo one turn (the turn card asks for confirmation first). */
+  onUndoTurn?: (turnRef: string) => Promise<void>;
   /** What the agent is doing right now — drives the thinking indicator. */
   activity: "idle" | "thinking" | "streaming" | "tool";
   projectId: string;
@@ -362,6 +374,12 @@ function AgentText({
 export default function Chat({
   items,
   busy,
+  navigating = false,
+  queue = null,
+  onRemoveQueued,
+  onResumeQueue,
+  onReviewTurn,
+  onUndoTurn,
   activity,
   projectId,
   projectName,
@@ -396,7 +414,7 @@ export default function Chat({
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const mentions = useFileMentions(projectId, draft, setDraft, composerRef, busy);
+  const mentions = useFileMentions(projectId, draft, setDraft, composerRef, navigating);
   useLayoutEffect(() => {
     if (composerRef.current) resizeComposer(composerRef.current);
   }, [draft]);
@@ -450,11 +468,11 @@ export default function Chat({
 
   async function addFiles(incoming: File[]) {
     if (incoming.length === 0) return;
-    // A drop always reaches here, even mid-turn (the handler must
-    // preventDefault or the browser navigates to the file) — say why nothing
-    // was attached instead of swallowing it.
-    if (busy) {
-      setAttachError("Wait for the current turn to finish before attaching images.");
+    // A drop always reaches here (the handler must preventDefault or the
+    // browser navigates to the file). Mid-turn the pictures go with the
+    // queued message; only a chat switch in progress refuses them.
+    if (navigating) {
+      setAttachError("Wait until the chat has opened before attaching images.");
       return;
     }
     const startedFor = projectId;
@@ -525,6 +543,11 @@ export default function Chat({
 
   // Stable identity so the memoized Markdown bubbles don't re-render per keystroke.
   const mdLink = useMemo<MdLinkProps>(() => ({ files, onOpenFile }), [files, onOpenFile]);
+  // The turn cards' actions, through context so the memoized bubbles keep their props.
+  const turnActions = useMemo<TurnActions>(
+    () => ({ projectId, busy, onReview: onReviewTurn, onUndo: onUndoTurn }),
+    [projectId, busy, onReviewTurn, onUndoTurn],
+  );
 
   // Quote-from-PDF injection: append the quoted block to whatever draft
   // exists, once per nonce (the mount-time nonce is deliberately skipped so
@@ -565,7 +588,7 @@ export default function Chat({
     const text = draft.trim();
     // Pictures alone are a complete message — "here's a screenshot" with no
     // words is the most natural way to use a paste-an-image composer.
-    if (busy || shrinking || (!text && pending.length === 0)) return;
+    if (navigating || shrinking || (!text && pending.length === 0)) return;
     const taken = pending;
     const startedFor = projectId;
     const images = taken.map((p) => p.file);
@@ -611,18 +634,20 @@ export default function Chat({
           </div>
         )}
         <div className="mx-auto flex max-w-2xl flex-col gap-3">
-          {items.map((item) => (
-            <ChatBubble
-              key={item.uid}
-              item={item}
-              projectId={projectId}
-              onAnswerQuestion={onAnswerQuestion}
-              onDismissQuestion={onDismissQuestion}
-              link={mdLink}
-              onLocateQuote={onLocateQuote}
-              onFindInPdf={pdfVisible ? onFindInPdf : undefined}
-            />
-          ))}
+          <TurnActionsContext.Provider value={turnActions}>
+            {items.map((item) => (
+              <ChatBubble
+                key={item.uid}
+                item={item}
+                projectId={projectId}
+                onAnswerQuestion={onAnswerQuestion}
+                onDismissQuestion={onDismissQuestion}
+                link={mdLink}
+                onLocateQuote={onLocateQuote}
+                onFindInPdf={pdfVisible ? onFindInPdf : undefined}
+              />
+            ))}
+          </TurnActionsContext.Provider>
           {busy && activity === "thinking" && (
             <div className="flex items-center gap-2 self-start px-1 font-sans text-[12px] text-graphite">
               <span className="working-dot inline-block h-1.5 w-1.5 rounded-full bg-graphite" />
@@ -667,7 +692,7 @@ export default function Chat({
               role="status"
               className="mx-auto mb-2 max-w-2xl rounded-lg border border-dashed border-leaf/70 px-3 py-1 text-center font-mono text-[11px] text-leaf"
             >
-              {busy ? "BlattBot is working — attachments wait for the next message" : "↓ Drop images to attach"}
+              {busy ? "↓ Drop images to attach — they go with your queued message" : "↓ Drop images to attach"}
             </p>
           )}
           {pending.length > 0 && (
@@ -682,7 +707,7 @@ export default function Chat({
                   <button
                     type="button"
                     onClick={() => removePending(p.key)}
-                    disabled={busy}
+                    disabled={navigating}
                     aria-label={`Remove ${p.name}`}
                     title={`Remove ${p.name}`}
                     className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-rule bg-ink-2 text-[11px] leading-none text-graphite transition-colors hover:border-pencil/60 hover:text-pencil disabled:opacity-40"
@@ -749,8 +774,12 @@ export default function Chat({
               }}
               rows={2}
               aria-label="Message BlattBot"
-              placeholder={busy ? "BlattBot is working…" : "Ask BlattBot… Type @ to mention a file"}
-              disabled={busy}
+              placeholder={
+                busy
+                  ? "BlattBot is working — type your next message; it waits in the queue"
+                  : "Ask BlattBot… Type @ to mention a file"
+              }
+              disabled={navigating}
               className="chat-composer-input block min-h-[76px] w-full resize-none border-0 bg-transparent px-1 py-1 text-[14px] leading-6 text-paper placeholder:text-graphite disabled:opacity-60"
             />
             <div className="chat-composer-toolbar mt-2">
@@ -758,7 +787,7 @@ export default function Chat({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={busy || pending.length >= MAX_CHAT_IMAGES}
+                  disabled={navigating || pending.length >= MAX_CHAT_IMAGES}
                   aria-label="Attach images"
                   title="Attach images — you can also paste or drop them here"
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-graphite transition-colors hover:bg-white/5 hover:text-paper disabled:opacity-40"
@@ -783,41 +812,61 @@ export default function Chat({
                 {effortSettings && <EffortSelect model={model} settings={effortSettings} onChange={onChangeEffort} />}
                 {effortSettings && <SpeedSelect settings={effortSettings} onChange={onChangeEffort} />}
               </div>
-                {busy ? (
-                  <button
-                    type="button"
-                    onClick={() => void stop()}
-                    disabled={stopping === "sending"}
-                    aria-label={stopping === "idle" ? "Stop" : "Stopping"}
-                    aria-busy={stopping !== "idle"}
-                    title={
-                      stopping === "sending"
-                        ? "Asking BlattBot to stop…"
-                        : stopping === "sent"
-                          ? "Stopping — waiting for the turn to wind down"
-                          : "Stop generating"
-                    }
-                    className={`chat-composer-send flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-paper text-ink transition-colors hover:bg-paper-dim disabled:cursor-default ${
-                      stopping === "idle" ? "" : "working-dot"
-                    }`}
-                  >
-                    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" fill="currentColor"><rect x="5" y="5" width="10" height="10" rx="1.5" /></svg>
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    // Attachments alone are enough — an image-only message is valid.
-                    disabled={(!draft.trim() && pending.length === 0) || shrinking}
-                    title={shrinking ? "Resizing an attached image…" : "Send (Enter)"}
-                    aria-label="Send"
-                    className="chat-composer-send flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-leaf text-ink transition-colors hover:bg-leaf/85 disabled:bg-white/10 disabled:text-graphite/60"
-                  >
-                    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15V5m-5 5 5-5 5 5" /></svg>
-                  </button>
-                )}
+                <span className="chat-composer-send flex shrink-0 items-center gap-1">
+                  {busy && (
+                    <button
+                      type="button"
+                      onClick={() => void stop()}
+                      disabled={stopping === "sending"}
+                      aria-label={stopping === "idle" ? "Stop" : "Stopping"}
+                      aria-busy={stopping !== "idle"}
+                      title={
+                        stopping === "sending"
+                          ? "Asking BlattBot to stop…"
+                          : stopping === "sent"
+                            ? "Stopping — waiting for the turn to wind down"
+                            : "Stop generating"
+                      }
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-paper text-ink transition-colors hover:bg-paper-dim disabled:cursor-default ${
+                        stopping === "idle" ? "" : "working-dot"
+                      }`}
+                    >
+                      <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" fill="currentColor"><rect x="5" y="5" width="10" height="10" rx="1.5" /></svg>
+                    </button>
+                  )}
+                  {/* While a turn runs, sending queues the message for after it. */}
+                  {(!busy || draft.trim() || pending.length > 0) && (
+                    <button
+                      type="submit"
+                      // Attachments alone are enough — an image-only message is valid.
+                      disabled={(!draft.trim() && pending.length === 0) || shrinking || navigating}
+                      title={
+                        shrinking
+                          ? "Resizing an attached image…"
+                          : busy
+                            ? "Queue this message — it starts when the current turn ends (Enter)"
+                            : "Send (Enter)"
+                      }
+                      aria-label={busy ? "Queue message" : "Send"}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-leaf text-ink transition-colors hover:bg-leaf/85 disabled:bg-white/10 disabled:text-graphite/60"
+                    >
+                      <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15V5m-5 5 5-5 5 5" /></svg>
+                    </button>
+                  )}
+                </span>
             </div>
           </div>
         </div>
+        {queue && (queue.items.length > 0 || queue.paused) && (
+          <QueueList
+            queue={queue}
+            chats={chats}
+            activeChatId={activeChatId}
+            busy={busy}
+            onRemove={onRemoveQueued}
+            onResume={onResumeQueue}
+          />
+        )}
         <div className="mx-auto mt-2 flex max-w-2xl items-center justify-between gap-2 px-1 text-[10px] text-graphite/70">
           <span>Enter to send <span className="px-1 opacity-50">·</span> Shift + Enter for a new line</span>
           {projectStats && projectStats.totalTurns > 0 && (
@@ -1112,7 +1161,7 @@ const ChatBubble = memo(function ChatBubble({
       // The cost when known (Claude); otherwise total tokens (openai backends
       // that report usage); otherwise just the duration.
       const tokens = (item.inputTokens ?? 0) + (item.outputTokens ?? 0);
-      return (
+      const stats = !item.interrupted && (
         <div className="self-center font-mono text-[10.5px] tracking-wide text-graphite/70">
           — turn complete
           {item.durationMs != null && ` · ${(item.durationMs / 1000).toFixed(1)}s`}
@@ -1127,6 +1176,15 @@ const ChatBubble = memo(function ChatBubble({
             </span>
           )}{" "}
           —
+        </div>
+      );
+      // A turn that changed files ends in a card: what changed, Review,
+      // Show changes, Undo turn.
+      if (!item.turnRef || !item.files?.length) return stats || null;
+      return (
+        <div className="flex flex-col gap-1">
+          <TurnCard item={item} />
+          {stats}
         </div>
       );
     }

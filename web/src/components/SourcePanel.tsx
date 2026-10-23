@@ -62,8 +62,14 @@ interface Props {
   mainTex?: string;
   /** Changes when the working tree may have changed — refetches the open file. */
   stamp: number;
-  /** True while an agent turn runs — manual editing is disabled then. */
+  /** True while the working tree is locked (an approve or discard runs) — editing is disabled then. */
   busy: boolean;
+  /**
+   * True while an agent turn runs: typing stays a draft and saving waits for
+   * the turn to end; then the draft is saved, or — when the agent changed the
+   * same file — merged first through the changed-on-disk flow.
+   */
+  turnActive?: boolean;
   /** Receives the fresh working diff after a manual save, with the project it was saved to. */
   onDiff: (projectId: string, diff: string) => void;
   /** Called after a successful save — App recompiles when the PDF pane is visible. */
@@ -688,7 +694,7 @@ const CONFLICT_MARK = "<<<<<<< yours";
  */
 let handledRevealNonce = -1;
 
-export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded }: Props) {
+export default function SourcePanel({ projectId, files, mainTex, stamp, busy, turnActive = false, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded }: Props) {
   const dialog = useDialog();
   const tree = useMemo(() => buildTree(files), [files]);
   const [sel, setSel] = useState<string | null>(null);
@@ -717,6 +723,11 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
 
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  const turnActiveRef = useRef(turnActive);
+  turnActiveRef.current = turnActive;
+  /** A save (button, Mod-s or autosave) asked for during a turn: it runs when the turn ends. */
+  const deferredSave = useRef(false);
+  const [saveDeferred, setSaveDeferred] = useState(false);
   const projRef = useRef(projectId);
   projRef.current = projectId;
   const wrapRef = useRef(wrap);
@@ -966,7 +977,16 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
   const save = useCallback(async () => {
     const view = viewRef.current;
     const path = selRef.current;
-    if (!view || !path || savingRef.current || busyRef.current) return;
+    if (!view || !path) return;
+    // The agent holds the files: keep the draft and save once the turn ends.
+    if (turnActiveRef.current) {
+      if (view.state.doc.toString() !== savedRef.current) {
+        deferredSave.current = true;
+        setSaveDeferred(true);
+      }
+      return;
+    }
+    if (savingRef.current || busyRef.current) return;
     const content = view.state.doc.toString();
     if (content === savedRef.current) return; // clean doc — nothing to save
     const finishSave = startFileSave(projectId, path, editorId);
@@ -1009,6 +1029,43 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     }
   }, [projectId, armAutosave, editorId]);
   saveRef.current = save;
+
+  // The turn ended: run the save it held back — unless the agent changed the
+  // file meanwhile, in which case the draft is merged first (changed on disk).
+  useEffect(() => {
+    if (turnActive || !deferredSave.current) return;
+    deferredSave.current = false;
+    setSaveDeferred(false);
+    const path = selRef.current;
+    const pid = projRef.current;
+    if (!path) return;
+    let stale = false;
+    let done = false;
+    void (async () => {
+      try {
+        const disk = await api.file(pid, path);
+        if (stale || projRef.current !== pid || selRef.current !== path) return;
+        const base = readDraft(pid, path)?.base ?? savedRef.current;
+        if (disk.content !== base) {
+          setSaveErr("The agent changed this file during the turn — Merge your edits with its version, then save.");
+          return;
+        }
+        saveRef.current();
+      } catch (err: any) {
+        if (!stale) setSaveErr(`Could not save after the turn: ${err.message}`);
+      } finally {
+        done = true;
+      }
+    })();
+    return () => {
+      stale = true;
+      // The next (queued) turn started before the check finished: wait for that one.
+      if (!done) {
+        deferredSave.current = true;
+        setSaveDeferred(true);
+      }
+    };
+  }, [turnActive]);
 
   /**
    * Three-way merge of the draft with the disk version (merge3.ts): base is
@@ -1365,6 +1422,15 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                       read-only while the agent works
                     </span>
                   )}
+                  {turnActive && !busy && (
+                    <span
+                      role="status"
+                      title="The agent is editing the project: keep typing — your edits stay a draft and are saved when the turn ends (merged first if the agent changed this file too)."
+                      className="rounded-lg border border-gold/30 bg-gold/10 px-1.5 py-px text-[10.5px] text-gold"
+                    >
+                      {saveDeferred ? "saves after the turn" : "draft while the agent works"}
+                    </span>
+                  )}
                   {dirty && (
                     <button
                       onClick={() => void revert()}
@@ -1377,10 +1443,11 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
                   )}
                   <button
                     onClick={() => void save()}
-                    disabled={!dirty || saving || busy}
+                    disabled={!dirty || saving || busy || saveDeferred}
+                    title={turnActive ? "The agent is working: your edits are saved when the turn ends" : undefined}
                     className="rounded-lg bg-leaf-deep px-2.5 py-0.5 text-[11.5px] font-medium text-paper transition-colors hover:bg-leaf disabled:opacity-50"
                   >
-                    {saving ? "Saving…" : "Save"}
+                    {saving ? "Saving…" : turnActive ? "Saves after the turn" : "Save"}
                   </button>
                 </>
               )}

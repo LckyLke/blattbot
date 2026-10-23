@@ -1956,22 +1956,23 @@ async function main() {
     await sendButton().waitFor({ timeout: 20_000 });
 
     // While a turn runs the drop must STILL be prevented (otherwise the tab
-    // navigates away mid-stream) and must say why nothing was attached. The
-    // pending question card is the stable "busy" state in this flow.
+    // navigates away mid-stream); the picture is staged for the message the
+    // user queues next. The pending question card is the stable "busy" state.
     await page.getByPlaceholder(/Ask BlattBot/).filter({ visible: true }).first().fill("One more pass, please.");
     await sendButton().click();
     const busySkip = () => leftPane().getByRole("button", { name: "Skip these questions" }).filter({ visible: true });
     await busySkip().first().waitFor({ timeout: 20_000 });
     const busyDrop = await dropOnComposer({ name: "while-busy.png", type: "image/png", b64: PASTE_PNG_B64 });
-    await attachNotice(/Wait for the current turn/).first().waitFor({ timeout: 10_000 });
+    await leftPane().getByAltText("while-busy.png").filter({ visible: true }).first().waitFor({ timeout: 10_000 });
     const busyDropOk =
       busyDrop.found &&
       busyDrop.overPrevented &&
       busyDrop.dropPrevented &&
       // …and the page is still the app: a navigation would have unmounted it.
       (await busySkip().count()) === 1 &&
-      (await leftPane().getByAltText("while-busy.png").count()) === 0;
+      (await leftPane().getByAltText("while-busy.png").filter({ visible: true }).count()) === 1;
     await shot("30p-drop-while-busy");
+    await leftPane().getByRole("button", { name: "Remove while-busy.png" }).filter({ visible: true }).first().click();
     await busySkip().first().click();
     await sendButton().waitFor({ timeout: 20_000 });
 

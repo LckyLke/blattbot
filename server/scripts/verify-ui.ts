@@ -26,6 +26,7 @@ const SCRIPTS = [
   "research-ui",
   "sidebar-ui",
   "sync-ui",
+  "turn-flow-ui",
 ];
 
 const serverDir = join(dirname(fileURLToPath(import.meta.url)), "..");

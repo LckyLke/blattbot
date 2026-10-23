@@ -253,6 +253,26 @@ export interface ProjectDetail extends Project {
   pendingQuestion?: PendingQuestion | null;
   hasChanges: boolean;
   lastCompile: CompileInfo | null;
+  /** The refresh build after a turn runs once the turn is over. */
+  compiling?: boolean;
+  /** Messages waiting for the running turn. */
+  queue?: ChatQueue;
+}
+
+/** Messages sent while a turn runs; they start one by one when it ends. */
+export interface ChatQueue {
+  items: { id: string; chatId: string; text: string; mode: string; images: number; queuedAt: string }[];
+  /** Set after a turn failed or was stopped: nothing starts until Resume. */
+  paused: "error" | "interrupted" | null;
+}
+
+/** What undoing a turn or restoring a discard did to each file. */
+export interface ReverseResult {
+  restored: string[];
+  merged: string[];
+  conflicts: string[];
+  skipped: { path: string; reason: string }[];
+  diff: string;
 }
 
 export interface CompileInfo {
@@ -265,6 +285,11 @@ export interface CompileInfo {
   logTail: string;
   durationMs: number;
   hasPdf: boolean;
+  /** The TeX program the build ran for, and where that choice came from. */
+  program?: "pdflatex" | "xelatex" | "lualatex" | "latex";
+  programSource?: "magic comment" | "Overleaf" | "log" | "default";
+  /** An earlier build of the same sources answered this request. */
+  reused?: boolean;
 }
 
 export interface BibEntry {
@@ -662,11 +687,34 @@ export const api = {
     request<{ answer: string }>(`/api/projects/${id}/inline-question`, { method: "POST", body: JSON.stringify(body), signal }),
   mentionFiles: (id: string, query: string) =>
     request<{ files: FileMention[]; more: boolean; warnings: string[] }>("/api/projects/" + id + "/mention-files?q=" + encodeURIComponent(query)),
-  chat: (id: string, message: string, mode?: string, files?: string[], images?: string[], mentions?: FileMention[]) =>
-    request<{ ok: boolean }>(`/api/projects/${id}/chat`, {
+  /** Send a message to `chatId`; while a turn runs it is queued instead (queued: true). */
+  chat: (id: string, message: string, mode?: string, files?: string[], images?: string[], mentions?: FileMention[], chatId?: string) =>
+    request<{ ok: boolean; chatId?: string; queued?: boolean; queueId?: string; queue?: ChatQueue }>(`/api/projects/${id}/chat`, {
       method: "POST",
-      body: JSON.stringify({ message, mode, files, images, mentions }),
+      body: JSON.stringify({ message, mode, files, images, mentions, ...(chatId ? { chatId } : {}) }),
     }),
+  queue: (id: string) => request<ChatQueue>(`/api/projects/${id}/queue`),
+  removeQueued: (id: string, itemId: string) =>
+    request<ChatQueue>(`/api/projects/${id}/queue/${encodeURIComponent(itemId)}`, { method: "DELETE" }),
+  resumeQueue: (id: string) =>
+    request<ChatQueue & { started: boolean }>(`/api/projects/${id}/queue/resume`, { method: "POST" }),
+  /** What one agent turn changed (its before → after checkpoints). */
+  turnDiff: (id: string, turnRef: string) =>
+    request<{ turnRef: string; diff: string; files: { path: string; status: string; additions: number; deletions: number }[] }>(
+      `/api/projects/${id}/turns/${encodeURIComponent(turnRef)}/diff`,
+    ),
+  /** Undo one turn in the current files; discardId restores the state before the undo. */
+  undoTurn: (id: string, turnRef: string) =>
+    request<ReverseResult & { ok: boolean; discardId?: string }>(
+      `/api/projects/${id}/turns/${encodeURIComponent(turnRef)}/undo`,
+      { method: "POST" },
+    ),
+  /** `turnRef`: this restore point is that turn's undo (the chat then reports it). */
+  restoreDiscard: (id: string, discardId: string, turnRef?: string) =>
+    request<ReverseResult & { ok: boolean; tone: "ok" | "warn"; text: string; reported?: boolean }>(
+      `/api/projects/${id}/discards/${encodeURIComponent(discardId)}/restore`,
+      turnRef ? { method: "POST", body: JSON.stringify({ turnRef }) } : { method: "POST" },
+    ),
   /** Post one image's raw bytes; the server sniffs the type and names the file. */
   uploadChatImage: (id: string, file: Blob) =>
     request<ChatImage>(`/api/projects/${id}/chat-image`, {
@@ -763,14 +811,14 @@ export const api = {
       `/api/projects/${id}/conflicts/resolve`,
       { method: "POST", body: JSON.stringify({ paths, keep }) },
     ),
-  reject: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}/reject`, { method: "POST" }),
+  reject: (id: string) => request<{ ok: boolean; discardId?: string }>(`/api/projects/${id}/reject`, { method: "POST" }),
   rejectFile: (id: string, path: string) =>
-    request<{ ok: boolean; diff: string }>(`/api/projects/${id}/reject-file`, {
+    request<{ ok: boolean; diff: string; discardId?: string }>(`/api/projects/${id}/reject-file`, {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
   rejectHunk: (id: string, patch: string) =>
-    request<{ ok: boolean; diff: string }>(`/api/projects/${id}/reject-hunk`, {
+    request<{ ok: boolean; diff: string; discardId?: string }>(`/api/projects/${id}/reject-hunk`, {
       method: "POST",
       body: JSON.stringify({ patch }),
     }),
@@ -814,7 +862,9 @@ export const api = {
   /** Write the reverse of a commit into the files as pending changes (nothing is pushed). */
   revertCommit: (id: string, sha: string) =>
     request<RevertResult>(`/api/projects/${id}/history/${encodeURIComponent(sha)}/revert`, { method: "POST" }),
-  compile: (id: string) => request<CompileInfo>(`/api/projects/${id}/compile`, { method: "POST" }),
+  /** force: build even when the sources did not change since the last build. */
+  compile: (id: string, force = false) =>
+    request<CompileInfo>(`/api/projects/${id}/compile`, force ? { method: "POST", body: JSON.stringify({ force }) } : { method: "POST" }),
   /**
    * Compile the project's state as committed at a rev (only "HEAD" — the
    * approval base — for now) into the server's per-sha cache. ok:true means

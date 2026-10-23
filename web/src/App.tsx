@@ -24,6 +24,7 @@ import {
   type Account,
   type ApproveSelection,
   type ChatMeta,
+  type ChatQueue,
   type FileMention,
   type ChatTranscriptEvent,
   type CompileInfo,
@@ -47,6 +48,8 @@ import ProjectSyncNotice from "./components/ProjectSyncNotice";
 import { useHistoryStatus } from "./useHistoryStatus";
 import { defaultApproveMessage } from "./approve-message";
 import type { RevertResult } from "./api";
+import { UndoToast, type UndoToastState } from "./components/TurnFlow";
+import { forgetLastDiscard, readLastDiscard, rememberLastDiscard, type LastDiscard } from "./discard-memory";
 
 /**
  * A panel module, loaded on first use and memoized: App hands every panel
@@ -201,6 +204,16 @@ function AppShell() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [appSettings, setAppSettings] = useState<Settings | null>(null);
   const [busy, setBusy] = useState(false);
+  // The chat this tab shows: messages go there, and live events of another
+  // chat's turn stay out of it.
+  const activeChatIdRef = useRef(activeChatId);
+  activeChatIdRef.current = activeChatId;
+  // Messages waiting for the running turn (the server's queue).
+  const [queue, setQueue] = useState<ChatQueue | null>(null);
+  // "Undo" for a discard or an undone turn, offered for a few seconds.
+  const [undoToast, setUndoToast] = useState<UndoToastState | null>(null);
+  // The newest discard's restore point: Proof offers it until the next discard.
+  const [lastDiscard, setLastDiscard] = useState<LastDiscard | null>(null);
   const [chatNavigation, setChatNavigation] = useState(false);
   const chatNavigationRef = useRef(false);
 
@@ -369,6 +382,7 @@ function AppShell() {
       const d = await api.project(id);
       if (selectedRef.current?.id !== id) return;
       setDetail(d);
+      if (d.queue) setQueue(d.queue);
       if (d.lastCompile && versionAtRequest === pdfVersionRef.current) {
         acceptCompile(d.lastCompile);
       }
@@ -446,7 +460,12 @@ function AppShell() {
   const handleEvent = useCallback(
     (ev: any) => {
       if (!ev || typeof ev.type !== "string") return;
+      // A turn in another chat (another tab sent it): its busy state and
+      // diffs apply here too, its chat items do not.
+      const foreign =
+        typeof ev.chatId === "string" && activeChatIdRef.current !== null && ev.chatId !== activeChatIdRef.current;
       if (ev.type === "text_delta") {
+        if (foreign) return;
         setActivity("streaming");
         pendingDelta.current += String(ev.text ?? "");
         if (!deltaFrame.current) deltaFrame.current = requestAnimationFrame(flushDelta);
@@ -459,7 +478,7 @@ function AppShell() {
       // Events that don't touch the chat return the same array (no render).
       const uid = liveChatUid();
       const projectKind = selectedRef.current?.kind;
-      setChat((prev) => applyChatEvent(prev, ev, { uid, projectKind }));
+      if (!foreign) setChat((prev) => applyChatEvent(prev, ev, { uid, projectKind }));
 
       // Live-only effects: activity, busy state, the diff, compiles.
       switch (ev.type) {
@@ -517,6 +536,9 @@ function AppShell() {
         }
         case "compile_start":
           setCompiling(true);
+          break;
+        case "queue":
+          setQueue({ items: Array.isArray(ev.items) ? ev.items : [], paused: ev.paused ?? null });
           break;
         case "compile": {
           const { type, ...info } = ev;
@@ -577,6 +599,9 @@ function AppShell() {
   useEffect(() => {
     if (!selectedId) return;
     setChat([]);
+    setQueue(null);
+    setUndoToast(null);
+    setLastDiscard(readLastDiscard(selectedId));
     setChats([]);
     setActiveChatId(null);
     setDiff("");
@@ -868,22 +893,36 @@ function AppShell() {
         // server's chat-uploads sweep.
         if (stale()) return false;
       }
-      pushChat({
-        kind: "user",
+      // While a turn runs the message is queued: its bubble appears when it
+      // starts (the server broadcasts it then). Otherwise it shows right away
+      // — and is taken back if the server queued it after all.
+      const bubble = {
+        uid: liveChatUid(),
+        kind: "user" as const,
         text: message,
         ...(attachments.length > 0 ? { images: attachments } : {}),
-      });
+      };
+      const shownEarly = !busyRef.current;
+      if (shownEarly) setChat((prev) => appendChatItem(prev, bubble));
       try {
         const endedBefore = turnEndSeq.current;
-        await api.chat(
+        const sent = await api.chat(
           id,
           message,
           mode,
           undefined,
           attachments.length > 0 ? attachments.map((a) => a.id) : undefined,
           mentions,
+          // The chat this tab shows — never whichever one another tab activated.
+          activeChatIdRef.current ?? undefined,
         );
         if (stale()) return true;
+        if (sent.queued) {
+          if (shownEarly) setChat((prev) => prev.filter((it) => it.uid !== bubble.uid));
+          if (sent.queue) setQueue(sent.queue);
+          return true;
+        }
+        if (!shownEarly) setChat((prev) => appendChatItem(prev, bubble));
         // The server accepted the turn — reflect it immediately instead of
         // waiting for the websocket's turn_start (which a dropped socket
         // would never deliver, leaving no Stop button and no activity).
@@ -1178,15 +1217,59 @@ function AppShell() {
   const detailSeen = detail && detail.id === selectedId ? detail.remoteLastUpdated : undefined;
   useEffect(() => { if (detailSeen) noteRemote(detailSeen); }, [detailSeen, noteRemote]);
 
+  /**
+   * Put back what a discard (or an undone turn) threw away: a three-way merge
+   * on the server, so edits made since are kept.
+   */
+  const restoreDiscard = useCallback(
+    async (discardId: string, turnRef?: string) => {
+      const id = selectedId;
+      if (!id) return;
+      try {
+        const r = await api.restoreDiscard(id, discardId, turnRef);
+        if (selectedRef.current?.id !== id) return;
+        forgetLastDiscard(id, discardId);
+        setLastDiscard((last) => (last?.id === discardId ? null : last));
+        dirtySinceCompile.current = true;
+        setSourceStamp((s) => s + 1);
+        setDiff(r.diff);
+        // An undone turn's restore is reported in its chat (turn_redone).
+        if (!r.reported) pushChat({ kind: "notice", tone: r.tone, text: r.text });
+      } catch (err: any) {
+        if (selectedRef.current?.id !== id) return;
+        // A restore point that is gone stays gone.
+        if (err?.status === 404) {
+          forgetLastDiscard(id, discardId);
+          setLastDiscard((last) => (last?.id === discardId ? null : last));
+        }
+        pushChat({ kind: "notice", tone: "error", text: `Could not restore: ${err.message}` });
+      }
+    },
+    [selectedId, pushChat],
+  );
+
+  /** A discard just happened: offer Undo for a moment, and keep it in Proof until the next one. */
+  const offerUndoDiscard = useCallback(
+    (projectId: string, discardId: string | undefined, label: string) => {
+      if (!discardId || selectedRef.current?.id !== projectId) return;
+      const last = { id: discardId, label };
+      rememberLastDiscard(projectId, last);
+      setLastDiscard(last);
+      setUndoToast({ key: Date.now(), text: `${label}.`, onUndo: () => restoreDiscard(discardId) });
+    },
+    [restoreDiscard],
+  );
+
   const reject = useCallback(async () => {
     const id = selectedId;
     if (!id) return;
     try {
-      await api.reject(id);
+      const r = await api.reject(id);
+      offerUndoDiscard(id, r.discardId, "Discarded all pending changes");
     } catch (err: any) {
       if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
     }
-  }, [selectedId, pushChat]);
+  }, [selectedId, pushChat, offerUndoDiscard]);
 
   const rejectFile = useCallback(
     async (path: string) => {
@@ -1199,11 +1282,12 @@ function AppShell() {
         dirtySinceCompile.current = true;
         setSourceStamp((s) => s + 1);
         setDiff(r.diff);
+        offerUndoDiscard(id, r.discardId, `Discarded the changes to ${path}`);
       } catch (err: any) {
         if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
       }
     },
-    [selectedId, pushChat],
+    [selectedId, pushChat, offerUndoDiscard],
   );
 
   const rejectHunk = useCallback(
@@ -1216,12 +1300,59 @@ function AppShell() {
         dirtySinceCompile.current = true;
         setSourceStamp((s) => s + 1);
         setDiff(r.diff);
+        offerUndoDiscard(id, r.discardId, "Discarded one change");
+      } catch (err: any) {
+        if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
+      }
+    },
+    [selectedId, pushChat, offerUndoDiscard],
+  );
+
+  /** Undo one agent turn (the card asked for confirmation); its own undo comes as a toast. */
+  const undoTurn = useCallback(
+    async (turnRef: string) => {
+      const id = selectedId;
+      if (!id) return;
+      try {
+        const r = await api.undoTurn(id, turnRef);
+        if (selectedRef.current?.id !== id) return;
+        dirtySinceCompile.current = true;
+        setSourceStamp((s) => s + 1);
+        setDiff(r.diff);
+        // The chat line and the card's "undone" mark arrive as turn_undone.
+        const discardId = r.discardId;
+        if (discardId) setUndoToast({ key: Date.now(), text: "Turn undone.", onUndo: () => restoreDiscard(discardId, turnRef) });
+      } catch (err: any) {
+        if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: `Undo failed: ${err.message}` });
+      }
+    },
+    [selectedId, pushChat, restoreDiscard],
+  );
+
+  const removeQueued = useCallback(
+    async (itemId: string) => {
+      const id = selectedId;
+      if (!id) return;
+      try {
+        const q = await api.removeQueued(id, itemId);
+        if (selectedRef.current?.id === id) setQueue(q);
       } catch (err: any) {
         if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
       }
     },
     [selectedId, pushChat],
   );
+
+  const resumeQueue = useCallback(async () => {
+    const id = selectedId;
+    if (!id) return;
+    try {
+      const q = await api.resumeQueue(id);
+      if (selectedRef.current?.id === id) setQueue({ items: q.items, paused: q.paused });
+    } catch (err: any) {
+      if (selectedRef.current?.id === id) pushChat({ kind: "notice", tone: "error", text: err.message });
+    }
+  }, [selectedId, pushChat]);
 
   // A manual save (Source tab, inline Proof edit, a References .bib write)
   // changed the working tree — the next visit to the PDF tab should
@@ -1342,12 +1473,12 @@ function AppShell() {
   }, []);
 
   const startCompileRef = useRef<() => Promise<void>>(async () => {});
-  const startCompile = useCallback(async () => {
+  const startCompile = useCallback(async (force = false) => {
     if (!selectedId || compilingRef.current) return;
     compilingRef.current = true;
     setCompiling(true);
     try {
-      await api.compile(selectedId);
+      await api.compile(selectedId, force);
       // The "compile" websocket event clears `compiling` and the dirty flag.
     } catch (err: any) {
       compilingRef.current = false;
@@ -1379,7 +1510,8 @@ function AppShell() {
         if (prev.left === "pdf" || prev.right === "pdf") return prev;
         return { ...prev, [side]: "pdf" };
       });
-      void startCompile();
+      // An explicit Recompile builds even when nothing changed.
+      void startCompile(true);
     },
     [startCompile],
   );
@@ -1405,6 +1537,12 @@ function AppShell() {
     },
     [panes, busy, compile, startCompile],
   );
+
+  // A turn card's Review: show Proof beside the chat (or where it already is).
+  const reviewTurn = useCallback(() => {
+    if (panes.left === "proof" || panes.right === "proof") return;
+    selectView(panes.left === "chat" ? "right" : "left", "proof");
+  }, [panes, selectView]);
 
   // The default layout opens with the PDF pane visible — make sure a PDF
   // exists: compile once per project open when the server has no cached one.
@@ -1484,7 +1622,13 @@ function AppShell() {
         return (
           <Chat
             items={chat}
-            busy={busy || chatNavigation}
+            busy={busy}
+            navigating={chatNavigation}
+            queue={queue}
+            onRemoveQueued={removeQueued}
+            onResumeQueue={resumeQueue}
+            onReviewTurn={reviewTurn}
+            onUndoTurn={undoTurn}
             activity={activity}
             onSend={send}
             onInterrupt={interrupt}
@@ -1539,6 +1683,8 @@ function AppShell() {
             onJump={revealInSource}
             onResolveConflicts={resolveConflicts}
             defaultMessage={approveMessage}
+            lastDiscard={lastDiscard}
+            onRestoreDiscard={restoreDiscard}
           />
         );
       case "history":
@@ -1561,7 +1707,9 @@ function AppShell() {
             files={detail?.files ?? NO_FILES}
             mainTex={selected!.mainTex}
             stamp={sourceStamp}
-            busy={busy}
+            // Editable during a turn: typing is a draft, saves wait for its end.
+            busy={false}
+            turnActive={busy}
             onDiff={handleManualSaveDiff}
             chatVisible={panes.left === "chat" || panes.right === "chat"}
             onQuoteToChat={quoteToChat}
@@ -1857,6 +2005,8 @@ function AppShell() {
           </Suspense>
         </PanelBoundary>
       )}
+
+      {inProject && <UndoToast toast={undoToast} onClose={() => setUndoToast(null)} />}
 
       {projSettingsOpen && selected && (
         <ProjectSettings

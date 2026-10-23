@@ -211,3 +211,43 @@ describe("replayChatEvents", () => {
     ]);
   });
 });
+
+describe("turn cards", () => {
+  const files = [
+    { path: "main.tex", status: "modified", additions: 3, deletions: 1 },
+    { path: "new.tex", status: "added", additions: 9, deletions: 0 },
+    { nope: true },
+  ];
+
+  it("puts the checkpoint of a turn that changed files on its card", () => {
+    const items = live([{ type: "turn_end", durationMs: 900, turnRef: "chat-1.2", files, fileCount: 2, additions: 12, deletions: 1 }]);
+    expect(withoutUid(items)).toEqual([
+      expect.objectContaining({
+        kind: "turn_end",
+        turnRef: "chat-1.2",
+        fileCount: 2,
+        additions: 12,
+        deletions: 1,
+        files: [
+          { path: "main.tex", status: "modified", additions: 3, deletions: 1 },
+          { path: "new.tex", status: "added", additions: 9, deletions: 0 },
+        ],
+      }),
+    ]);
+  });
+
+  it("keeps a stopped turn's changes undoable, and marks a card undone", () => {
+    const items = live([
+      { type: "turn_end", interrupted: true, turnRef: "chat-1.3", files },
+      { type: "turn_undone", turnRef: "chat-1.3", tone: "warn", text: "Turn undone: 2 files put back; conflict markers in main.tex." },
+    ]);
+    expect(items.map((it) => it.kind)).toEqual(["notice", "turn_end", "notice"]);
+    expect(items[1]).toMatchObject({ interrupted: true, turnRef: "chat-1.3", additions: 12, undone: expect.stringContaining("conflict markers") });
+    expect(items[2]).toMatchObject({ kind: "notice", tone: "warn" });
+    const redone = applyChatEvent(items, { type: "turn_redone", turnRef: "chat-1.3", tone: "ok", text: "Turn restored: 2 files put back." }, { uid: "r" });
+    expect(redone[1]).not.toHaveProperty("undone");
+    expect(redone.at(-1)).toMatchObject({ kind: "notice", tone: "ok", text: "Turn restored: 2 files put back." });
+    // A turn without a checkpoint (or without changes) keeps the plain line.
+    expect(live([{ type: "turn_end", turnRef: "chat-1.4", files: [] }])[0]).not.toHaveProperty("turnRef");
+  });
+});

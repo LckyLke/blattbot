@@ -80,11 +80,15 @@ export function registerTurnRoutes(app: FastifyInstance): void {
     return { ok: true, ...outcome.result, ...(outcome.discardId ? { discardId: outcome.discardId } : {}), diff: outcome.diff };
   });
 
-  // Put back what a discard (or an undo) threw away.
-  app.post<{ Params: { id: string; discardId: string } }>("/api/projects/:id/discards/:discardId/restore", async (req, reply) => {
+  // Put back what a discard (or an undo) threw away. `turnRef`: the restore
+  // point is that turn's undo — its card in the chat is marked undone no more.
+  app.post<{ Params: { id: string; discardId: string }; Body: { turnRef?: unknown } | undefined }>("/api/projects/:id/discards/:discardId/restore", async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
     if (isTurnActive(project.id)) return reply.code(409).send({ error: BUSY });
+    const turnRef = typeof req.body?.turnRef === "string" ? req.body.turnRef : undefined;
+    const turn = turnRef ? parseTurnRef(turnRef) : null;
+    if (turnRef && !turn) return reply.code(400).send({ error: "invalid turn" });
     const dir = projectDir(project.id);
     let outcome: { result: ReverseResult | null; diff: string };
     try {
@@ -96,8 +100,20 @@ export function registerTurnRoutes(app: FastifyInstance): void {
       return reply.code(422).send({ error: `Restore failed: ${err?.message ?? err}` });
     }
     if (!outcome.result) return reply.code(404).send({ error: "That restore point is no longer kept." });
+    const line = describeReverse(turn ? "Turn restored" : "Restored", outcome.result);
+    if (turn && turnRef) {
+      const event = { type: "turn_redone", turnRef, tone: line.tone, text: line.text };
+      if (getChat(project.id, turn.chatId)) {
+        try {
+          appendEvent(project.id, turn.chatId, event);
+        } catch {
+          /* the broadcast below still reports it */
+        }
+      }
+      broadcast(project.id, { ...event, chatId: turn.chatId });
+    }
     broadcast(project.id, { type: "diff", diff: outcome.diff });
-    return { ok: true, ...outcome.result, ...describeReverse("Restored", outcome.result), diff: outcome.diff };
+    return { ok: true, ...outcome.result, ...line, diff: outcome.diff, ...(turn ? { reported: true } : {}) };
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/queue", async (req, reply) => {
