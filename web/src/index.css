@@ -766,3 +766,6 @@ button:hover > .tex-logo .down,
   .workspace-pane { margin-block: 4px; border-radius: 12px; }
   .workspace-pane:last-child { margin-right: 4px; }
 }
+
+/* Proof: the change the j/k shortcuts moved to. */
+[data-proof-hunk][data-current="true"] { outline: 1px solid var(--color-gold); outline-offset: 2px; border-radius: 8px; }

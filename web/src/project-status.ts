@@ -3,7 +3,7 @@
  * kind, a running agent turn, pending changes and the last sync — plus the
  * link to the project on Overleaf. Pure, so the wording is testable.
  */
-import type { Project } from "./api";
+import type { Project } from "./api.js";
 
 export const KIND_LABEL: Record<Project["kind"], string> = {
   overleaf: "overleaf",

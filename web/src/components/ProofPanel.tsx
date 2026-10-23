@@ -8,6 +8,7 @@ import { HunkLines } from "./DiffView";
 import { countDrafts, draftPaths, subscribeDrafts } from "../drafts";
 import { countFileSaves, subscribeFileSaves } from "../editor-sync";
 import { loadProofMode, saveProofMode, type ProofMode } from "../ui-memory";
+import { onProofCommand, type ProofCommand } from "../shortcuts";
 
 // Loaded on demand: the rendered diff pulls in pdf.js, the embedded Source
 // editor CodeMirror — the text diff, the Proof's default view, needs neither.
@@ -145,6 +146,71 @@ export default function ProofPanel({
     }
   }
 
+  // ---- Keyboard shortcuts (shortcuts.ts): next/previous change, approve all.
+  const listRef = useRef<HTMLDivElement>(null);
+  const hunkCursor = useRef(-1);
+  useEffect(() => {
+    hunkCursor.current = -1;
+  }, [diff]);
+  const approveRef = useRef(approve);
+  approveRef.current = approve;
+  const commandRef = useRef<(command: ProofCommand) => void>(() => {});
+
+  /** Scroll to the next or previous hunk of the text diff and mark it. */
+  function goToChange(step: 1 | -1) {
+    if (editing) return; // the embedded editor is open
+    if (mode !== "text") {
+      setMode("text");
+      requestAnimationFrame(() => requestAnimationFrame(() => commandRef.current(step > 0 ? "next" : "prev")));
+      return;
+    }
+    const hunks = [...(listRef.current?.querySelectorAll<HTMLElement>("[data-proof-hunk]") ?? [])];
+    if (hunks.length === 0) return;
+    const next = hunkCursor.current < 0 ? 0 : Math.max(0, Math.min(hunks.length - 1, hunkCursor.current + step));
+    hunkCursor.current = next;
+    for (const h of hunks) h.removeAttribute("data-current");
+    const el = hunks[next];
+    el.setAttribute("data-current", "true");
+    el.scrollIntoView({ block: "start", behavior: "smooth" });
+    el.focus({ preventScroll: true });
+  }
+
+  /** The approve-all shortcut: the same checks as the button, plus a confirmation. */
+  async function confirmApproveAll() {
+    if (files.length === 0) {
+      await dialog.alert({ title: "Nothing to approve", body: "There are no pending changes." });
+      return;
+    }
+    if (actionsLocked) {
+      await dialog.alert({
+        title: "Can't approve yet",
+        body: busy
+          ? "The agent is still working — approve when the turn has ended."
+          : draftCount > 0
+            ? "Save or revert the unsaved edits first."
+            : saveCount > 0
+              ? "A save is still running."
+              : "An approve or discard is already running.",
+      });
+      return;
+    }
+    const ok = await dialog.confirm({
+      title: "Approve & push all changes?",
+      body:
+        `The same as the Approve & push button: all ${files.length} changed file${files.length === 1 ? "" : "s"} ` +
+        "are committed and pushed to the project's remote (a local project only commits).",
+      confirmLabel: "Approve & push",
+    });
+    // The latest approve: its own lock check runs on the current state.
+    if (ok) await approveRef.current();
+  }
+
+  commandRef.current = (command) => {
+    if (command === "approveAll") void confirmApproveAll();
+    else goToChange(command === "next" ? 1 : -1);
+  };
+  useEffect(() => onProofCommand((command) => requestAnimationFrame(() => commandRef.current(command))), []);
+
   if (files.length === 0 && !editing && draftCount === 0 && saveCount === 0) {
     return (
       <div className="flex h-full items-center justify-center px-8">
@@ -272,6 +338,7 @@ export default function ProofPanel({
         <div
           role="tabpanel"
           aria-label="Text diff"
+          ref={listRef}
           className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
         >
           <InlineDiffContext.Provider value={{ projectId, busy: busy || acting !== null, onDiff, onSaved }}>
@@ -427,7 +494,12 @@ function FileDiff({
   const [confirmFile, setConfirmFile] = useState(false);
   const badge = STATUS_BADGE[file.status];
   return (
-    <section className="mb-4" data-selection-location={`${file.path} (diff)`}>
+    // A file without hunks (renamed, empty, binary) is one change for the j/k keys.
+    <section
+      className="mb-4 scroll-mt-2 focus:outline-none"
+      data-selection-location={`${file.path} (diff)`}
+      {...(file.hunks.length === 0 ? { "data-proof-hunk": "", tabIndex: -1 } : {})}
+    >
       <div className="booktabs flex w-full items-baseline gap-2 px-1 pb-1 pt-2">
         <button
           onClick={() => setCollapsed((c) => !c)}
@@ -571,7 +643,13 @@ function HunkBlock({
   return (
     // The header stays OUTSIDE the horizontal scroll area: long LaTeX lines
     // must not drag the hunk's actions off to the right with them.
-    <div className="mt-1 overflow-hidden rounded-lg border border-rule bg-ink-2/60">
+    <div
+      data-proof-hunk
+      tabIndex={-1}
+      role="group"
+      aria-label={`Change in ${file.path}${range ? `, ${range}` : ""}`}
+      className="mt-1 scroll-mt-2 overflow-hidden rounded-lg border border-rule bg-ink-2/60 focus:outline-none"
+    >
       <div className="flex items-center gap-2 border-b border-rule px-3 py-1">
         <span className="shrink-0 font-mono text-[11px] text-graphite/80">{range}</span>
         <span className="ml-auto flex shrink-0 items-center gap-0.5">

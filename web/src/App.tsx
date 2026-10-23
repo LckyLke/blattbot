@@ -47,6 +47,8 @@ import { draftLeaveNotice, shouldWarnOnUnload } from "./leave-guard";
 import { useProjectSync } from "./useProjectSync";
 import ProjectSyncNotice from "./components/ProjectSyncNotice";
 import { OpenInOverleaf } from "./components/ProjectStatus";
+import ShortcutSheet from "./components/ShortcutSheet";
+import { sendProofCommand, useShortcuts } from "./shortcuts";
 
 /**
  * A panel module, loaded on first use and memoized: App hands every panel
@@ -1477,6 +1479,46 @@ function AppShell() {
 
   const inProject = view === "project" && selected !== null;
 
+  // ---- Keyboard shortcuts (shortcuts.ts) ----
+  const showShortcuts = useCallback(() => {
+    void dialog.alert({ title: "Keyboard shortcuts", body: <ShortcutSheet /> });
+  }, [dialog]);
+
+  /** Bring a view on screen: a pane already showing it stays; otherwise the
+   *  pane that is not the chat takes it (the only pane on a phone). */
+  const showView = (target: PaneView) => {
+    if (window.matchMedia("(max-width: 900px)").matches) {
+      selectView("left", target);
+      return;
+    }
+    if (panes.left === target || panes.right === target) return;
+    selectView(target === "chat" || panes.right === "chat" ? "left" : "right", target);
+  };
+
+  useShortcuts({
+    inProject,
+    help: showShortcuts,
+    showView,
+    focusChat: () => {
+      showView("chat");
+      // The chat panel may mount on this render: look for the composer a few frames.
+      let frames = 0;
+      const focus = () => {
+        const box = [...document.querySelectorAll<HTMLTextAreaElement>("textarea.chat-composer-input")].find(
+          (el) => el.offsetParent !== null,
+        );
+        if (box) box.focus();
+        else if (++frames < 30) requestAnimationFrame(focus);
+      };
+      requestAnimationFrame(focus);
+    },
+    proof: (command) => {
+      showView("proof");
+      // After the pane switch has rendered (the panel may still be loading — the bus waits).
+      setTimeout(() => sendProofCommand(command), 0);
+    },
+  });
+
   // The left pane is the flexible one, the right pane fixed at panelW; CSS
   // order places the physical panes (the sidebar keeps order 0 and comes first).
   const paneClass = (side: PaneSide) =>
@@ -1784,6 +1826,7 @@ function AppShell() {
               update={update}
               pendingChanges={pendingFileCount}
               agentWorking={busy}
+              onShowShortcuts={showShortcuts}
             />
 
             {/* Two physical panes; `flipped` decides which sits left. CSS order

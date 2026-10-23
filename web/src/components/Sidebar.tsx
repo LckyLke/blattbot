@@ -21,6 +21,8 @@ interface Props {
   onDashboard: () => void;
   onOpenSettings: () => void;
   onOpenProjectSettings: () => void;
+  /** Show the keyboard cheat sheet. */
+  onShowShortcuts?: () => void;
   /** Pull incoming remote changes now. Absent for local-only projects. */
   onSync?: () => void;
   syncing?: boolean;
@@ -45,6 +47,7 @@ export default function Sidebar({
   onDashboard,
   onOpenSettings,
   onOpenProjectSettings,
+  onShowShortcuts,
   onSync,
   syncing = false,
   update = null,
@@ -394,13 +397,25 @@ export default function Sidebar({
       </div>
 
       <div className="px-3 pb-3 pt-1">
-        <button
-          onClick={onOpenSettings}
-          aria-label="Open settings"
-          className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[11.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
-        >
-          <SidebarIcon name="settings" /> Settings
-        </button>
+        <div className="flex items-center">
+          <button
+            onClick={onOpenSettings}
+            aria-label="Open settings"
+            className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-left text-[11.5px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
+          >
+            <SidebarIcon name="settings" /> Settings
+          </button>
+          {onShowShortcuts && (
+            <button
+              onClick={onShowShortcuts}
+              aria-label="Keyboard shortcuts"
+              title="Keyboard shortcuts (?)"
+              className="flex h-9 shrink-0 items-center rounded-lg px-2 font-mono text-[11px] text-graphite transition-colors hover:bg-white/5 hover:text-paper-dim"
+            >
+              ?
+            </button>
+          )}
+        </div>
         {update && (
           <a
             href="https://github.com/LckyLke/blattbot/releases"
