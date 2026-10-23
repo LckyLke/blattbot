@@ -8,5 +8,11 @@ export default defineConfig({
     // cannot fit vitest's 5 s default. Hung tests still fail, just later.
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // `npm run coverage`: report only, no thresholds.
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      reporter: ["text-summary", "html", "lcov"],
+    },
   },
 });

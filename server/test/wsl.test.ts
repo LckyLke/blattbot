@@ -75,9 +75,15 @@ describe("captureViaWindowsBrowser (WSL login fallback)", () => {
       { pollMs: 10 },
       {
         ...clock(),
-        open: (url) => (opened.push(url), true),
+        open: (url) => {
+          opened.push(url);
+          return true;
+        },
         scan: () => scans.shift() ?? scans[0] ?? none,
-        works: async (_b, cookie) => (checked.push(cookie), cookie.includes("logged-in")),
+        works: async (_b, cookie) => {
+          checked.push(cookie);
+          return cookie.includes("logged-in");
+        },
       },
     );
     expect(opened).toEqual([`${BASE}/login`]);

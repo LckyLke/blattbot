@@ -2,24 +2,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { startMockOverleaf } from "./mock-overleaf.js";
-
-/** A free local port, so parallel checkouts running this check never collide. */
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address() as AddressInfo;
-      probe.close(() => resolve(port));
-    });
-  });
-}
+import { freePort } from "./free-port.js";
 
 const root = mkdtempSync(join(tmpdir(), "blattbot-sync-ui-"));
 process.env.BLATTBOT_DATA_DIR = join(root, "data");
@@ -29,7 +17,6 @@ const git = await import("../src/git.js");
 config.ensureDirs();
 const remoteId = "aaaa1111bbbb2222cccc3333";
 const mockPort = await freePort();
-const serverPort = await freePort();
 const mock = await startMockOverleaf(mockPort, remoteId);
 const account = accounts.upsertAccount({ baseUrl: `http://127.0.0.1:${mockPort}`, cookie: "overleaf_session2=mock-session" });
 const project = config.addProject({ name: "Sync test paper", kind: "overleaf", gitUrl: "", accountId: account.id, overleafBaseUrl: account.baseUrl, overleafProjectId: remoteId, mainTex: "main.tex" });
@@ -50,12 +37,12 @@ const notes = join(config.projectDir(project.id), "notes.tex");
 const remote = original.replace("Original.", "Incoming collaborator edit.");
 mock.files.set("main.tex", Buffer.from(remote));
 mock.files.set("notes.tex", Buffer.from(notesText));
-const base = `http://127.0.0.1:${serverPort}`;
+const port = await freePort(), base = `http://127.0.0.1:${port}`;
 let logs = "";
 function startServer() {
   const child = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
     cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
-    env: { ...process.env, BLATTBOT_PORT: String(serverPort) }, stdio: "pipe",
+    env: { ...process.env, BLATTBOT_PORT: String(port) }, stdio: "pipe",
   });
   child.stdout.on("data", chunk => { logs += chunk; });
   child.stderr.on("data", chunk => { logs += chunk; });

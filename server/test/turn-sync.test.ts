@@ -4,10 +4,10 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { startMockOverleaf, type MockOverleaf } from "../scripts/mock-overleaf.js";
+import { freePort } from "../scripts/free-port.js";
 
 const mocks = vi.hoisted(() => ({ turn: vi.fn() }));
 vi.mock("../src/agent.js", async (importOriginal) => ({
@@ -17,17 +17,6 @@ vi.mock("../src/agent.js", async (importOriginal) => ({
 
 const REMOTE_ID = "abcdef0123456789abcdef01";
 const MAIN = "\\documentclass{article}\n\\begin{document}\nBody.\n\\end{document}\n";
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address() as AddressInfo;
-      probe.close(() => resolve(port));
-    });
-  });
-}
 
 let app: import("fastify").FastifyInstance;
 let mock: MockOverleaf;

@@ -1,10 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMockOverleaf, type MockOverleaf } from "../scripts/mock-overleaf.js";
+import { freePort } from "../scripts/free-port.js";
 import { OverleafClient } from "../src/overleaf/olclient.js";
 import type { Project } from "../src/config.js";
 import { buildHunkPatch, parseDiff } from "../../web/src/diff.js";
@@ -13,17 +13,6 @@ const REMOTE_ID = "aaaa1111bbbb2222cccc3333";
 const COOKIE = "overleaf_session2=mock-session";
 // A free port per run: parallel checkouts running the suite must not collide.
 let BASE = "";
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const probe = createServer();
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", () => {
-      const { port } = probe.address() as AddressInfo;
-      probe.close(() => resolve(port));
-    });
-  });
-}
 
 const MAIN = "\\documentclass{article}\n\\begin{document}\nBody.\n\\end{document}\n";
 const BIB = "@article{a, title={A}, year={2000}}\n";

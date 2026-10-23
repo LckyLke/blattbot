@@ -138,43 +138,6 @@ export function resolveFallbackModel(model: string, configured: string): string 
   return fallback && fallback !== model ? fallback : undefined;
 }
 
-/** Descriptions of the project-specific tools, also served by /api/agent/info. */
-export const AGENT_TOOL_INFO = [
-  {
-    name: "compile_latex",
-    description:
-      "Compile the LaTeX project and report success or the exact compiler errors. Use this to verify your edits.",
-  },
-  {
-    name: "search_papers",
-    description:
-      "Search academic literature across Semantic Scholar, DBLP, and Crossref in parallel — Semantic Scholar and DBLP cover ML venues (NeurIPS, ICML, ICLR) that Crossref misses. Returns title, authors, year, venue, citation count, and a cite-ref to pass to add_citation.",
-  },
-  {
-    name: "add_citation",
-    description:
-      "Fetch BibTeX for a cite-ref — a DOI, dblp:<key>, or arxiv:<id> as returned by search_papers — dedupe against the project's bibliography, and append it to a .bib file. The new entry is immediately verified against Crossref/OpenAlex and the verdict is reported back. Returns the cite key to use in \\cite{...}.",
-  },
-  {
-    name: "list_citations",
-    description: "List all entries currently in the project's .bib files (key, title, year).",
-  },
-  {
-    name: "audit_citations",
-    description:
-      "Verify bibliography entries against Crossref and OpenAlex — no guessing, just record lookups. Pass keys to check specific entries (use this on any BibTeX you wrote by hand) or omit them to check the whole bibliography. Reports each entry as verified, mismatch (resolves to a different work), unresolved (no record found — possibly fabricated), or skipped (lookup unavailable).",
-  },
-  {
-    name: "verify_citation_support",
-    description:
-      "Check whether a cited paper's own content actually supports a specific claim attributed to it — unlike audit_citations, which only confirms the reference is real, this reads the paper (its cached open-access PDF, or its abstract when no PDF is available) and judges the claim against it. Batch by paper: pass key and claims (1–12 exact statements) for one model request; claim remains supported for a single statement. Results are reused for unchanged claims and source content. Returns SUPPORTED, PARTIALLY_SUPPORTED, NOT_SUPPORTED, or UNCLEAR with an explanation.",
-  },
-  {
-    name: "read_paper",
-    description: "Read a cited paper's actual content before writing about it. Pass its bibliography key; optionally supply path for an uploaded/attached PDF or url for a public PDF or paper landing page. Tries indexes, publisher/repository pages and web discovery; matching sources are cached. Returns PDF text with page labels, a clearly labeled abstract or publisher/chapter summary, or an explicit missing-source report. Use refresh=true to retry a recent unsuccessful lookup. Use query to find exact phrases throughout the paper; use offset/limit to read later text or more search matches. Excerpts and missing text are labeled. PDFs must match the bibliography title; never infer content from metadata or search results.",
-  },
-] as const;
-
 /**
  * The mid-turn question tool, for the /api/agent/info transparency listing.
  * On the Claude backend this is the SDK's built-in AskUserQuestion (answered
@@ -223,6 +186,7 @@ export const RESULT_HEAD_TOOLS = new Set([
   // The openai backend's directory listing — the analog of Glob above, so
   // both backends summarize the same read-only tool pairs.
   "list_files",
+  "mcp__blattbot__search_files",
   "mcp__blattbot__search_papers",
   "mcp__blattbot__list_citations",
   "mcp__blattbot__read_paper",

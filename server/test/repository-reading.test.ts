@@ -7,7 +7,7 @@ import { join } from "node:path";
 const root = mkdtempSync(join(tmpdir(), "blattbot-code-reading-"));
 const source = join(root, "source");
 let repos: typeof import("../src/repositories.js");
-let executeTool: typeof import("../src/backends/openai.js").executeTool;
+let executeTool: typeof import("../src/backends/tools.js").executeTool;
 let repository: import("../src/repositories.js").CodeRepository;
 let ctx: any;
 const longLines = Array.from({ length: 901 }, (_, i) => `value_${i + 1} = ${i + 1}`);
@@ -21,7 +21,7 @@ async function inspect(action: string, extra = {}) {
 beforeAll(async () => {
   vi.stubEnv("BLATTBOT_DATA_DIR", join(root, "data")); vi.resetModules();
   repos = await import("../src/repositories.js");
-  ({ executeTool } = await import("../src/backends/openai.js"));
+  ({ executeTool } = await import("../src/backends/tools.js"));
   const config = await import("../src/config.js");
   const project = config.addProject({ name: "Code reading", gitUrl: "local", kind: "local" });
   ctx = { project, dir: config.projectDir(project.id), readOnly: true, signal: new AbortController().signal, emit: vi.fn() };

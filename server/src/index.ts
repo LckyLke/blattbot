@@ -5,6 +5,7 @@ import { registerInlineQuestions, isInlineQuestionActive } from "./inline-questi
 import { researchJobs, listResearchJobs } from "./research/jobs.js";
 import { registerDeployment } from "./deployment.js";
 import { registerPublisherAccess } from "./publisher-access.js";
+import { registerClaudeSdkRoutes } from "./claude-sdk.js";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
@@ -22,6 +23,7 @@ import { registerResearchRoutes } from "./research/routes.js";
 import * as sync from "./sync.js";
 import { migrateProjectCookies } from "./accounts.js";
 import { getAuthToken, hostAllowed, requestAuthorized } from "./auth.js";
+import { listenOrExit } from "./listen.js";
 import { IMAGE_MIMES, MAX_IMAGE_BYTES } from "./chatimages.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerAccountRoutes } from "./routes/accounts.js";
@@ -97,6 +99,7 @@ registerResearchRoutes(app, async (id) => {
   broadcast(id, { type: "diff", diff });
 }, graphIndexer);
 registerPublisherAccess(app);
+registerClaudeSdkRoutes(app);
 app.addHook("onClose", async () => { await Promise.all([graphIndexer.stop(), researchJobs.stop()]); });
 app.addHook("onResponse", (req, reply, done) => {
   const id = (req.params as { id?: string })?.id;
@@ -154,13 +157,9 @@ if (webDist) {
   });
 }
 
-try {
-  await app.listen({ port: PORT, host: "127.0.0.1" });
-  console.log(`BlattBot server listening on http://127.0.0.1:${PORT}`);
-} catch (err) {
-  console.error(err);
-  process.exit(1);
-}
+// A busy port gets a clear message (or opens the BlattBot already on it).
+await listenOrExit(app, PORT, AUTH_TOKEN);
+console.log(`BlattBot server listening on http://127.0.0.1:${PORT}`);
 
 graphIndexer.start();
 researchJobs.start();

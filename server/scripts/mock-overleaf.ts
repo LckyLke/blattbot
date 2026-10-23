@@ -16,7 +16,7 @@
  * created through POST /project/new (exposed via `created`).
  */
 import { createHash } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { WebSocketServer } from "ws";
 import { zipSync } from "fflate";
 

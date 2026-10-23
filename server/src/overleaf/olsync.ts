@@ -11,7 +11,7 @@ import { listFiles } from "../latex.js";
 import * as git from "../git.js";
 import { CONFLICT_LABELS, describeConflict, type RemoteConflict } from "../conflicts.js";
 import { mergeText } from "../merge.js";
-import { OverleafClient, type OlRealtimeSession, type ProjectTree } from "./olclient.js";
+import type { OverleafClient, OlRealtimeSession, ProjectTree } from "./olclient.js";
 import { computeTextOp } from "./ot.js";
 
 export interface SyncInResult {

@@ -13,7 +13,7 @@
  *   socket.io 0.9 joinDoc/applyOtUpdate/leaveDoc  in-place text-doc edits
  */
 import WebSocket from "ws";
-import { type TextOpComponent } from "./ot.js";
+import type { TextOpComponent } from "./ot.js";
 
 export class OverleafAuthError extends Error {
   constructor(message = "Overleaf session rejected — the cookie has probably expired. Paste a fresh one.") {

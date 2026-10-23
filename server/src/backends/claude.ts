@@ -1,38 +1,29 @@
-import { toolDetail } from "./types.js";
 /**
  * Claude Agent SDK backend — the original BlattBot agent, moved verbatim from
  * agent.ts. Spawns the Claude Code CLI via the Agent SDK (reusing the local
- * login unless an API key is configured), exposes the four BlattBot tools as
- * an SDK MCP server, and maps the SDK's stream onto the shared event contract.
+ * login unless an API key is configured), exposes BlattBot's project tools
+ * (backends/tools.ts) as an SDK MCP server, and maps the SDK's stream onto the
+ * shared event contract. The SDK is optional and loaded on first use
+ * (claude-sdk.ts); only its types are imported statically.
  */
-import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { CanUseTool, HookCallback, OnUserDialog, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
 import { readFileSync } from "node:fs";
-import { getProject, projectDir, updateProject } from "../config.js";
+import { projectDir, updateProject } from "../config.js";
 import { attachmentBase64, chatUploadsDir, type TurnAttachment } from "../chatimages.js";
-import { compileProject } from "../compile.js";
-import { addCitation, formatAddCitationResult, readAllBibEntries } from "../citations.js";
-import {
-  auditEntries,
-  formatAuditReport,
-  verifyEntry,
-} from "../papers.js";
-import { readPaperTool, verifyPaperTool } from "./paper-tools.js";
-import { RESEARCH_TOOLS, executeResearchTool } from "../research/tools.js";
-import { searchLiterature } from "../research/discovery.js";
 import { checkToolPaths, projectReadRoots, secretDenyRules } from "./paths.js";
+import { PROJECT_TOOLS, executeTool, summarizeToolInput } from "./tools.js";
 import { loadSettings, type Settings } from "../settings.js";
 import { executableOptions } from "../sdkinfo.js";
+import { loadClaudeSdk } from "../claude-sdk.js";
 import { currentVersion } from "../version.js";
 import { askUserQuestions, validateQuestions, type AgentQuestion } from "../questions.js";
 import {
-  AGENT_TOOL_INFO,
   DISALLOWED_TOOLS,
   isEffortLevel,
   resolveFallbackModel,
   resolveModel,
   resultHead,
+  toolDetail,
   type AgentBackend,
   type AgentEvent,
   type BackendTurnContext,
@@ -40,165 +31,23 @@ import {
   type EventSink,
 } from "./types.js";
 
-function text(s: string) {
-  return { content: [{ type: "text" as const, text: s }] };
-}
-
-export function buildMcpServer(ctx: BackendTurnContext) {
-  const projectId = ctx.project.id;
-  const dir = projectDir(projectId);
-
-  const compileTool = tool(
-    "compile_latex",
-    AGENT_TOOL_INFO[0].description,
-    {},
-    async () => {
-      const project = getProject(projectId);
-      const result = await compileProject(projectId, dir, project?.mainTex);
-      if (result.ok) {
-        return text(`Compilation succeeded with ${result.engine} in ${result.durationMs}ms (main file: ${result.mainTex}).`);
-      }
-      return text(
-        `Compilation FAILED (engine: ${result.engine}, main file: ${result.mainTex || "not found"}).\n` +
-          `Errors:\n${result.errors.join("\n---\n")}\n\nLog tail:\n${result.logTail.slice(-2000)}`,
-      );
-    },
-  );
-
-  const searchTool = tool(
-    "search_papers",
-    AGENT_TOOL_INFO[1].description,
-    {
-      query: z.string().describe("Free-text search, e.g. 'attention is all you need transformer'"),
-      limit: z.number().int().min(1).max(15).optional().describe("Max results, default 5"),
-    },
-    async ({ query: q, limit }) => {
-      try {
-        const run = await searchLiterature(projectId, q, limit ?? 5);
-        if (run.error) throw new Error(run.error);
-        const hits = run.results;
-        if (hits.length === 0) return text("No results found — try different phrasing or author names.");
-        const lines = hits.map(
-          (h, i) =>
-            `${i + 1}. ${h.title} — ${h.authors}${h.year ? ` (${h.year})` : ""}${h.venue ? `, ${h.venue}` : ""}` +
-            `${h.citations != null ? ` [${h.citations} citations]` : ""}\n   cite-ref: ${h.ref}  (via ${h.source})`,
-        );
-        return text(lines.join("\n"));
-      } catch (err: any) {
-        return text(`Search failed: ${err?.message ?? err}`);
-      }
-    },
-  );
-
-  const addCitationTool = tool(
-    "add_citation",
-    AGENT_TOOL_INFO[2].description,
-    {
-      ref: z
-        .string()
-        .describe("A DOI (e.g. 10.1038/nature14539), or dblp:<key> / arxiv:<id> exactly as returned by search_papers"),
-      bibFile: z.string().optional().describe("Relative path of the .bib file to append to; defaults to the project's existing .bib"),
-    },
-    async ({ ref, bibFile }) => {
-      try {
-        const result = await addCitation(dir, ref, bibFile);
-        // Verify immediately: a bad reference must surface while the agent is
-        // still in the turn that added it, not at review time.
-        const verification =
-          result.status === "added" ? await verifyEntry(projectId, dir, result.key) : undefined;
-        return text(formatAddCitationResult(result, verification));
-      } catch (err: any) {
-        return text(`add_citation failed: ${err?.message ?? err}`);
-      }
-    },
-  );
-
-  const auditCitationsTool = tool(
-    "audit_citations",
-    AGENT_TOOL_INFO[4].description,
-    {
-      keys: z
-        .array(z.string())
-        .optional()
-        .describe("Cite keys to verify; omit to verify every entry in the bibliography"),
-    },
-    async ({ keys }) => {
-      try {
-        const { results, unknownKeys } = await auditEntries(projectId, dir, keys);
-        return text(formatAuditReport(results, unknownKeys));
-      } catch (err: any) {
-        return text(`audit_citations failed: ${err?.message ?? err}`);
-      }
-    },
-  );
-
-  const listCitationsTool = tool(
-    "list_citations",
-    AGENT_TOOL_INFO[3].description,
-    {},
-    async () => {
-      const all = readAllBibEntries(dir);
-      if (all.length === 0) return text("The project has no .bib entries yet.");
-      const lines = all.map(
-        ({ file, entry }) =>
-          `\\cite{${entry.key}} — ${entry.fields.title ?? "(no title)"}${entry.fields.year ? ` (${entry.fields.year})` : ""} [${file}]`,
-      );
-      return text(lines.join("\n"));
-    },
-  );
-
-  const verifyCitationTool = tool(
-    "verify_citation_support",
-    AGENT_TOOL_INFO[5].description,
-    {
-      key: z.string().describe("The cite key (as used in \\cite{...}) of the reference to check"),
-      claim: z.string().optional().describe("One exact claim; prefer claims for multiple statements from the same paper"),
-      claims: z.array(z.string().min(1).max(16000)).min(1).max(12).optional().describe("Exact claims for this paper, checked together in one request"),
-    },
-    async ({ key, claim, claims }) => {
-      try {
-        if ((claim === undefined) === (claims === undefined)) throw new Error("Pass either claim or claims, not both");
-        return text(await verifyPaperTool(ctx, key, claims ?? claim!));
-      } catch (err: any) {
-        return text(`verify_citation_support failed: ${err?.message ?? err}`);
-      }
-    },
-  );
-
-  const readPaperSourceTool = tool(
-    "read_paper",
-    AGENT_TOOL_INFO.find((info) => info.name === "read_paper")!.description,
-    {
-      key: z.string().describe("Bibliography cite key of the paper to read"),
-      path: z.string().optional().describe("Optional project-relative or absolute attached-context PDF path"),
-      url: z.string().url().max(8000).optional().describe("Public PDF or repository/publisher page; downloads and remembers a title-matched PDF"),
-      refresh: z.boolean().optional().describe("Retry failed source discovery immediately, or refresh a supplied URL"),
-      offset: z.number().int().min(0).optional().describe("Character offset returned by a previous read/search"),
-      limit: z.number().int().min(100).max(40000).optional().describe("Maximum text characters; default 20000"),
-      query: z.string().min(1).optional().describe("Exact phrase to search throughout the paper, case-insensitive"),
-      ocr: z.boolean().optional().describe("Run OCR on page 1 and the requested page; requires Poppler and Tesseract"),
-      page: z.number().int().min(1).max(1000).optional(),
-    },
-    async ({ key, ...opts }) => {
-      try {
-        return text(await readPaperTool(ctx, key, opts));
-      } catch (error: any) {
-        return { ...text(`read_paper failed: ${error?.message ?? error}`), isError: true };
-      }
-    },
-  );
-
+/** The registry tools Claude Code has no native twin for, as SDK MCP tools. */
+export async function buildMcpServer(ctx: BackendTurnContext) {
+  const { createSdkMcpServer, tool } = await loadClaudeSdk();
   return createSdkMcpServer({
     name: "blattbot",
     version: currentVersion(),
-    tools: [compileTool, searchTool, addCitationTool, listCitationsTool, auditCitationsTool, verifyCitationTool, readPaperSourceTool,
-      ...RESEARCH_TOOLS.map((entry) => tool(entry.name, entry.description, entry.shape, async (args) => {
-        try { return text(await executeResearchTool(ctx, entry.name, args)); }
-        catch (error: any) { return { ...text(`${entry.name} failed: ${error.message}`), isError: true }; }
-      })),
-    ],
+    tools: PROJECT_TOOLS.filter((entry) => entry.claude).map((entry) =>
+      tool(entry.name, entry.description, entry.shape, async (args) => {
+        const out = await executeTool(ctx, entry.name, args);
+        return { content: [{ type: "text" as const, text: out.content }], ...(out.isError ? { isError: true } : {}) };
+      }),
+    ),
   });
 }
+
+/** Read-only modes block the registry tools that write, by their MCP names. */
+const MCP_WRITE_TOOLS = PROJECT_TOOLS.filter((entry) => entry.claude && entry.writes).map((entry) => entry.event);
 
 /**
  * The model-related query options for a turn: the resolved model, the
@@ -611,27 +460,6 @@ export function buildClaudePrompt(
   return once();
 }
 
-/** Extract a compact, UI-friendly summary of a tool input. */
-function summarizeInput(name: string, input: any, projectRoot?: string): string {
-  if (input == null) return "";
-  try {
-    if (typeof input.file_path === "string") {
-      if (projectRoot && input.file_path.startsWith(projectRoot)) {
-        return input.file_path.slice(projectRoot.length).replace(/^\//, "");
-      }
-      return input.file_path.split("/").slice(-2).join("/");
-    }
-    if (typeof input.command === "string") return input.command.length > 80 ? input.command.slice(0, 77) + "…" : input.command;
-    if (typeof input.query === "string") return input.query;
-    if (typeof input.doi === "string") return input.doi;
-    if (typeof input.pattern === "string") return input.pattern;
-    const s = JSON.stringify(input);
-    return s.length > 80 ? s.slice(0, 77) + "…" : s;
-  } catch {
-    return "";
-  }
-}
-
 export const claudeBackend: AgentBackend = {
   id: "claude",
   label: "Claude Code (Agent SDK)",
@@ -640,6 +468,9 @@ export const claudeBackend: AgentBackend = {
 
   async runTurn(ctx: BackendTurnContext): Promise<void> {
     const { project, dir, settings, contextDirs } = ctx;
+    // A missing SDK ends the turn with an error that says how to install it.
+    const { query } = await loadClaudeSdk();
+    const mcpServer = await buildMcpServer(ctx);
     // Attached images live in DATA_DIR/chat-uploads/<projectId> — outside the
     // working tree on purpose. The CLI must be told about that directory too,
     // or a follow-up Read of the path named in the prompt is refused.
@@ -648,7 +479,7 @@ export const claudeBackend: AgentBackend = {
     const disallowed = [
       ...(ctx.staticCodeReview ? CODE_AUDIT_BLOCKED_TOOLS : []),
       ...(ctx.readOnly
-        ? [...DISALLOWED_TOOLS, "Edit", "Write", "MultiEdit", "NotebookEdit", "mcp__blattbot__add_citation"]
+        ? [...DISALLOWED_TOOLS, "Edit", "Write", "MultiEdit", "NotebookEdit", ...MCP_WRITE_TOOLS]
         : DISALLOWED_TOOLS),
       // Hard-block edits inside every directory opened read-only (attached
       // context and the chat-image uploads) — path-scoped permission rules.
@@ -702,7 +533,7 @@ export const claudeBackend: AgentBackend = {
         includePartialMessages: true,
         abortController: controller,
         systemPrompt: { type: "preset", preset: "claude_code", append: ctx.systemAppend },
-        mcpServers: { blattbot: buildMcpServer(ctx) },
+        mcpServers: { blattbot: mcpServer },
         disallowedTools: disallowed,
         settingSources: [],
       },
@@ -767,7 +598,7 @@ export const claudeBackend: AgentBackend = {
                 id: block.id,
                 name: block.name,
                 input: toolDetail(block.input),
-                detail: summarizeInput(block.name, block.input, dir),
+                detail: summarizeToolInput(block.name, block.input, dir),
               });
             }
           }
@@ -824,6 +655,7 @@ export const claudeBackend: AgentBackend = {
 export async function runOneShot(prompt: string, images: string[] = [], signal?: AbortSignal): Promise<string> {
   const settings = loadSettings();
   signal?.throwIfAborted();
+  const { query } = await loadClaudeSdk();
   const controller = new AbortController();
   const abort = () => controller.abort();
   signal?.addEventListener("abort", abort, { once: true });

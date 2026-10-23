@@ -1,0 +1,10 @@
+{
+  // Typecheck-only config for the web tests (server/test/*.tsx). They render
+  // real web/src components with react-dom/server under vitest, so they use
+  // the web app's compiler settings (bundler resolution, JSX) plus Node types.
+  "extends": "../web/tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["test/**/*.tsx", "../web/src/vite-env.d.ts"]
+}

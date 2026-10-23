@@ -4,24 +4,24 @@ import { researchProviderRetryAt } from "../research-providers.js";
 import { z } from "zod";
 import { getProject, listProjects, projectDir } from "../config.js";
 import { readAllBibEntries } from "../citations.js";
-import { evidenceView, manuscriptClaims, bibHash, localSourcePath } from "./evidence.js";
-import { readMatrix } from "./matrix.js";
-import { libraryStatus } from "./library.js";
+import { bibHash, localSourcePath } from "./sources.js";
+import { indexPaper, libraryStatus } from "./library.js";
 import { digest, now, readStore, saveStore, withResearchOperation } from "./store.js";
 
-export const jobKind = z.enum([
-  "evidence",
-  "matrix",
-  "review",
-  "outline",
-  "library-index",
-  "strict-audit",
-  "evaluation",
-]);
-export type JobKind = z.infer<typeof jobKind>;
+/**
+ * Library indexing is the only research task this version runs. Older
+ * versions also saved evidence, matrix, review, outline, strict-audit and
+ * evaluation tasks for the retired workflows. Those records stay in the job
+ * store (as do their results) and never run. One left queued or running is
+ * marked paused at startup, as every interrupted task is, so it cannot hold up
+ * the idle check or project removal.
+ */
+const LIBRARY_INDEX = "library-index";
+const retired = (job: ResearchJob) => job.kind !== LIBRARY_INDEX;
 export interface ResearchJob {
   id: string;
-  kind: JobKind;
+  /** Always "library-index" for new tasks; records saved by older versions may name a retired kind. */
+  kind: string;
   state: "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
   createdAt: string;
   updatedAt: string;
@@ -31,43 +31,23 @@ export interface ResearchJob {
   currentKey?: string;
   message?: string;
 }
-export const createJobSchema = z.object({
-  kind: jobKind,
+/** The only task kind that can be created, through the Research UI and the library_index tool. */
+export const createLibraryJobSchema = z.object({
+  kind: z.literal(LIBRARY_INDEX),
   keys: z.array(z.string().min(1).max(1000)).min(1).max(2000).optional(),
   context: z.array(z.string().max(4000)).max(30).default([]),
 });
-/** Only library indexing remains exposed through Research UI and model tools. */
-export const createLibraryJobSchema = createJobSchema.extend({ kind: z.literal("library-index") });
+/** Every saved task record, including retired kinds: callers filter, and the store keeps them. */
 export const listResearchJobs = (id: string) =>
   readStore<ResearchJob[]>(id, "jobs", []);
 type Runner = (
   id: string,
   dir: string,
-  kind: JobKind,
+  kind: string,
   key: string,
   context: string[],
 ) => Promise<unknown>;
-async function defaultRun(
-  id: string,
-  dir: string,
-  kind: JobKind,
-  key: string,
-  context: string[],
-) {
-  if (kind === "evidence")
-    return (await import("./evidence.js")).verifyClaim(id, dir, key);
-  if (kind === "matrix")
-    return (await import("./matrix.js")).analyzePaper(id, dir, key);
-  if (kind === "review")
-    return (await import("./review.js")).reviewManuscript(id, dir, context);
-  if (kind === "outline")
-    return (await import("./matrix.js")).buildOutline(id, dir);
-  if (kind === "library-index")
-    return (await import("./library.js")).indexPaper(id, dir, key);
-  if (kind === "strict-audit")
-    return (await import("./strict.js")).auditUncitedClaims(id, dir);
-  return (await import("./evaluation.js")).evaluateCase(id, key);
-}
+const defaultRun: Runner = (id, dir, _kind, key) => indexPaper(id, dir, key);
 /** Durable item checkpoints; interrupted model requests are never claimed complete. */
 export class ResearchJobs {
   private worker?: Promise<void>;
@@ -83,7 +63,11 @@ export class ResearchJobs {
   constructor(private run: Runner = defaultRun) {}
   start(autoIndex = true) {
     if (this.timer || this.stopped) return;
-    for (const p of listProjects())
+    for (const p of listProjects()) {
+      const old = listResearchJobs(p.id).filter(retired);
+      if (old.length) {
+        console.warn(`research: skipping ${old.length} saved task(s) of retired kinds (${[...new Set(old.map((j) => j.kind))].join(", ")}) in project ${p.id}; their records and results stay on disk.`);
+      }
       this.updateAll(p.id, (jobs) =>
         jobs.map((j) =>
           ["running", "queued"].includes(j.state)
@@ -92,17 +76,20 @@ export class ResearchJobs {
                 state: "paused",
                 currentKey: undefined,
                 updatedAt: now(),
-                message:
-                  "Interrupted by restart. Resume to continue from the last saved item.",
+                message: retired(j)
+                  ? "This task belongs to a retired workflow and will not run again. Its saved results are kept."
+                  : "Interrupted by restart. Resume to continue from the last saved item.",
               }
             : j,
         ),
       );
-    // Indexing is recoverable background maintenance, unlike model-driven jobs.
+    }
+    // Indexing is recoverable background maintenance: resume what a restart interrupted.
     for (const p of listProjects()) {
       for (const job of listResearchJobs(p.id)) {
+        if (retired(job)) continue;
         for (const item of job.items) if (item.rateLimited) this.cooldownUntil = Math.max(this.cooldownUntil, item.retryAt ?? 0);
-        if (job.kind === "library-index" && job.automatic && job.state === "paused" && /restart|Server stopped/.test(job.message ?? "")) this.control(p.id, job.id, "resume");
+        if (job.automatic && job.state === "paused" && /restart|Server stopped/.test(job.message ?? "")) this.control(p.id, job.id, "resume");
       }
     }
     if (autoIndex) this.scanLibraries();
@@ -120,7 +107,7 @@ export class ResearchJobs {
       try {
         const dir = projectDir(p.id);
         if (!existsSync(dir)) continue;
-        const jobs = listResearchJobs(p.id).filter(j => j.kind === "library-index");
+        const jobs = listResearchJobs(p.id).filter(j => !retired(j));
         const pending = libraryStatus(p.id, dir).pending.filter(key => {
           if (jobs.some(j => ["queued", "running", "paused", "cancelled"].includes(j.state) && j.items.some(i => i.key === key))) return false;
           const last = [...jobs].reverse().flatMap(j => j.items).find(i => i.key === key);
@@ -149,31 +136,18 @@ export class ResearchJobs {
       ),
     ).find((j) => j.id === jobId)!;
   }
-  create(id: string, input: z.input<typeof createJobSchema>, automatic = false) {
+  create(id: string, input: z.input<typeof createLibraryJobSchema>, automatic = false) {
     if (this.stopped) throw new Error("Research worker is shutting down");
     if (!getProject(id)) throw new Error("Unknown project");
-    const args = createJobSchema.parse(input);
+    const args = createLibraryJobSchema.parse(input);
     const dir = projectDir(id);
-    let keys = args.keys;
-    if (args.kind === "evidence") {
-      const available = manuscriptClaims(dir).map((c) => c.id);
-      keys ??= evidenceView(id, dir)
-        .filter((c) => ["unchecked", "stale"].includes(c.status))
-        .map((c) => c.id);
-      if (keys.some((k) => !available.includes(k)))
-        throw new Error("Unknown manuscript claim");
-    } else if (["matrix", "library-index"].includes(args.kind)) {
-      const available = readAllBibEntries(dir)
-        .filter(({ entry }) => entry.type !== "string")
-        .map(({ entry }) => entry.key);
-      keys ??=
-        args.kind === "library-index"
-          ? libraryStatus(id, dir).pending
-          : available;
-      if (keys.some((k) => !available.includes(k)))
-        throw new Error("Unknown citation key");
-    } else if (args.kind !== "evaluation") keys = ["manuscript"];
-    if (!keys?.length)
+    const available = readAllBibEntries(dir)
+      .filter(({ entry }) => entry.type !== "string")
+      .map(({ entry }) => entry.key);
+    const keys = args.keys ?? libraryStatus(id, dir).pending;
+    if (keys.some((k) => !available.includes(k)))
+      throw new Error("Unknown citation key");
+    if (!keys.length)
       throw new Error(
         "Nothing to process. Select sources or refresh a changed item.",
       );
@@ -205,6 +179,7 @@ export class ResearchJobs {
   control(id: string, jobId: string, action: "pause" | "resume" | "cancel") {
     const job = listResearchJobs(id).find((j) => j.id === jobId);
     if (!job) throw new Error("Unknown research job");
+    if (retired(job)) throw new Error(`This ${job.kind} task belongs to a retired workflow and can no longer run.`);
     if (action === "resume") {
       if (!["paused", "failed", "cancelled"].includes(job.state))
         throw new Error("This job is not resumable");
@@ -212,20 +187,8 @@ export class ResearchJobs {
         throw new Error(
           "The current request is still stopping. Try resume shortly.",
         );
-      const dir = projectDir(id);
-      const stale = new Set(
-        job.kind === "matrix"
-          ? readMatrix(id, dir)
-              .filter((r) => r.stale)
-              .map((r) => r.key)
-          : job.kind === "evidence"
-            ? evidenceView(id, dir)
-                .filter((e) => ["unchecked", "stale"].includes(e.status))
-                .map((e) => e.id)
-            : job.kind === "library-index"
-              ? libraryStatus(id, dir).pending
-              : [],
-      );
+      // Re-run failed items, and finished ones whose source changed since.
+      const stale = new Set(libraryStatus(id, projectDir(id)).pending);
       const updated = this.patch(id, jobId, (j) => ({
         ...j,
         state: "queued",
@@ -274,6 +237,10 @@ export class ResearchJobs {
         (j) => j.id === next.jobId,
       );
       if (!job || !["queued", "running"].includes(job.state)) continue;
+      if (retired(job)) {
+        console.warn(`research: skipping saved ${job.kind} task ${job.id} in project ${next.projectId}: that workflow is retired.`);
+        continue;
+      }
       const item = job.items.find((i) => i.state === "pending");
       if (!item) {
         this.patch(next.projectId, job.id, (j) => ({
@@ -316,16 +283,9 @@ export class ResearchJobs {
         const transient = rateLimited || /503|529|network|fetch failed|unavailable|timed? ?out/i.test(message) && !/no open-access/i.test(message);
         const retryAt = Math.max(Date.now() + Math.min(transient ? 300000 : 21600000, (transient ? 60000 : 1800000) * 2 ** Math.min(failures, 6)),
           typeof err.retryAt === "number" ? err.retryAt : Date.parse(err.retryAt ?? "") || 0, researchProviderRetryAt());
-        if (job.kind === "library-index" && rateLimited) this.cooldownUntil = retryAt;
-        // Keep indexing other papers when one provider cannot serve this item.
-        if (job.kind !== "library-index" && !controller.signal.aborted && /\b(?:429|503|529)\b|rate.?limit|quota|overloaded|insufficient.?(?:credit|balance)/i.test(message)) {
-          this.patch(next.projectId, job.id, (j) => ({
-            ...j,
-            state: "paused",
-            currentKey: undefined,
-            message: `Service unavailable or usage limit reached. Resume when ready. ${message}`,
-          }));
-        } else if (!controller.signal.aborted)
+        // A rate limit defers the whole queue; other failures only this item.
+        if (rateLimited) this.cooldownUntil = retryAt;
+        if (!controller.signal.aborted)
           this.patch(next.projectId, job.id, (j) => ({
             ...j,
             items: j.items.map((i) =>
@@ -334,7 +294,9 @@ export class ResearchJobs {
                     key: i.key,
                     state: "error",
                     error: message,
-                    ...(job.kind === "library-index" ? { retryAt, rateLimited, fingerprint: this.fingerprint(next.projectId, projectDir(next.projectId), item.key) } : {}),
+                    retryAt,
+                    rateLimited,
+                    fingerprint: this.fingerprint(next.projectId, projectDir(next.projectId), item.key),
                   }
                 : i,
             ),

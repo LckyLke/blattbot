@@ -9,7 +9,7 @@ import {
   sourceVersion,
   validQuotes,
   type SourceVersion,
-} from "./evidence.js";
+} from "./sources.js";
 import { paperChunks, searchTerms } from "./library-text.js";
 import {
   digest,
