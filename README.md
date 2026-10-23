@@ -158,6 +158,21 @@ The same index is available to all backends through `search_library`:
 
 **Ctrl/Cmd+F** searches the active Source or PDF pane. Source search handles literal LaTeX commands, live match counts, case/whole-word/regular-expression options and optional replacement with normal undo. Invalid expressions are reported. PDF search scans all pages, handles ligatures, whitespace and line hyphenation, and marks the exact selected text persistently while search is open. **Enter / Shift+Enter** moves forward/backward; **Escape** closes search. Case and whole-word options are available in both panes. PDF results are capped at 500 and source counts at 10,000, with `+` when more exist. Image-only PDF text needs OCR before it can be found.
 
+### Source editor and project files
+
+- **Autosave that never overwrites newer text.** Source saves 1.5 s after you stop typing (the **autosave** toggle in the status bar turns it off). Every save names the text you typed over. If an agent turn, a sync or a discarded change rewrote the file meanwhile, the save is refused and your draft stays, marked **changed on disk**: **Merge** combines both versions (passages both sides changed are marked as conflicts), **Save mine** writes your version over the file after a confirmation, **Revert** takes the file as it is. Autosave pauses while that notice shows, and a draft restored after a reload is not saved until you type in it.
+- **Drafts survive a reload.** Unsaved drafts are kept in browser storage. The browser's leave prompt only appears when a reload would really lose something: a draft too large for storage, a save still running, or a running agent turn. Pending changes are files on disk and never trigger it. The open Source file and Proof's text/rendered choice are remembered per project.
+- **New, rename, delete.** **+** above the file list creates a file; a path like `chapters/intro.tex` also creates the folder. Right-click a file or folder, or use a file's **⋯** button, to create a file there, rename or move it, or delete it (after a confirmation). These are pending changes like any edit: Proof lists them, **discard file** brings a file back, and nothing reaches Overleaf until you approve. File actions wait while an agent turn runs.
+- **Main file.** **Project settings → Main file** picks the document BlattBot compiles, from the `.tex` files with a `\documentclass` line. A visible PDF rebuilds right away. Overleaf's own main-document setting is not changed.
+
+### Projects at a glance
+
+Dashboard cards and the sidebar show each project's kind (Overleaf, git, local), a running agent turn, how many files have pending changes, and the last sync when the server records one. The sidebar's project switcher lists the same. Overleaf projects have an **Open in Overleaf** link on their card, in the header and in the sidebar; it opens the project in a new tab.
+
+### Keyboard shortcuts
+
+Press **?** (or **?** next to Settings in the sidebar) for the list. The single keys work while the cursor is not in a text field or an editor, and never use Ctrl/Cmd/Alt, so browser and editor shortcuts are untouched: **c** focuses the chat composer; **1**–**6** show Chat, Proof, Source, PDF, References or Research; **j** / **k** (or **]** / **[**) jump to the next or previous change in Proof; **Shift+A** approves and pushes all changes after a confirmation, with the same checks as the button. To leave the Source editor with the keyboard, press Escape, then Tab.
+
 ## Honesty notes
 
 - Reading and claim verification have limits: an excerpt is not a whole-paper read, PDF extraction does not interpret figures or image-only tables, and scanned PDFs need OCR/text or supplied passages. Long-paper claim checks use relevant excerpts and label that limitation. Source-reading notices expose gaps; they do not certify every generated statement as correct. When a Codex tool catalog changes, its native session is refreshed within the same BlattBot chat, carrying recent conversation text when available; the complete transcript stays visible.

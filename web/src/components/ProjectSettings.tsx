@@ -165,32 +165,31 @@ export default function ProjectSettings({ project, onClose, onSaved, onMainFileC
                 </datalist>
               </label>
 
-              {mainChoices && (
+              {mainChoices && mainChoices.length > 0 && (
                 <label className="mt-3 block text-[11px] text-graphite">
                   Main file{" "}
                   <span className="text-graphite/60">
                     (the document BlattBot compiles; Overleaf's own setting is unchanged)
                   </span>
-                  {mainChoices.length > 0 ? (
-                    <select
-                      value={mainFile}
-                      onChange={(e) => setMainFile(e.target.value)}
-                      aria-label="Main file"
-                      className="mt-1 block max-w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper"
-                    >
-                      {!mainFile && <option value="">detect automatically</option>}
-                      {mainChoices.map((path) => (
-                        <option key={path} value={path}>
-                          {path}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span className="mt-1 block text-[12px] text-graphite">
-                      No .tex file with a \documentclass line yet.
-                    </span>
-                  )}
+                  <select
+                    value={mainFile}
+                    onChange={(e) => setMainFile(e.target.value)}
+                    aria-label="Main file"
+                    className="mt-1 block max-w-full rounded-lg border border-rule bg-ink px-2.5 py-2 font-mono text-xs text-paper"
+                  >
+                    {!mainFile && <option value="">detect automatically</option>}
+                    {mainChoices.map((path) => (
+                      <option key={path} value={path}>
+                        {path}
+                      </option>
+                    ))}
+                  </select>
                 </label>
+              )}
+              {mainChoices && mainChoices.length === 0 && (
+                <p className="mt-3 text-[11px] text-graphite">
+                  Main file: no .tex file with a \documentclass line yet.
+                </p>
               )}
 
               <label className="mt-3 block text-[11px] text-graphite">
