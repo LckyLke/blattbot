@@ -52,6 +52,8 @@ export interface Project {
   cookie?: string;
   /** Relative path of the main .tex file, auto-detected on clone. */
   mainTex?: string;
+  /** The user picked mainTex in the project settings — detection must not replace it. */
+  mainTexChosen?: boolean;
   /** Agent SDK session id, for conversation continuity across turns.
    *  Legacy: sessions now live per chat (chats.ts); kept in sync for rollback. */
   sessionId?: string;
