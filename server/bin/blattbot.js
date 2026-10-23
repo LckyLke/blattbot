@@ -9,7 +9,7 @@
  */
 // Only long-standing builtins are imported statically, so that an old Node
 // reaches the version check below instead of failing on an import.
-import { spawn, execFile } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -24,7 +24,7 @@ const HELP = `BlattBot — agentic LaTeX editing for Overleaf, local-first.
 
 Usage
   blattbot [options]     start the server and open the app
-  blattbot doctor        print environment diagnostics
+  blattbot doctor        print environment diagnostics (exits 1 if a required tool is missing)
 
 Options
   --port <n>        port to listen on (default 4560; env BLATTBOT_PORT)
@@ -33,6 +33,23 @@ Options
   -y, --yes         answer yes to prompts (e.g. the tectonic download)
   -v, --version     print the version
   -h, --help        show this help
+
+Environment
+  BLATTBOT_PORT                 port to listen on (default 4560; --port wins)
+  BLATTBOT_DATA_DIR             data directory (default ~/.local/share/blattbot; --data-dir wins)
+  BLATTBOT_CODEX_EXECUTABLE     codex CLI to use instead of the one on PATH
+  BLATTBOT_CLAUDE_EXECUTABLE    claude binary for the Claude backend instead of the bundled one
+  BLATTBOT_BROWSER_EXECUTABLE   Chrome, Edge or Chromium for the university sign-in window
+  BLATTBOT_PDFTOPPM             Poppler's pdftoppm, for PDF page images
+  BLATTBOT_TESSERACT            tesseract, for OCR
+  BLATTBOT_KWALLET              KDE wallet holding the browser cookie key (default kdewallet)
+  BLATTBOT_REVISION             revision reported by /api/deployment (unattended deployments)
+  BLATTBOT_START_DRAINED        1 = start with new writes paused for up to 2 minutes (updates)
+  BLATTBOT_HOME                 home directory searched for browser profiles (default: yours)
+  BLATTBOT_WSL                  1 or 0 forces WSL detection on or off
+  BLATTBOT_WSL_MNT              where WSL mounts Windows drives (default /mnt)
+  BLATTBOT_GIT_TOKEN            set by BlattBot for its own git processes; do not set it
+  HTTPS_PROXY, NO_PROXY         proxy for the tectonic download (HTTP_PROXY too)
 `;
 
 // ---- argument parsing ------------------------------------------------------
@@ -123,8 +140,8 @@ async function has(cmd) {
 
 if (args.command === "doctor") {
   const { runDoctor } = await import("../dist/doctor.js");
-  await runDoctor();
-  process.exit(0);
+  const { failures } = await runDoctor();
+  process.exit(failures.length > 0 ? 1 : 0);
 }
 
 // ---- first-run checks ------------------------------------------------------
@@ -192,6 +209,10 @@ const harness = backend === "codex"
 
 // ---- start -----------------------------------------------------------------
 
+// A busy port: if another BlattBot holds it, open that one (unless --no-open)
+// and exit 0; otherwise explain and exit 1. See src/listen.ts.
+const { openBrowser, setOpenBrowserOnConflict } = await import("../dist/listen.js");
+setOpenBrowserOnConflict(args.open);
 const server = await import("../dist/index.js"); // resolves once the server is listening
 const port = Number(process.env.BLATTBOT_PORT ?? 4560);
 const url = `http://127.0.0.1:${port}`;
@@ -206,22 +227,8 @@ console.log(`    Agent     ${harness}`);
 console.log("");
 console.log("  Press Ctrl+C to stop.");
 
-if (args.open) {
-  // Best-effort browser open; never fail startup over it.
-  try {
-    const cmd =
-      process.platform === "darwin"
-        ? ["open", url]
-        : process.platform === "win32"
-          ? ["cmd", "/c", "start", "", url]
-          : ["xdg-open", url];
-    const child = spawn(cmd[0], cmd.slice(1), { stdio: "ignore", detached: true });
-    child.on("error", () => {});
-    child.unref();
-  } catch {
-    /* best effort */
-  }
-}
+// Best-effort browser open; never fails startup.
+if (args.open) openBrowser(url);
 
 let closing = false;
 const shutdown = async () => {

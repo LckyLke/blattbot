@@ -146,6 +146,7 @@ import {
 } from "./accounts.js";
 import { DATA_DIR, PROJECTS_DIR } from "./config.js";
 import { AUTH_COOKIE, getAuthToken, hostAllowed, requestAuthorized } from "./auth.js";
+import { listenOrExit } from "./listen.js";
 import { loadSettings, publicSettings, saveSettings, type Settings } from "./settings.js";
 import { checkResearchProvider } from "./research-providers.js";
 import {
@@ -2079,13 +2080,9 @@ app.get("/api/ws", { websocket: true }, (socket, req) => {
   socket.send(JSON.stringify({ type: "hello", projectId }));
 });
 
-try {
-  await app.listen({ port: PORT, host: "127.0.0.1" });
-  console.log(`BlattBot server listening on http://127.0.0.1:${PORT}`);
-} catch (err) {
-  console.error(err);
-  process.exit(1);
-}
+// A busy port gets a clear message (or opens the BlattBot already on it).
+await listenOrExit(app, PORT, AUTH_TOKEN);
+console.log(`BlattBot server listening on http://127.0.0.1:${PORT}`);
 
 graphIndexer.start();
 researchJobs.start();
