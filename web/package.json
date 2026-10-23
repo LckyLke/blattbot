@@ -31,7 +31,7 @@
     "rehype-katex": "7.0.1",
     "remark-gfm": "4.0.1",
     "remark-math": "6.0.0",
-    "sigma": "^3.0.3"
+    "sigma": "^4.0.3"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
