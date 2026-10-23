@@ -32,6 +32,11 @@ export function countFileSaves(projectId: string): number {
   return count;
 }
 
+/** Saves in flight across every project (the tab-close guard). */
+export function countAllFileSaves(): number {
+  return saves.size;
+}
+
 export function subscribeFileSaves(listener: () => void): () => void {
   saveListeners.add(listener);
   return () => { saveListeners.delete(listener); };

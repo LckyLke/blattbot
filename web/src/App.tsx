@@ -40,7 +40,9 @@ import Sidebar from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
 import ProjectSettings from "./components/ProjectSettings";
 import ChatView from "./components/Chat";
-import { countDrafts, subscribeDrafts } from "./drafts";
+import { countDrafts, flushDraftPersistence, subscribeDrafts, unpersistedDraftCount } from "./drafts";
+import { countAllFileSaves, subscribeFileSaves } from "./editor-sync";
+import { draftLeaveNotice, shouldWarnOnUnload } from "./leave-guard";
 import { useProjectSync } from "./useProjectSync";
 import ProjectSyncNotice from "./components/ProjectSyncNotice";
 
@@ -720,7 +722,7 @@ function AppShell() {
 
   // Leaving the project view while the Proof holds unapproved changes, or
   // while the Source editor holds unsaved drafts: the edits stay (on disk,
-  // resp. in this tab), but out of sight they are easy to forget — ask
+  // resp. in this browser), but out of sight they are easy to forget — ask
   // before they disappear from view. Resolves true without a dialog when
   // there is nothing pending; approve/discard never navigate, so they are
   // unaffected.
@@ -745,11 +747,8 @@ function AppShell() {
         );
       }
       if (drafts > 0) {
-        parts.push(
-          `The editors hold unsaved edits in ${drafts === 1 ? "1 file" : `${drafts} files`} ` +
-            `of “${name}” — they are kept in this tab until you save or revert them, ` +
-            `but a page reload loses them.`,
-        );
+        flushDraftPersistence();
+        parts.push(draftLeaveNotice(drafts, project ? unpersistedDraftCount(project.id) : drafts, name));
       }
       return dialog.confirm({
         title: diff.trim() ? "Unapproved changes" : "Unsaved edits",
@@ -778,22 +777,35 @@ function AppShell() {
     void refreshProjects();
   }, [view, confirmLeave, refreshProjects]);
 
-  // Browser-level guard on closing/reloading the tab: armed only while
-  // unapproved changes are pending, an agent turn is still running, or the
-  // Source editor holds unsaved drafts (in any project — a reload loses them
-  // all) — a clean, idle state never nags.
+  // Browser-level guard on closing/reloading the tab (see leave-guard.ts):
+  // only for what a reload would actually lose or cut short — an agent turn
+  // still running, a save in flight, or editor drafts browser storage could
+  // not keep. Pending changes are safe on disk and drafts survive a reload,
+  // so neither nags. The listener is only attached while one of these could
+  // apply; the precise check runs when the page is about to unload.
   const draftTotal = useSyncExternalStore(subscribeDrafts, countDrafts);
-  const warnBeforeUnload = Boolean(diff.trim()) || busy || draftTotal > 0;
+  const saveTotal = useSyncExternalStore(subscribeFileSaves, countAllFileSaves);
+  const unloadBusyRef = useRef(busy);
+  unloadBusyRef.current = busy;
+  const mayWarnBeforeUnload = busy || draftTotal > 0 || saveTotal > 0;
   useEffect(() => {
-    if (!warnBeforeUnload) return;
+    if (!mayWarnBeforeUnload) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Write the debounced drafts out first — those then survive the reload.
+      flushDraftPersistence();
+      const warn = shouldWarnOnUnload({
+        busy: unloadBusyRef.current,
+        unpersistedDrafts: unpersistedDraftCount(),
+        savesInFlight: countAllFileSaves(),
+      });
+      if (!warn) return;
       e.preventDefault();
       // Chromium additionally requires returnValue to be set.
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [warnBeforeUnload]);
+  }, [mayWarnBeforeUnload]);
 
   /**
    * Send one message. Resolves false when nothing was sent — the composer

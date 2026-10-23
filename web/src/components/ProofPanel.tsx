@@ -1,5 +1,5 @@
 import { InlineDiffContext } from "./InlineDiffEdit";
-import { Suspense, lazy, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { tabStripKeyDown } from "../a11y";
 import { buildHunkPatch, parseDiff, type DiffFile, type DiffHunk } from "../diff";
 import type { ApproveSelection, CompileInfo, SyncConflict } from "../api";
@@ -7,6 +7,7 @@ import { useDialog } from "./Dialog";
 import { HunkLines } from "./DiffView";
 import { countDrafts, draftPaths, subscribeDrafts } from "../drafts";
 import { countFileSaves, subscribeFileSaves } from "../editor-sync";
+import { loadProofMode, saveProofMode, type ProofMode } from "../ui-memory";
 
 // Loaded on demand: the rendered diff pulls in pdf.js, the embedded Source
 // editor CodeMirror — the text diff, the Proof's default view, needs neither.
@@ -71,7 +72,8 @@ export default function ProofPanel({
   const [message, setMessage] = useState("");
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   /** Source-level diff vs the compiled-output comparison. */
-  const [mode, setMode] = useState<"text" | "rendered">("text");
+  const [mode, setMode] = useState<ProofMode>(() => loadProofMode(projectId));
+  useEffect(() => saveProofMode(projectId, mode), [projectId, mode]);
   /** In-flight approve/discard — buttons lock and the footer shows a sweep. */
   const [acting, setActing] = useState<"push" | "discard" | null>(null);
   /** The file/hunk whose partial approval is in flight (its button shows progress). */

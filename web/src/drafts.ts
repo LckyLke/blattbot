@@ -12,14 +12,17 @@
  * Invariant the panel maintains: a file has a draft here exactly while its
  * editor text differs from the last content fetched from or saved to the
  * server. That makes `countDrafts` the single source of truth for "unsaved
- * edits exist" (leave dialogs, the tab-close guard).
+ * edits exist" (leave dialogs, Proof's approve lock).
  *
  * Drafts also persist to browser storage (debounced), so a reload or a
  * crashed tab does not lose them either: on load the store hydrates from
  * storage, and the panel restores a stored draft the next time that file
  * opens — with the "changed on disk" notice if the file moved meanwhile.
  * `base` is kept from the moment the draft began (never re-based while the
- * draft lives), which is what makes a three-way merge possible later.
+ * draft lives), which is what makes a three-way merge possible later. Only
+ * drafts storage refused (too large, quota, storage off) are lost on a
+ * reload — `unpersistedDraftCount` counts those for the tab-close guard. The
+ * open file per project is stored too.
  */
 
 export interface Draft {
@@ -59,6 +62,10 @@ export const PERSIST_DEBOUNCE_MS = 400;
 
 let storage: DraftStorage | null = null;
 const pendingWrites = new Map<string, ReturnType<typeof setTimeout>>();
+/** Drafts whose latest write to storage failed or was skipped (too large):
+ *  only these (or all, without storage) are lost on a reload. */
+const unpersisted = new Set<string>();
+const OPEN_FILE_PREFIX = "blattbot.openFile:";
 
 // The module is also imported by the server's vitest project (node, no DOM
 // lib): every browser global goes through `globalThis` untyped.
@@ -143,16 +150,35 @@ function schedulePersist(k: string): void {
 }
 
 function persistNow(k: string): void {
-  if (!storage) return;
   const d = drafts.get(k);
+  if (!d) unpersisted.delete(k);
+  if (!storage) return;
   try {
     if (!d) storage.removeItem(storageKey(k));
     else if (d.content.length + d.base.length <= MAX_PERSISTED_CHARS) {
       storage.setItem(storageKey(k), JSON.stringify(d));
-    } else storage.removeItem(storageKey(k));
+      unpersisted.delete(k);
+    } else {
+      unpersisted.add(k);
+      storage.removeItem(storageKey(k));
+    }
   } catch {
     /* quota or disabled storage — memory copy still holds */
+    if (d) unpersisted.add(k);
   }
+}
+
+/**
+ * Drafts a page reload would lose — in one project, or across all of them:
+ * the ones too large for (or refused by) browser storage, or every draft when
+ * there is no storage. Debounced writes count as stored; call
+ * flushDraftPersistence() first where that matters (the tab-close guard).
+ */
+export function unpersistedDraftCount(projectId?: string): number {
+  const keys = storage ? [...unpersisted].filter((k) => drafts.has(k)) : [...drafts.keys()];
+  if (projectId === undefined) return keys.length;
+  const prefix = `${projectId}\n`;
+  return keys.filter((k) => k.startsWith(prefix)).length;
 }
 
 /** Write every pending draft immediately (tests; page hide). */
@@ -219,13 +245,31 @@ export function subscribeDrafts(listener: () => void): () => void {
   };
 }
 
+/** Remember the Source file open in a project — also across reloads. */
 export function rememberOpenFile(projectId: string, path: string | null): void {
   if (path) openFiles.set(projectId, path);
   else openFiles.delete(projectId);
+  try {
+    if (path) storage?.setItem(OPEN_FILE_PREFIX + projectId, path);
+    else storage?.removeItem(OPEN_FILE_PREFIX + projectId);
+  } catch {
+    /* storage off or full — the in-memory copy still holds */
+  }
 }
 
 export function lastOpenFile(projectId: string): string | undefined {
-  return openFiles.get(projectId);
+  const known = openFiles.get(projectId);
+  if (known) return known;
+  try {
+    const stored = storage?.getItem(OPEN_FILE_PREFIX + projectId);
+    if (stored) {
+      openFiles.set(projectId, stored);
+      return stored;
+    }
+  } catch {
+    /* storage unavailable */
+  }
+  return undefined;
 }
 
 /** Test hook: forget everything (memory and storage). */
@@ -236,6 +280,12 @@ export function resetDrafts(): void {
   drafts.clear();
   openFiles.clear();
   for (const k of keys) persistNow(k);
+  unpersisted.clear();
+  try {
+    for (const k of storage?.keys() ?? []) if (k.startsWith(OPEN_FILE_PREFIX)) storage?.removeItem(k);
+  } catch {
+    /* storage unavailable */
+  }
   notify();
 }
 
