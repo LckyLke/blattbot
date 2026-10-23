@@ -233,12 +233,24 @@ try {
   await approveAll.getByRole("button", { name: "Cancel", exact: true }).click();
   await approveAll.waitFor({ state: "detached" });
   assert.equal(await git.revParse(dir, "HEAD"), headBefore, "cancelled approve-all commits nothing");
+  // Show the chat once first: on its first showing it loads the transcript
+  // and restores the composer draft, which would replace keys typed meanwhile.
+  await blur();
+  await page.keyboard.press("1");
+  await page.locator("textarea.chat-composer-input").waitFor();
+  await page.waitForLoadState("networkidle");
+  await page.keyboard.press("2");
+  await rightTabs.locator('[role="tab"][aria-selected="true"]', { hasText: "Proof" }).waitFor();
+  await blur();
   await page.keyboard.press("c");
   await page.waitForFunction(() => document.activeElement?.classList.contains("chat-composer-input") ?? false);
   // Typing in the composer is never a shortcut.
   await page.keyboard.type("1j");
   assert.equal(await page.locator("textarea.chat-composer-input").inputValue(), "1j");
   await page.locator("textarea.chat-composer-input").fill("");
+  await blur();
+  await page.keyboard.press("5");
+  await page.locator('[role="tab"][aria-selected="true"]', { hasText: "History" }).waitFor();
 
   // ---- Main file: settings pick it, a visible PDF rebuilds it ----
   await blur();
