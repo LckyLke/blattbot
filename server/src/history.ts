@@ -9,7 +9,7 @@
  * edits stay), and the user reviews and approves them in Proof like any
  * other edit — the normal Overleaf conflict check included.
  */
-import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { projectDir, type Project } from "./config.js";
 import * as git from "./git.js";
@@ -434,6 +434,21 @@ export async function revertFile(
 /** Regular files only: symlinks and submodules are never rewritten. */
 const REGULAR = new Set(["000000", "100644", "100755"]);
 
+/** True when `target`'s nearest existing parent really lies inside `realRoot` (no symlinked folder leads out). */
+function parentInside(realRoot: string, target: string): boolean {
+  let parent = dirname(target);
+  for (;;) {
+    try {
+      const real = realpathSync(parent);
+      return real === realRoot || real.startsWith(realRoot + sep);
+    } catch {
+      const up = dirname(parent);
+      if (up === parent) return false;
+      parent = up;
+    }
+  }
+}
+
 /**
  * Apply the reverse of commit `rev` to the worktree as pending changes. The
  * caller holds the project lock and has checked that no agent turn runs.
@@ -460,6 +475,7 @@ export async function revertCommit(project: Project, rev: string): Promise<Rever
   }
   const parent = raw.parents[0];
   const root = resolve(dir);
+  const realRoot = realpathSync(root);
   const changed: string[] = [];
   const conflicts: RevertConflict[] = [];
   for (const change of await git.treeChanges(dir, parent, sha)) {
@@ -469,7 +485,10 @@ export async function revertCommit(project: Project, rev: string): Promise<Rever
       continue;
     }
     const target = resolve(root, path);
-    if (!target.startsWith(root + sep)) continue;
+    if (!target.startsWith(root + sep) || !parentInside(realRoot, target)) {
+      conflicts.push({ path, reason: "its folder leads outside the project — left unchanged", markers: false });
+      continue;
+    }
     let ours: Buffer | null = null;
     try {
       const st = lstatSync(target);

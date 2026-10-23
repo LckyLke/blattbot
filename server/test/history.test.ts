@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Project } from "../src/config.js";
@@ -356,6 +356,24 @@ describe("history", () => {
       await expect(history.revertCommit(project(), root)).rejects.toMatchObject({ status: 422, message: expect.stringMatching(/first commit/) });
       await expect(history.revertCommit(project(), "abcdef0123")).rejects.toMatchObject({ status: 404 });
       expect(await git.hasChanges(dir)).toBe(false);
+    });
+
+    it.skipIf(process.platform === "win32")("never writes through a folder that became a symlink", async () => {
+      write("main.tex", BASE);
+      write("sub/x.tex", "v1\n");
+      await git.commitAll(dir, "base");
+      write("sub/x.tex", "v2\n");
+      await git.commitAll(dir, "edit x");
+      const target = head();
+      const outside = join(dataDir, "outside");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "x.tex"), "v2\n");
+      rmSync(join(dir, "sub"), { recursive: true });
+      symlinkSync(outside, join(dir, "sub"));
+      const result = await history.revertCommit(project(), target);
+      expect(result.changed).toEqual([]);
+      expect(result.conflicts).toEqual([{ path: "sub/x.tex", reason: expect.stringMatching(/outside the project/), markers: false }]);
+      expect(readFileSync(join(outside, "x.tex"), "utf8")).toBe("v2\n");
     });
 
     it("merges binary files only when they were not changed since", async () => {
