@@ -24,7 +24,7 @@ npx blattbot
 
 This starts the app on http://127.0.0.1:4560 and opens your browser. On first run BlattBot checks your environment and offers to download [tectonic](https://tectonic-typesetting.github.io) if no TeX engine is found. Run `npx blattbot --help` for flags and `npx blattbot doctor` to see what it detects.
 
-You need Node 20 or newer, git, and the current [Codex CLI](https://developers.openai.com/codex/cli) installed and signed in:
+You need Node 22.13 or newer (Node 24 LTS recommended), git, and the current [Codex CLI](https://developers.openai.com/codex/cli) installed and signed in:
 
 ```bash
 npm install -g @openai/codex

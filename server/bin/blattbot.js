@@ -7,11 +7,12 @@
  *   blattbot            start (default)
  *   blattbot doctor     environment diagnostics
  */
+// Only long-standing builtins are imported statically, so that an old Node
+// reaches the version check below instead of failing on an import.
 import { spawn, execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -86,6 +87,24 @@ if (!existsSync(join(__dirname, "..", "dist", "index.js"))) {
   process.exit(1);
 }
 
+// Before anything that needs a newer Node (node:sqlite) is loaded.
+const { MIN_NODE, nodeSupported } = await import("../dist/node-version.js");
+if (!nodeSupported()) {
+  console.error(`blattbot: Node.js ${MIN_NODE} or newer is required, but this is Node ${process.version}.`);
+  console.error("  Install the current LTS from https://nodejs.org (or `nvm install --lts`), then run blattbot again.");
+  process.exit(1);
+}
+
+// node:sqlite (browser cookie stores) prints an ExperimentalWarning on
+// Node 22 and 23. Drop exactly that one; every other warning still shows.
+const emitWarning = process.emitWarning;
+process.emitWarning = function (warning, ...rest) {
+  const type = typeof rest[0] === "string" ? rest[0] : (rest[0]?.type ?? warning?.name);
+  const message = typeof warning === "string" ? warning : warning?.message;
+  if (type === "ExperimentalWarning" && /\bSQLite\b/.test(String(message))) return;
+  return emitWarning.call(process, warning, ...rest);
+};
+
 const HOME = homedir();
 const short = (p) => (p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p);
 
@@ -133,6 +152,7 @@ if (!engine) {
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   let download = args.yes;
   if (!download && interactive) {
+    const { createInterface } = await import("node:readline/promises");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const answer = (
       await rl.question(

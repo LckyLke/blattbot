@@ -8,7 +8,7 @@ The three supporting walkthroughs use the same real app and isolated sample proj
 
 ## Record and render
 
-Requires Node 20+, the repository dependencies, Chromium, FFmpeg with H.264/WebP support, a working TeX engine and a logged-in Codex CLI. Preparation runs real model checks and uses the normal account limits. Public paper/graph services may throttle requests; rerunning preparation reuses completed work.
+Requires Node 22.13+, the repository dependencies, Chromium, FFmpeg with H.264/WebP support, a working TeX engine and a logged-in Codex CLI. Preparation runs real model checks and uses the normal account limits. Public paper/graph services may throttle requests; rerunning preparation reuses completed work.
 
 From the repository root:
 
