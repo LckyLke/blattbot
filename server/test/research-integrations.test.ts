@@ -328,9 +328,10 @@ We build on \cite{alpha}.
     await expect(g.expandGraph("p1", dir, "W999")).rejects.toThrow(/not in/);
   });
   it("registers graph tools in read-only Codex/OpenAI catalogs and returns structured JSON", async () => {
-    const { toolDefinitions, executeTool } = await import(
+    const { toolDefinitions } = await import(
       "../src/backends/openai.js"
     );
+    const { executeTool } = await import("../src/backends/tools.js");
     const names = toolDefinitions(true).map((t) => t.function.name);
     expect(names).toEqual(
       expect.arrayContaining([

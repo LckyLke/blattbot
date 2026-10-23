@@ -13,7 +13,7 @@ describe("recoverable harness reads", () => {
   it("slices a 71,799-character manuscript through read_file and returns continuation metadata", async () => {
     const content = "A".repeat(120) + "B".repeat(120) + "C".repeat(71559);
     writeFileSync(join(dir, "main.tex"), content);
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     const ctx = { project: { id: "p1" }, dir, contextDirs: [], signal: new AbortController().signal, emit: vi.fn() } as any;
     const first = await executeTool(ctx, "read_file", { path: "main.tex", offset: 0, limit: 120 });
     const second = await executeTool(ctx, "read_file", { path: "main.tex", offset: 120, limit: 120 });

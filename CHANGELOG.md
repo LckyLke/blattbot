@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added `search_files` for every backend: literal or regex text search across project files (or an attached context folder), with a path prefix, case option, context lines and a result cap. It uses `read_file`'s path checks and never searches `.git`. Existing Codex chats switch to a new Codex session on their next turn to pick it up; the chat keeps its messages.
+- BlattBot's project tools are now defined once for all backends. On the Claude backend, `add_citation` gets the same write-path check as on Codex and OpenAI-compatible endpoints.
 - Approve part of a diff in Proof: **✓** on a change pushes just that passage, **approve file** a whole file, and everything else stays pending for later review. Partial approvals get the same Overleaf conflict check (limited to what is approved), backups on overwrite and rollback on a failed push as a full approval; a change the file no longer contains is refused instead of pushed.
 - Added Codex Fast mode in the chat toolbar and Settings → Agent, with persistent Standard/Fast/CLI-default choices for new chats, resumed turns, and background helpers.
 - Fixed: when a push to Overleaf failed partway through an approval, the approved edits stayed committed locally and the next sync could overwrite them with Overleaf's versions. They now stay pending — approve again to retry. A single file that fails to upload stays pending while the rest of the approval is committed. Git-bridge projects un-commit the same way when the pull or push fails, and are never left mid-rebase.

@@ -283,6 +283,7 @@ const TOOL_LABELS: Record<string, string> = {
   TodoWrite: "Planning",
   Task: "Delegating",
   AskUserQuestion: "Asking you",
+  mcp__blattbot__search_files: "Searching files",
   mcp__blattbot__compile_latex: "Compiling LaTeX",
   mcp__blattbot__search_papers: "Searching literature",
   mcp__blattbot__add_citation: "Adding citation",

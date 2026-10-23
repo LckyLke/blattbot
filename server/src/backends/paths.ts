@@ -8,8 +8,8 @@
  * the agent to read a credential file would otherwise be obeyed. Everything
  * below is enforced in the permission callback, before a tool ever runs.
  *
- * The openai backend enforces the same boundary in its own path resolvers
- * (resolveReadPath / resolveWritePath) — this brings the two backends level.
+ * BlattBot's own file tools (backends/tools.ts, served to every backend)
+ * enforce the same boundary through resolveReadPath / resolveWritePath below.
  */
 import { homedir } from "node:os";
 import { lstatSync } from "node:fs";
@@ -57,6 +57,31 @@ export function resolveReadPath(
   const abs = resolve(dir, p);
   if (abs === dir || !abs.startsWith(dir + sep)) throw new Error(`invalid path: ${p}`);
   return checked(dir, abs);
+}
+
+/**
+ * Resolve a write/edit path: must land strictly inside the project working
+ * tree (never .git, never a context directory), rejecting traversal and
+ * symlinks.
+ */
+export function resolveWritePath(dir: string, contextDirs: string[], raw: unknown): string {
+  if (typeof raw !== "string" || !raw.trim()) throw new Error("path is required");
+  const p = raw.trim();
+  const abs = isAbsolute(p) ? resolve(p) : resolve(dir, p);
+  if (abs === dir || !abs.startsWith(dir + sep)) {
+    throw new Error(`writes must stay inside the project: ${p}`);
+  }
+  for (const c of contextDirs) {
+    if (isInside(abs, c)) throw new Error("context directories are read-only");
+  }
+  if (isInside(abs, join(dir, ".git"))) throw new Error("the .git directory is off-limits");
+  assertNoSymlinkPath(dir, abs);
+  return abs;
+}
+
+/** The path a tool result or chat summary shows: relative when inside the project. */
+export function displayPath(dir: string, abs: string): string {
+  return isInside(abs, dir) && abs !== dir ? abs.slice(dir.length + 1) : abs;
 }
 
 /** Refuse symlinks below an allowed root, including dangling links and

@@ -819,7 +819,7 @@ describe("openai backend units", () => {
   });
 
   it("resolveReadPath allows the project and context dirs, rejects everything else", async () => {
-    const { resolveReadPath } = await import("../src/backends/openai.js");
+    const { resolveReadPath } = await import("../src/backends/paths.js");
     const dir = join(dataDir, "proj");
     const context = join(dataDir, "context-lib");
     mkdirSync(dir, { recursive: true });
@@ -835,7 +835,7 @@ describe("openai backend units", () => {
   });
 
   it("resolveWritePath confines writes to the project and shields .git and context dirs", async () => {
-    const { resolveWritePath } = await import("../src/backends/openai.js");
+    const { resolveWritePath } = await import("../src/backends/paths.js");
     const dir = join(dataDir, "proj");
     const context = join(dataDir, "ctx");
     expect(resolveWritePath(dir, [context], "new.tex")).toBe(join(dir, "new.tex"));
@@ -847,7 +847,7 @@ describe("openai backend units", () => {
   });
 
   it("edit_file demands an exact unique match", async () => {
-    const { executeTool } = await import("../src/backends/openai.js");
+    const { executeTool } = await import("../src/backends/tools.js");
     const dir = join(dataDir, "proj-edit");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "a.tex"), "one two one\n");
@@ -887,7 +887,7 @@ describe("openai backend units", () => {
   });
 
   it("maps model-facing tool names onto the shared event names", async () => {
-    const { eventToolName } = await import("../src/backends/openai.js");
+    const { eventToolName } = await import("../src/backends/tools.js");
     expect(eventToolName("read_file")).toBe("Read");
     expect(eventToolName("write_file")).toBe("Write");
     expect(eventToolName("edit_file")).toBe("Edit");
