@@ -37,6 +37,8 @@ import { registerFileRoutes } from "./routes/files.js";
 import { registerRefRoutes } from "./routes/refs.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerWsRoutes } from "./routes/ws.js";
+import { registerOverleafReviewRoutes } from "./routes/overleaf-review.js";
+import { registerSharedInstructionsRoutes } from "./routes/shared-instructions.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.BLATTBOT_PORT ?? 4560);
@@ -127,6 +129,8 @@ registerFileRoutes(app);
 registerRefRoutes(app);
 registerChatRoutes(app);
 registerInlineQuestions(app);
+registerOverleafReviewRoutes(app);
+registerSharedInstructionsRoutes(app);
 registerWsRoutes(app);
 
 // Web UI: repo layout (web/dist as a sibling of server/, whether running from

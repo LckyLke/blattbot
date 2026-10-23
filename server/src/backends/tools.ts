@@ -32,6 +32,8 @@ import { chatUploadsDir, imageSize, sniffImageMime } from "../chatimages.js";
 import { RESEARCH_TOOLS, executeResearchTool } from "../research/tools.js";
 import { searchLiterature } from "../research/discovery.js";
 import { readPaperTool, verifyPaperTool } from "./paper-tools.js";
+import { buildReview, formatReviewForAgent, remoteReview } from "../overleaf/comments.js";
+import { withSession } from "../sync.js";
 import { displayPath, isInside, resolveReadPath, resolveWritePath } from "./paths.js";
 import { SEARCH_MAX_CONTEXT_LINES, SEARCH_MAX_LIMIT, searchFiles } from "./search-files.js";
 import type { BackendTurnContext } from "./types.js";
@@ -422,8 +424,33 @@ const CITATION_TOOLS: ProjectTool[] = [
   ),
 ];
 
+const listOverleafCommentsShape = {
+  path: z.string().max(2000).optional().describe("Only comments in this file (or under this folder), relative to the project root; default the whole project"),
+  includeResolved: z.boolean().optional().describe("Also list resolved comment threads; default false"),
+};
+
+// Read-only: the agent can list review comments but never post, reply or resolve.
+const OVERLEAF_TOOLS: ProjectTool[] = [
+  define(
+    "list_overleaf_comments",
+    "List the co-authors' review comments (threads with every message, author and time) and tracked changes on the Overleaf project, each with file:line in the local copy and the quoted passage. Comments whose quoted text is no longer in the local file are marked. Only for projects synced with Overleaf through an account. Read-only: you cannot reply to or resolve comments.",
+    listOverleafCommentsShape,
+    async (ctx, args) => {
+      const input = parseArgs(listOverleafCommentsShape, args);
+      const project = getProject(ctx.project.id) ?? ctx.project;
+      if (project.kind !== "overleaf" || !project.overleafProjectId) {
+        return "This project is not synced with Overleaf through an account (it is a git or local project), so there are no Overleaf comments to list.";
+      }
+      const remote = await remoteReview(project.id, project.overleafProjectId, (fn) => withSession(project, fn));
+      const filter = { path: input.path, includeResolved: input.includeResolved ?? false };
+      return formatReviewForAgent(buildReview(remote, ctx.dir, filter), filter);
+    },
+    { summarize: (args) => (typeof args?.path === "string" && args.path.trim() ? args.path.trim() : "") },
+  ),
+];
+
 /** Every BlattBot tool, in catalog order. */
-export const PROJECT_TOOLS: readonly ProjectTool[] = [...RESEARCH, ...FILE_TOOLS, ...PAPER_TOOLS, ...EDIT_TOOLS, ...CITATION_TOOLS];
+export const PROJECT_TOOLS: readonly ProjectTool[] = [...RESEARCH, ...FILE_TOOLS, ...PAPER_TOOLS, ...EDIT_TOOLS, ...CITATION_TOOLS, ...OVERLEAF_TOOLS];
 
 const BY_NAME = new Map(PROJECT_TOOLS.map((tool) => [tool.name, tool]));
 

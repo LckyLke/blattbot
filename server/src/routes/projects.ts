@@ -281,7 +281,7 @@ export function registerProjectRoutes(app: FastifyInstance): void {
 
   app.put<{
     Params: { id: string };
-    Body: { styleAppend?: string; model?: string; defaultMode?: string };
+    Body: { styleAppend?: string; model?: string; defaultMode?: string; trackChanges?: boolean };
   }>("/api/projects/:id/settings", async (req, reply) => {
     const project = getProject(req.params.id);
     if (!project) return reply.code(404).send({ error: "unknown project" });
@@ -299,7 +299,8 @@ export function registerProjectRoutes(app: FastifyInstance): void {
       else delete merged.modelBackend;
     }
     for (const key of Object.keys(merged) as (keyof ProjectSettings)[]) {
-      if (!merged[key]?.trim()) delete merged[key];
+      const value = merged[key];
+      if (typeof value === "string" ? !value.trim() : value !== true) delete merged[key];
     }
     const updated = updateProject(project.id, { settings: merged })!;
     return projectSettingsView(updated);
