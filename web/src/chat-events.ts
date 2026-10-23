@@ -282,7 +282,7 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
       // forced-overwrite backup location, files to delete manually, …
       const warnings = strings(ev.warnings).filter(
         // The backup notice below says where to find the backup instead.
-        (w) => !(backup.length > 0 && w.startsWith("Overleaf's versions of the overwritten files were backed up")),
+        (w) => !(backup.length > 0 && /^Overleaf's versions? of .+ (?:was|were) backed up to /.test(w)),
       );
       if (warnings.length > 0) {
         next.push(notice(`${uid}:warnings`, "warn", warnings.join("\n")));
@@ -300,6 +300,13 @@ export function applyChatEvent(items: ChatItem[], ev: ChatTranscriptEvent, opts:
       // touched — the tree changed beyond what was reviewed.
       if (Array.isArray(ev.absorbedRemote) && ev.absorbedRemote.length > 0) {
         next.push(notice(`${uid}:absorbed`, "info", `Also picked up Overleaf changes to: ${ev.absorbedRemote.join(", ")}`));
+      }
+      // Co-author edits to other lines of the same files were merged in.
+      if (Array.isArray(ev.mergedRemote) && ev.mergedRemote.length > 0) {
+        next.push(notice(`${uid}:merged`, "info", `Merged Overleaf's edits to ${ev.mergedRemote.join(", ")} with yours, line by line.`));
+      }
+      if (Array.isArray(ev.drift) && ev.drift.length > 0) {
+        next.push(notice(`${uid}:drift`, "warn", `Overleaf also changed ${ev.drift.join(", ")} where you have pending edits — see Proof.`));
       }
       return next;
     }

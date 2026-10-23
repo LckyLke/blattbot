@@ -433,6 +433,10 @@ describe("history", () => {
       ]);
       expect(sh("log", "-1", "--skip=1", "--format=%B")).toContain("BlattBot-Kind: local");
       expect(read("draft.tex")).toBe("pending\n"); // the selective sync left it pending
+      // Commits built off-index (line merges of Overleaf's edits) are attributed too.
+      await git.commitContents(dir, "Sync from Overleaf", new Map([["main.tex", Buffer.from(BASE)]]), git.OVERLEAF_AUTHOR);
+      expect(sh("log", "-1", "--format=%an <%ae>").trim()).toBe("Overleaf <overleaf@localhost>");
+      expect((await history.listHistory(project("local"))).commits[0].kind).toBe("sync");
     });
   });
 });

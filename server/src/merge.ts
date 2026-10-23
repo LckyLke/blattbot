@@ -27,6 +27,11 @@ export interface MergeLabels {
   theirs?: string;
 }
 
+export interface MergeOptions {
+  /** Conflict blocks also show the base version (`|||||||` section). */
+  diff3?: boolean;
+}
+
 /** Binary content (a NUL byte in the first 8 KB, as git judges it) is not merged. */
 export function looksBinary(content: Buffer): boolean {
   return content.subarray(0, 8000).includes(0);
@@ -41,6 +46,7 @@ export async function mergeText(
   ours: Buffer,
   theirs: Buffer,
   labels: MergeLabels = {},
+  options: MergeOptions = {},
 ): Promise<MergeTextResult | null> {
   if (ours.equals(theirs)) return { content: ours, conflicts: 0 };
   if (base.equals(ours)) return { content: theirs, conflicts: 0 };
@@ -55,6 +61,7 @@ export async function mergeText(
     const args = [
       "merge-file",
       "-p",
+      ...(options.diff3 ? ["--diff3"] : []),
       "-L", labels.ours ?? "yours",
       "-L", labels.base ?? "base",
       "-L", labels.theirs ?? "theirs",

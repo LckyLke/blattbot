@@ -183,7 +183,7 @@ try {
   await proof.getByText("My middle.").first().waitFor();
   await proof.getByRole("button", { name: "Approve & push" }).click();
   await proof.getByText(/you also\s+edited — nothing was pushed/).waitFor();
-  await proof.getByRole("button", { name: "Overwrite Overleaf" }).click();
+  await proof.getByRole("button", { name: "Overwrite main.tex on Overleaf" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Overwrite Overleaf" }).click();
   await chat.getByText(/were backed up before they were overwritten — open History → Overleaf backups/).waitFor();
   await historyTab.click();

@@ -42,6 +42,7 @@ import ProjectSettings from "./components/ProjectSettings";
 import ChatView from "./components/Chat";
 import { countDrafts, subscribeDrafts } from "./drafts";
 import { useProjectSync } from "./useProjectSync";
+import { syncConflicts } from "./remote-change";
 import ProjectSyncNotice from "./components/ProjectSyncNotice";
 import { useHistoryStatus } from "./useHistoryStatus";
 import { defaultApproveMessage } from "./approve-message";
@@ -210,6 +211,13 @@ function AppShell() {
   // Approve was blocked: Overleaf changed these files while they also carry
   // local edits. The Proof view offers per-file discard or a forced overwrite.
   const [approveConflicts, setApproveConflicts] = useState<SyncConflict[] | null>(null);
+  // A sync found files Overleaf also changed where they carry local edits
+  // (overlapping, so not merged): Proof marks them before any approve.
+  const [syncDrift, setSyncDrift] = useState<SyncConflict[] | null>(null);
+  // "Review changes" scrolls the Proof to this file (each nonce once).
+  const [proofReveal, setProofReveal] = useState<{ path: string; nonce: number }>();
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const [compile, setCompile] = useState<CompileInfo | null>(null);
   const [compiling, setCompiling] = useState(false);
   const [pdfStamp, setPdfStamp] = useState(0);
@@ -286,6 +294,8 @@ function AppShell() {
   const wsRef = useRef<WebSocket | null>(null);
   const [reconnectVersion, setReconnectVersion] = useState(0);
   const syncWarningRef = useRef<(message: string, paths?: string[]) => void>(() => {});
+  // Overleaf state the mirror caught up with (push, pre-turn sync, other tab).
+  const remoteSeenRef = useRef<(at?: string) => void>(() => {});
   // Mirrors `compiling` for use inside callbacks without stale closures.
   const compilingRef = useRef(false);
   compilingRef.current = compiling;
@@ -519,21 +529,36 @@ function AppShell() {
           if (ev.failed || ev.drift?.length || /session.*(?:expired|rejected)/i.test(String(ev.message))) {
             syncWarningRef.current(String(ev.message), ev.drift);
           }
+          if (!ev.failed) setSyncDrift(syncConflicts(ev));
+          break;
+        case "synced":
+          // A sync from any tab: what it left overlapping, and what it saw.
+          setSyncDrift(syncConflicts(ev));
+          remoteSeenRef.current(ev.remoteLastUpdated);
+          break;
+        case "remote_seen":
+          remoteSeenRef.current(ev.remoteLastUpdated);
           break;
         case "approved":
           // A partial approval is followed by a diff event with what is left.
           if (!ev.partial) setDiff("");
           setApproveConflicts(null);
+          setSyncDrift(syncConflicts(ev));
+          remoteSeenRef.current(ev.remoteLastUpdated);
           setSourceStamp((s) => s + 1);
-          // The push also absorbed collaborator edits to files we hadn't
-          // touched — the tree changed beyond what was reviewed.
-          if (Array.isArray(ev.absorbedRemote) && ev.absorbedRemote.length > 0) {
+          // The push also absorbed (or merged in) collaborator edits — the
+          // tree changed beyond what was reviewed.
+          if (
+            (Array.isArray(ev.absorbedRemote) && ev.absorbedRemote.length > 0) ||
+            (Array.isArray(ev.mergedRemote) && ev.mergedRemote.length > 0)
+          ) {
             dirtySinceCompile.current = true;
           }
           break;
         case "rejected":
           setDiff("");
           setApproveConflicts(null);
+          setSyncDrift(null);
           // The working tree just reverted — the last PDF no longer matches it.
           dirtySinceCompile.current = true;
           setSourceStamp((s) => s + 1);
@@ -556,6 +581,8 @@ function AppShell() {
     setActiveChatId(null);
     setDiff("");
     setApproveConflicts(null);
+    setSyncDrift(null);
+    setProofReveal(undefined);
     setCompile(null);
     pdfVersionRef.current = null;
     setCompiling(false);
@@ -1061,12 +1088,13 @@ function AppShell() {
   // being the one acted on (the same stale-async rule send() follows) — a
   // conflict banner, a diff, or an error must never land in another project.
   const approve = useCallback(
-    async (message: string, force = false, selection?: ApproveSelection) => {
+    async (message: string, force: boolean | string[] = false, selection?: ApproveSelection) => {
       const id = selectedId;
       if (!id) return;
       const stale = () => selectedRef.current?.id !== id;
       try {
-        await api.approve(id, message, force, selection);
+        // force: everything (true), or only the listed files.
+        await api.approve(id, message, force === true, selection, Array.isArray(force) ? force : undefined);
         if (stale()) return;
         setApproveConflicts(null);
       } catch (err: any) {
@@ -1083,58 +1111,49 @@ function AppShell() {
     [selectedId, pushChat],
   );
 
-  // Conflict banner: drop the local edits to the conflicted files, so the
-  // remote versions merge in on the next sync/approve. A path that could not
-  // be discarded keeps its place in the banner and is reported — clearing the
-  // banner anyway would let the next approve run into the same conflict.
-  const discardConflicts = useCallback(
-    async (paths: string[]) => {
+  // Conflict banner, per file: take Overleaf's version (HEAD and worktree,
+  // dropping the local edits to those files only), or write both versions
+  // with conflict markers into the file. A file that failed keeps its place
+  // in the banner — clearing it would let the next approve run into it again.
+  const resolveConflicts = useCallback(
+    async (paths: string[], keep: "overleaf" | "markers") => {
       const id = selectedId;
       if (!id) return;
       const stale = () => selectedRef.current?.id !== id;
-      const failures = new Map<string, string>();
-      for (const path of paths) {
-        try {
-          await api.rejectFile(id, path);
-        } catch (err: any) {
-          // Keep going — the other files can still be discarded.
-          failures.set(path, err.message);
-        }
-      }
-      // reject-file refuses a file that is already clean: only a path the
-      // fresh diff still lists counts as not discarded.
-      let pending: Set<string> | null = null;
       try {
-        const d = await api.diff(id);
+        const r = await api.resolveConflicts(id, paths, keep);
         if (stale()) return;
-        setDiff(d.diff);
-        pending = new Set(parseDiff(d.diff).map((f) => f.path));
-      } catch {
-        /* keep the current view — and treat every failed path as pending */
+        diffRef.current = r.diff;
+        setDiff(r.diff);
+        dirtySinceCompile.current = true;
+        setSourceStamp((s) => s + 1);
+        const settled = new Set(paths);
+        const drop = (prev: SyncConflict[] | null) => {
+          const next = prev?.filter((c) => !settled.has(c.path)) ?? null;
+          return next && next.length > 0 ? next : null;
+        };
+        setApproveConflicts(drop);
+        setSyncDrift(drop);
+        return r.resolved;
+      } catch (err: any) {
+        if (stale()) return;
+        pushChat({
+          kind: "notice",
+          tone: "error",
+          text: `Could not ${keep === "overleaf" ? "take Overleaf's version of" : "merge"} ${paths.join(", ")} — ${err.message}`,
+        });
       }
-      if (stale()) return;
-      dirtySinceCompile.current = true;
-      setSourceStamp((s) => s + 1);
-      const kept = [...failures.keys()].filter((path) => !pending || pending.has(path));
-      if (kept.length === 0) {
-        setApproveConflicts(null);
-        return;
-      }
-      setApproveConflicts((prev) => prev?.filter((c) => kept.includes(c.path)) ?? null);
-      pushChat({
-        kind: "notice",
-        tone: "error",
-        text:
-          `Could not discard the local edits to ${kept.join(", ")} — ` +
-          kept.map((path) => failures.get(path)).filter((m, i, all) => all.indexOf(m) === i).join("; "),
-      });
     },
     [selectedId, pushChat],
   );
 
   const projectSync = useProjectSync(view === "project" ? selected : null, reconnectVersion, {
     onAccountChanged: () => { void refreshProjects(); },
+    // Overleaf changed: sync on its own only while nothing is pending here.
+    canAutoSync: () =>
+      !busyRef.current && !diffRef.current.trim() && (!selectedId || countDrafts(selectedId) === 0),
     onSynced: (id, r, manual) => {
+      if (selectedRef.current?.id === id) setSyncDrift(syncConflicts(r));
       const changed = r.changed || Boolean(r.merged?.length) || Boolean(r.drift?.length);
       if (manual || r.output) pushChat({
         kind: "notice", tone: r.drift?.length ? "warn" : "info", text: r.output || "Already up to date.",
@@ -1153,6 +1172,11 @@ function AppShell() {
   });
   const { syncNow, syncing } = projectSync;
   syncWarningRef.current = projectSync.reportWarning;
+  remoteSeenRef.current = projectSync.noteRemote;
+  // The project detail carries the Overleaf state the server last saw.
+  const noteRemote = projectSync.noteRemote;
+  const detailSeen = detail && detail.id === selectedId ? detail.remoteLastUpdated : undefined;
+  useEffect(() => { if (detailSeen) noteRemote(detailSeen); }, [detailSeen, noteRemote]);
 
   const reject = useCallback(async () => {
     const id = selectedId;
@@ -1497,6 +1521,9 @@ function AppShell() {
             diff={diff}
             busy={busy}
             conflicts={approveConflicts}
+            drift={syncDrift}
+            projectKind={selected!.kind}
+            reveal={proofReveal}
             projectId={selectedId!}
             sourceStamp={sourceStamp}
             onDiff={handleManualSaveDiff}
@@ -1510,9 +1537,8 @@ function AppShell() {
             onRejectFile={rejectFile}
             onRejectHunk={rejectHunk}
             onJump={revealInSource}
-            onDiscardConflicts={discardConflicts}
+            onResolveConflicts={resolveConflicts}
             defaultMessage={approveMessage}
-            projectKind={selected!.kind}
           />
         );
       case "history":
@@ -1733,11 +1759,17 @@ function AppShell() {
         popup={projectSync.popup}
         syncing={syncing}
         reconnecting={projectSync.reconnecting}
+        remoteChangedAt={projectSync.remoteChangedAt}
         canReconnect={Boolean(selected!.accountId)}
         onDismiss={projectSync.dismiss}
         onSync={syncNow}
         onReconnect={projectSync.reconnect}
-        onReview={() => setPanes(p => ({ left: "proof", right: p.right === "proof" ? "chat" : p.right }))}
+        onReview={() => {
+          setPanes(p => ({ left: "proof", right: p.right === "proof" ? "chat" : p.right }));
+          // Land on the first file both sides changed.
+          const first = approveConflicts?.[0]?.path ?? syncDrift?.[0]?.path ?? projectSync.issue?.paths?.[0];
+          if (first) setProofReveal({ path: first, nonce: Date.now() });
+        }}
         onSettings={() => setSettingsOpen(true)}
       />}
 

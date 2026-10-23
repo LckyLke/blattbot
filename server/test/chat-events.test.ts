@@ -125,7 +125,7 @@ describe("applyChatEvent", () => {
         projectKind: "overleaf",
         uploaded: ["main.tex"],
         files: ["main.tex", "refs.bib"],
-        warnings: ["Overleaf's versions of the overwritten files were backed up to /x/.git/blattbot/remote-backup/s", "kept"],
+        warnings: ["Overleaf's version of main.tex was backed up to /x/.git/blattbot/remote-backup/s", "kept"],
         backup: { stamp: "s", files: ["main.tex"] },
       },
       { type: "approved", pushed: true, partial: true, files: ["a.tex", "b.tex", "c.tex", "d.tex", "e.tex", "f.tex", "g.tex"] },

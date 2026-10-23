@@ -13,6 +13,10 @@ export interface Project {
   accountId?: string;
   /** Cumulative agent cost/turn totals — updated at every turn end. */
   stats?: ProjectStats;
+  /** Overleaf projects: when the last full sync finished. */
+  lastSyncAt?: string;
+  /** Overleaf projects: Overleaf's lastUpdated as of the last sync or push. */
+  remoteLastUpdated?: string;
 }
 
 /** Cumulative agent usage of a project (cost known only on the Claude backend). */
@@ -455,11 +459,28 @@ export interface RevertResult {
   diff: string;
 }
 
-/** A file both Overleaf and the local tree changed since the last sync. */
+/** One region both sides changed: Overleaf's text, the shared base, and yours. */
+export interface ConflictHunk {
+  /** 1-based line in your version where it starts. */
+  line: number;
+  remote: string;
+  base: string;
+  mine: string;
+}
+
+/** A file both Overleaf and the local tree changed since the last sync, in overlapping places. */
 export interface SyncConflict {
   path: string;
-  /** "deleted-remote" = the file was deleted on Overleaf but edited locally. */
-  kind: "modified" | "deleted-remote";
+  /**
+   * "deleted-remote" = deleted on Overleaf but edited locally; "deleted-local"
+   * = the reverse; "unmerged" = a Git-bridge sync left conflict markers.
+   */
+  kind: "modified" | "deleted-remote" | "deleted-local" | "unmerged";
+  /** Not text on every side (no line merge, no hunks). */
+  binary?: boolean;
+  hunks?: ConflictHunk[];
+  /** Overlapping regions beyond `hunks`. */
+  more?: number;
 }
 
 /** Approve was refused (HTTP 409): remote edits overlap the local ones. */
@@ -700,12 +721,12 @@ export const api = {
    * offer per-file discard or a forced overwrite; other errors throw plainly.
    */
   /** Approve all pending changes, or only `selection` (whole files and/or single-hunk patches). */
-  approve: async (id: string, message: string, force = false, selection?: ApproveSelection) => {
+  approve: async (id: string, message: string, force = false, selection?: ApproveSelection, forcePaths?: string[]) => {
     await ensureAuth();
     const res = await fetch(appUrl(`/api/projects/${id}/approve`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, force, ...(selection ? { selection } : {}) }),
+      body: JSON.stringify({ message, force, ...(selection ? { selection } : {}), ...(forcePaths ? { forcePaths } : {}) }),
     });
     if (!res.ok) {
       let body: any = null;
@@ -725,8 +746,23 @@ export const api = {
       pushed: boolean;
       warnings?: string[];
       absorbedRemote?: string[];
+      /** Files whose Overleaf edits were merged line by line with yours. */
+      mergedRemote?: string[];
+      /** Pending files Overleaf also changed in overlapping places. */
+      drift?: string[];
+      conflicts?: SyncConflict[];
+      remoteLastUpdated?: string;
     };
   },
+  /**
+   * Settle conflicting files one by one: keep Overleaf's version (drops your
+   * edits to them), or write the merge with conflict markers into them.
+   */
+  resolveConflicts: (id: string, paths: string[], keep: "overleaf" | "markers") =>
+    request<{ ok: boolean; diff: string; resolved: { path: string; conflicts: number; line?: number }[] }>(
+      `/api/projects/${id}/conflicts/resolve`,
+      { method: "POST", body: JSON.stringify({ paths, keep }) },
+    ),
   reject: (id: string) => request<{ ok: boolean }>(`/api/projects/${id}/reject`, { method: "POST" }),
   rejectFile: (id: string, path: string) =>
     request<{ ok: boolean; diff: string }>(`/api/projects/${id}/reject-file`, {
@@ -739,10 +775,18 @@ export const api = {
       body: JSON.stringify({ patch }),
     }),
   sync: (id: string) =>
-    request<{ ok: boolean; output: string; changed?: boolean; merged?: string[]; drift?: string[] }>(
-      `/api/projects/${id}/sync`,
-      { method: "POST" },
-    ),
+    request<{
+      ok: boolean;
+      output: string;
+      changed?: boolean;
+      merged?: string[];
+      /** Of merged: files with pending edits, merged line by line under them. */
+      rebased?: string[];
+      drift?: string[];
+      conflicts?: SyncConflict[];
+      lastSyncAt?: string;
+      remoteLastUpdated?: string;
+    }>(`/api/projects/${id}/sync`, { method: "POST" }),
   /** Commits newest first; pass `head` and `offset` from the first page to page on. */
   history: (id: string, opts: { limit?: number; offset?: number; head?: string; filter?: HistoryFilter } = {}) => {
     const q = new URLSearchParams();
