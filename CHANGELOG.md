@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- New **History** tab: a timeline of every sync from Overleaf (or the git remote) and every approval, grouped by day, with author, changed files and each commit's diff. Filter by **From Overleaf** (what co-authors changed) or **Pushed by me**; a badge counts incoming changes since you last looked.
+- **Revert** a push from History: its reverse becomes new pending changes in Proof (later edits are kept; overlapping ones get conflict markers and are listed), and you approve it like any other change. Nothing is committed or pushed directly, merge commits are refused, and an approval that still contains the revert's conflict markers is refused.
+- The Overleaf versions backed up by **Overwrite Overleaf** are listed under History → Overleaf backups, where you can view or download them.
+- Approval commits are authored with your global git identity when `user.name` and `user.email` are set (otherwise BlattBot), and sync commits as "Overleaf". The commit message now defaults to the agent prompt behind the changes ("Agent: …"), "Manual edits", or a revert's subject; for Overleaf projects the field is labelled "local history only" because Overleaf does not store it.
+- Approval outcomes (pushed files, warnings, picked-up Overleaf changes, backups) are saved to the chat and survive a reload.
+
 - Approve part of a diff in Proof: **✓** on a change pushes just that passage, **approve file** a whole file, and everything else stays pending for later review. Partial approvals get the same Overleaf conflict check (limited to what is approved), backups on overwrite and rollback on a failed push as a full approval; a change the file no longer contains is refused instead of pushed.
 - Added Codex Fast mode in the chat toolbar and Settings → Agent, with persistent Standard/Fast/CLI-default choices for new chats, resumed turns, and background helpers.
 - Fixed: when a push to Overleaf failed partway through an approval, the approved edits stayed committed locally and the next sync could overwrite them with Overleaf's versions. They now stay pending — approve again to retry. A single file that fails to upload stays pending while the rest of the approval is committed. Git-bridge projects un-commit the same way when the pull or push fails, and are never left mid-rebase.
