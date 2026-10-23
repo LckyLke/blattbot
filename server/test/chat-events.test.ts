@@ -107,7 +107,7 @@ describe("applyChatEvent", () => {
   it("reports approvals per project kind, with warnings and absorbed remote edits", () => {
     const ev = { type: "approved", pushed: true, warnings: ["comments may be lost"], absorbedRemote: ["a.tex"] };
     expect(withoutUid(live([ev], "overleaf"))).toEqual([
-      { kind: "notice", tone: "ok", text: "Changes pushed to Overleaf." },
+      { kind: "notice", tone: "ok", text: "Changes pushed to Overleaf.", source: "approve" },
       { kind: "notice", tone: "warn", text: "comments may be lost" },
       { kind: "notice", tone: "info", text: "Also picked up Overleaf changes to: a.tex" },
     ]);
@@ -115,6 +115,40 @@ describe("applyChatEvent", () => {
     expect(live([{ type: "approved" }], "git")[0]).toMatchObject({ text: "Nothing to push." });
     // Several items from one event still get distinct identities.
     expect(new Set(live([ev], "overleaf").map((it) => it.uid)).size).toBe(3);
+  });
+
+  it("restores a persisted approval with its files and backup, worded by the event's project kind", () => {
+    const persisted: ChatTranscriptEvent[] = [
+      {
+        type: "approved",
+        pushed: true,
+        projectKind: "overleaf",
+        uploaded: ["main.tex"],
+        files: ["main.tex", "refs.bib"],
+        warnings: ["Overleaf's versions of the overwritten files were backed up to /x/.git/blattbot/remote-backup/s", "kept"],
+        backup: { stamp: "s", files: ["main.tex"] },
+      },
+      { type: "approved", pushed: true, partial: true, files: ["a.tex", "b.tex", "c.tex", "d.tex", "e.tex", "f.tex", "g.tex"] },
+    ];
+    // Replay has no project kind of its own: the event carries it.
+    expect(withoutUid(replayChatEvents(persisted, "chat1"))).toEqual([
+      { kind: "notice", tone: "ok", text: "Changes pushed to Overleaf: main.tex, refs.bib.", source: "approve" },
+      { kind: "notice", tone: "warn", text: "kept" },
+      {
+        kind: "notice",
+        tone: "warn",
+        text: "Overleaf's previous versions of main.tex were backed up before they were overwritten — open History → Overleaf backups to view or download them.",
+      },
+      {
+        kind: "notice",
+        tone: "ok",
+        text: "Approved part pushed: a.tex, b.tex, c.tex, d.tex, e.tex and 2 more — the rest stays in Proof.",
+        source: "approve-part",
+      },
+    ]);
+    expect(live([{ type: "approved", projectKind: "local", files: ["x.tex"] }], "overleaf")[0]).toMatchObject({
+      text: "Committed locally: x.tex.",
+    });
   });
 });
 

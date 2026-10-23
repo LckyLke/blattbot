@@ -385,6 +385,62 @@ export const MAX_CHAT_IMAGE_BYTES = 3.5 * 1024 * 1024;
 /** The cap as the composer spells it ("3.5 MB"). */
 export const MAX_CHAT_IMAGE_LABEL = `${MAX_CHAT_IMAGE_BYTES / 1024 / 1024} MB`;
 
+/** Where a commit came from: Overleaf/the remote, your approval, local only, a revert. */
+export type CommitKind = "sync" | "approve" | "local" | "revert" | "other";
+export type HistoryFilter = "all" | "sync" | "mine";
+
+export interface HistoryCommit {
+  sha: string;
+  short: string;
+  kind: CommitKind;
+  subject: string;
+  /** Message text after the subject line ("" when none). */
+  body: string;
+  author: { name: string; email: string };
+  /** ISO 8601. */
+  time: string;
+  parents: string[];
+  files: { path: string; oldPath?: string; additions: number | null; deletions: number | null }[];
+  additions: number;
+  deletions: number;
+  chatId?: string;
+  reverts?: string[];
+}
+
+/** Reverts written into the worktree that wait for approval in Proof. */
+export interface PendingRevertInfo {
+  commits: { sha: string; short: string; subject: string }[];
+  paths: string[];
+  /** Suggested commit message for approving them. */
+  message: string;
+}
+
+export interface HistoryPage {
+  head: string | null;
+  commits: HistoryCommit[];
+  nextOffset: number | null;
+  pendingRevert: PendingRevertInfo | null;
+}
+
+/** Overleaf's versions saved before a forced approval overwrote them. */
+export interface HistoryBackup {
+  stamp: string;
+  at: string;
+  files: { path: string; size: number }[];
+}
+
+export interface RevertResult {
+  ok: boolean;
+  sha: string;
+  short: string;
+  subject: string;
+  changed: string[];
+  conflicts: { path: string; reason: string; markers: boolean }[];
+  message: string;
+  /** The working diff after the revert. */
+  diff: string;
+}
+
 /** A file both Overleaf and the local tree changed since the last sync. */
 export interface SyncConflict {
   path: string;
@@ -670,6 +726,33 @@ export const api = {
       `/api/projects/${id}/sync`,
       { method: "POST" },
     ),
+  /** Commits newest first; pass `head` and `offset` from the first page to page on. */
+  history: (id: string, opts: { limit?: number; offset?: number; head?: string; filter?: HistoryFilter } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.offset) q.set("offset", String(opts.offset));
+    if (opts.head) q.set("head", opts.head);
+    if (opts.filter && opts.filter !== "all") q.set("filter", opts.filter);
+    const qs = q.toString();
+    return request<HistoryPage>(`/api/projects/${id}/history${qs ? `?${qs}` : ""}`);
+  },
+  /** Incoming (Overleaf/remote) commits since `since`, for the History tab's badge. */
+  historyStatus: (id: string, since?: string) =>
+    request<{ head: string | null; unread: number; pendingRevert: PendingRevertInfo | null }>(
+      `/api/projects/${id}/history/status${since ? `?since=${encodeURIComponent(since)}` : ""}`,
+    ),
+  historyCommit: (id: string, sha: string) =>
+    request<{ commit: HistoryCommit; diff: string; truncated: boolean }>(
+      `/api/projects/${id}/history/${encodeURIComponent(sha)}`,
+    ),
+  historyBackups: (id: string) => request<{ backups: HistoryBackup[] }>(`/api/projects/${id}/history/backups`),
+  backupFileUrl: (id: string, stamp: string, path: string, download = false) =>
+    appUrl(
+      `/api/projects/${id}/history/backups/${encodeURIComponent(stamp)}/file?path=${encodeURIComponent(path)}${download ? "&download=1" : ""}`,
+    ),
+  /** Write the reverse of a commit into the files as pending changes (nothing is pushed). */
+  revertCommit: (id: string, sha: string) =>
+    request<RevertResult>(`/api/projects/${id}/history/${encodeURIComponent(sha)}/revert`, { method: "POST" }),
   compile: (id: string) => request<CompileInfo>(`/api/projects/${id}/compile`, { method: "POST" }),
   /**
    * Compile the project's state as committed at a rev (only "HEAD" — the
