@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api, type Account, type OlProject, type Project } from "../api";
 import AccountSignIn, { RemoteLoginHint } from "./AccountSignIn";
 import { useDialog } from "./Dialog";
+import { KindBadge, OpenInOverleaf, StatusBadges } from "./ProjectStatus";
+import { projectStatus, timeAgo } from "../project-status";
 
 interface Props {
   /** null while the first load is in flight (or failed — see loadError). */
@@ -16,16 +18,18 @@ interface Props {
   onOpenSettings: () => void;
 }
 
-function ago(iso?: string): string | null {
-  if (!iso) return null;
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return null;
-  const s = Math.max(0, (Date.now() - t) / 1000);
-  if (s < 90) return "just now";
-  if (s < 3600) return `${Math.round(s / 60)} min ago`;
-  if (s < 86400 * 2) return `${Math.round(s / 3600)} h ago`;
-  if (s < 86400 * 30) return `${Math.round(s / 86400)} d ago`;
-  return new Date(t).toLocaleDateString();
+const ago = (iso?: string) => timeAgo(iso);
+
+/** A connected project card's status row and its "Open in Overleaf" link. */
+function CardStatus({ project }: { project: Project }) {
+  const status = projectStatus(project);
+  if (project.kind !== "overleaf" && !status.working && status.pending === 0 && !status.synced) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pb-3">
+      <StatusBadges status={status} />
+      <OpenInOverleaf project={project} className="ml-auto" />
+    </div>
+  );
 }
 
 /** The responsive project card grid shared by every dashboard section. */
@@ -508,15 +512,19 @@ function AccountSection({
                         {p.name}
                       </span>
                       <span className="mt-auto flex w-full items-center gap-1.5 pt-3">
-                        <span className="rounded-sm border border-leaf/40 px-1 font-mono text-[10.5px] uppercase tracking-wide text-leaf">
+                        <span
+                          title="Overleaf project, connected to BlattBot"
+                          className="rounded-sm border border-leaf/40 px-1 font-mono text-[10.5px] uppercase tracking-wide text-leaf"
+                        >
                           connected
                         </span>
                         {p.archived && <ArchivedBadge />}
-                        <span className="ml-auto font-mono text-[11px] text-graphite">
+                        <span className="ml-auto font-mono text-[11px] text-graphite" title="Last edited on Overleaf">
                           {ago(p.lastUpdated) ?? ""}
                         </span>
                       </span>
                     </button>
+                    <CardStatus project={local} />
                     <button
                       onClick={() => removeProject(local)}
                       aria-label={`Remove ${p.name}`}
@@ -558,11 +566,15 @@ function AccountSection({
               >
                 <span className="pr-5 font-sans text-[14px] font-medium leading-snug text-paper">{p.name}</span>
                 <span className="mt-auto flex w-full items-center gap-1.5 pt-3">
-                  <span className="rounded-sm border border-leaf/40 px-1 font-mono text-[10.5px] uppercase tracking-wide text-leaf">
+                  <span
+                    title="Overleaf project, connected to BlattBot"
+                    className="rounded-sm border border-leaf/40 px-1 font-mono text-[10.5px] uppercase tracking-wide text-leaf"
+                  >
                     connected
                   </span>
                 </span>
               </button>
+              <CardStatus project={p} />
               <button
                 onClick={() => removeProject(p)}
                 aria-label={`Remove ${p.name}`}
@@ -675,18 +687,13 @@ function LocalSection({
               >
                 <span className="pr-5 font-sans text-[14px] font-medium leading-snug text-paper">{p.name}</span>
                 <span className="mt-auto flex w-full items-center gap-1.5 pt-3">
-                  <span
-                    className={`rounded-sm border px-1 font-mono text-[10.5px] uppercase tracking-wide ${
-                      p.kind === "local" ? "border-gold/40 text-gold" : "border-rule text-graphite"
-                    }`}
-                  >
-                    {p.kind === "local" ? "local" : p.kind === "git" ? "git" : "overleaf"}
-                  </span>
+                  <KindBadge kind={p.kind} />
                   <span className="ml-auto truncate font-mono text-[11px] text-graphite">
                     {p.mainTex ?? ""}
                   </span>
                 </span>
               </button>
+              <CardStatus project={p} />
               <button
                 onClick={() => removeProject(p)}
                 aria-label={`Remove ${p.name}`}

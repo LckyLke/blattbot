@@ -724,6 +724,7 @@ button:hover > .tex-logo .down,
   .blattbot-header { gap: 10px; padding-inline: 10px; }
   .blattbot-header > button { flex-shrink: 0; white-space: nowrap; }
   .blattbot-header > .ml-auto { display: none; }
+  .blattbot-header > .header-overleaf-link { display: none; }
   .mobile-sidebar-toggle {
     display: inline-grid; place-items: center; min-width: 38px; min-height: 38px;
     border: 1px solid var(--color-rule); border-radius: 6px; color: var(--color-paper);

@@ -179,6 +179,20 @@ describe("delete", () => {
   });
 });
 
+describe("project list status", () => {
+  it("counts the files with pending changes", async () => {
+    const { id } = await createProject("Status counts");
+    const entry = async () => (await call("GET", "/api/projects")).json().find((p: { id: string }) => p.id === id);
+    expect(await entry()).toMatchObject({ pendingFiles: 0, turnActive: false, kind: "local" });
+    await call("POST", `/api/projects/${id}/files`, { path: "a.tex", content: "a\n" });
+    await call("DELETE", `/api/projects/${id}/files?path=references.bib`);
+    expect((await entry()).pendingFiles).toBe(2);
+    // Renames count both paths.
+    await call("POST", `/api/projects/${id}/files/rename`, { from: "main.tex", to: "paper.tex" });
+    expect((await entry()).pendingFiles).toBe(4);
+  });
+});
+
 describe("main file selection", () => {
   it("lists .tex files with a \\documentclass and the current main file", async () => {
     const { id } = await createProject("Main candidates");
@@ -227,6 +241,9 @@ describe("while an agent turn runs", () => {
     expect((await call("DELETE", `/api/projects/${id}/files?path=main.tex`)).statusCode).toBe(409);
     expect(existsSync(join(dir, "new.tex"))).toBe(false);
     expect(existsSync(join(dir, "main.tex"))).toBe(true);
+    // The project list reports the running turn (dashboard / sidebar status).
+    const listed = (await call("GET", "/api/projects")).json().find((p: { id: string }) => p.id === id);
+    expect(listed.turnActive).toBe(true);
     finish();
     await vi.waitFor(async () => expect((await call("GET", `/api/projects/${id}`)).json().turnActive).toBe(false));
     expect((await call("POST", `/api/projects/${id}/files`, { path: "new.tex" })).statusCode).toBe(200);

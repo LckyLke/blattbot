@@ -46,6 +46,7 @@ import { countAllFileSaves, subscribeFileSaves } from "./editor-sync";
 import { draftLeaveNotice, shouldWarnOnUnload } from "./leave-guard";
 import { useProjectSync } from "./useProjectSync";
 import ProjectSyncNotice from "./components/ProjectSyncNotice";
+import { OpenInOverleaf } from "./components/ProjectStatus";
 
 /**
  * A panel module, loaded on first use and memoized: App hands every panel
@@ -336,6 +337,30 @@ function AppShell() {
       })
       .catch(() => {});
   }, []);
+
+  // The list's status fields (running turns, pending files) change on the
+  // server without an event for projects other than the open one: refresh
+  // an already loaded list while the tab is visible. An unchanged answer
+  // keeps the old array, so nothing re-renders for it.
+  useEffect(() => {
+    const poll = () => {
+      if (document.visibilityState !== "visible") return;
+      api
+        .projects()
+        .then((list) =>
+          setProjects((prev) => (prev === null || JSON.stringify(prev) === JSON.stringify(list) ? prev : list)),
+        )
+        .catch(() => {});
+    };
+    const timer = setInterval(poll, 15_000);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, []);
+  // The open project's pending files, live from the diff.
+  const pendingFileCount = useMemo(() => parseDiff(diff).length, [diff]);
 
   // Remember the current surface so a reload lands where the user left off.
   useEffect(() => {
@@ -1700,6 +1725,9 @@ function AppShell() {
             {selected!.name}
           </span>
         )}
+        {inProject && selected!.kind === "overleaf" && (
+          <OpenInOverleaf project={selected!} className="header-overleaf-link shrink-0" />
+        )}
         <div className="ml-auto flex items-center gap-4 text-xs text-graphite">
           {busy && (
             <span className="flex items-center gap-1.5 text-leaf">
@@ -1754,6 +1782,8 @@ function AppShell() {
               onSync={selected!.kind === "local" ? undefined : syncNow}
               syncing={syncing}
               update={update}
+              pendingChanges={pendingFileCount}
+              agentWorking={busy}
             />
 
             {/* Two physical panes; `flipped` decides which sits left. CSS order

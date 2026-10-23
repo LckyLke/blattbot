@@ -3,6 +3,8 @@ import { RepositoryManager } from "./CodeRepositories";
 import SidebarIcon from "./SidebarIcon";
 import { useEffect, useRef, useState } from "react";
 import { api, type ChatMeta, type DirListing, type Project, type ProjectContext } from "../api";
+import { projectStatus, statusSuffix } from "../project-status";
+import { OpenInOverleaf, StatusBadges } from "./ProjectStatus";
 
 interface Props {
   /** All imported projects, for the quick switcher. */
@@ -24,6 +26,9 @@ interface Props {
   syncing?: boolean;
   /** A newer published version exists — the footer links the releases page. */
   update?: { current: string; latest: string } | null;
+  /** Live status of the open project: files with pending changes, a running turn. */
+  pendingChanges?: number;
+  agentWorking?: boolean;
 }
 
 /** Project navigation, persistent chat history, and attached reference material. */
@@ -43,7 +48,12 @@ export default function Sidebar({
   onSync,
   syncing = false,
   update = null,
+  pendingChanges = 0,
+  agentWorking = false,
 }: Props) {
+  // The open project's status comes from the live turn state and diff; the
+  // others' from the (polled) project list.
+  const liveStatus = projectStatus(project, { working: agentWorking, pending: pendingChanges });
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [chatFilter, setChatFilter] = useState("");
   useEffect(() => { setConfirmDelete(null); setChatFilter(""); }, [project.id, activeChatId]);
@@ -136,10 +146,15 @@ export default function Sidebar({
                 {projects.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
+                    {statusSuffix(p.id === project.id ? liveStatus : projectStatus(p))}
                   </option>
                 ))}
               </select>
             )}
+          </div>
+          <div className="mt-0.5 flex items-center gap-2 px-1">
+            <StatusBadges status={liveStatus} kind={project.kind} />
+            <OpenInOverleaf project={project} label="Overleaf" className="ml-auto" />
           </div>
           <div className="mt-1.5 flex items-center gap-1">
             <button

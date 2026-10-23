@@ -15,6 +15,12 @@ export interface Project {
   accountId?: string;
   /** Cumulative agent cost/turn totals — updated at every turn end. */
   stats?: ProjectStats;
+  /** List status (GET /api/projects): an agent turn is running. */
+  turnActive?: boolean;
+  /** List status: files with pending (unapproved) changes. */
+  pendingFiles?: number;
+  /** When the project last synced from its remote, when the server records it. */
+  lastSyncAt?: string;
 }
 
 /** Cumulative agent usage of a project (cost known only on the Claude backend). */

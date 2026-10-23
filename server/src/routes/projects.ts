@@ -94,7 +94,17 @@ function projectSettingsView(project: Project) {
 }
 
 export function registerProjectRoutes(app: FastifyInstance): void {
-  app.get("/api/projects", async () => listProjects().map(publicProject));
+  // Each entry carries its live status for the dashboard and the sidebar
+  // switcher: a running agent turn and how many files have pending changes.
+  app.get("/api/projects", async () =>
+    Promise.all(
+      listProjects().map(async (p) => ({
+        ...publicProject(p),
+        turnActive: isTurnActive(p.id),
+        pendingFiles: await git.pendingFileCount(projectDir(p.id)).catch(() => 0),
+      })),
+    ),
+  );
 
   app.post<{
     Body: {
