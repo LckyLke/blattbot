@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { ENGINE_PRIORITY, engineOrder, isEngineSpecificFailure, parseErrors } from "../src/compile.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  ENGINE_PRIORITY,
+  compileOrder,
+  engineOrder,
+  isEngineSpecificFailure,
+  magicProgram,
+  parseErrors,
+  requiredProgram,
+  resolveTexProgram,
+} from "../src/compile.js";
 
 describe("parseErrors", () => {
   it("extracts classic TeX bang errors with context", () => {
@@ -77,5 +89,76 @@ describe("isEngineSpecificFailure", () => {
 
   it("does not retry over a missing figure", () => {
     expect(isEngineSpecificFailure(["! LaTeX Error: File `gfx/plot.png' not found."])).toBe(false);
+  });
+});
+
+// Real log output of the packages that need XeTeX or LuaTeX, as pdfLaTeX prints it.
+const FONTSPEC_LOG = [
+  "(/usr/share/texlive/texmf-dist/tex/latex/fontspec/fontspec.sty",
+  "",
+  "! Fatal Package fontspec Error: The fontspec package requires either XeTeX or",
+  "(fontspec)                      LuaTeX.",
+  "(fontspec)                      ",
+  "(fontspec)                      You must change your typesetting engine to,",
+  '(fontspec)                      e.g., "xelatex" or "lualatex" instead of',
+  '(fontspec)                      "latex" or "pdflatex".',
+  "",
+  "Type <return> to continue.",
+  " ...                                              ",
+  "                                                  ",
+  "l.101 \\msg_fatal:nn {fontspec} {cannot-use-pdftex}",
+].join("\n");
+
+describe("engine requirements in the log", () => {
+  it("retries fontspec's 'requires either XeTeX or LuaTeX' with XeLaTeX", () => {
+    const errors = parseErrors(FONTSPEC_LOG);
+    expect(errors[0]).toContain("requires either XeTeX or");
+    expect(isEngineSpecificFailure(errors)).toBe(true);
+    expect(requiredProgram(errors)).toBe("xelatex");
+  });
+
+  it("recognizes the other wordings", () => {
+    expect(requiredProgram(["! Fatal Package unicode-math Error: Cannot be run with pdfLaTeX!"])).toBe("xelatex");
+    expect(requiredProgram(["! Package luacode Error: LuaTeX is required for this package. Aborting."])).toBe("lualatex");
+    expect(requiredProgram(["! Package polyglossia Error: This package must be run with XeLaTeX or LuaLaTeX."])).toBe("xelatex");
+    expect(requiredProgram(["! Package fontspec Error: requires xelatex"])).toBe("xelatex");
+    expect(isEngineSpecificFailure(["! Fatal Package unicode-math Error: Cannot be run with pdfLaTeX!"])).toBe(true);
+    expect(requiredProgram(["! Undefined control sequence."])).toBeUndefined();
+  });
+});
+
+describe("TeX program per project", () => {
+  it("reads % !TEX program magic comments", () => {
+    expect(magicProgram("% !TEX program = xelatex\n\\documentclass{article}")).toBe("xelatex");
+    expect(magicProgram("%!TeX TS-program = LuaLaTeX\n")).toBe("lualatex");
+    expect(magicProgram("% !TEX program=pdflatex")).toBe("pdflatex");
+    expect(magicProgram("\\documentclass{article}\n% just a comment")).toBeUndefined();
+    expect(magicProgram("% !TEX program = context")).toBeUndefined();
+  });
+
+  it("prefers the magic comment, then the Overleaf compiler, then pdflatex", () => {
+    const dir = mkdtempSync(join(tmpdir(), "blattbot-program-"));
+    try {
+      writeFileSync(join(dir, "main.tex"), "% !TEX program = lualatex\n\\documentclass{article}\n");
+      writeFileSync(join(dir, "plain.tex"), "\\documentclass{article}\n");
+      expect(resolveTexProgram(dir, "main.tex", "xelatex")).toEqual({ program: "lualatex", source: "magic comment" });
+      expect(resolveTexProgram(dir, "plain.tex", "xelatex")).toEqual({ program: "xelatex", source: "Overleaf" });
+      expect(resolveTexProgram(dir, "plain.tex", "latex")).toEqual({ program: "latex", source: "Overleaf" });
+      expect(resolveTexProgram(dir, "plain.tex", undefined)).toEqual({ program: "pdflatex", source: "default" });
+      expect(resolveTexProgram(dir, "plain.tex", "nonsense")).toEqual({ program: "pdflatex", source: "default" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("orders the engines for the program", () => {
+    expect(compileOrder("pdflatex")).toEqual(["latexmk", "pdflatex", "tectonic"]);
+    expect(compileOrder("xelatex")).toEqual(["latexmk", "xelatex", "tectonic"]);
+    // The "pdflatex" setting means: run the document's program directly.
+    expect(compileOrder("xelatex", "pdflatex")).toEqual(["xelatex", "latexmk", "tectonic"]);
+    expect(compileOrder("xelatex", "tectonic")).toEqual(["tectonic", "latexmk", "xelatex"]);
+    // tectonic is XeTeX-based: never first for a LuaLaTeX document.
+    expect(compileOrder("lualatex", "tectonic")).toEqual(["latexmk", "lualatex", "tectonic"]);
+    expect(compileOrder("latex")).toEqual(["latexmk", "tectonic"]);
   });
 });

@@ -15,6 +15,9 @@
  *   turn_end    {isError, costUsd?, inputTokens?, outputTokens?, model?,
  *                models?, contextTokens?, contextWindow?, durationMs?,
  *                interrupted?, result?}
+ *               turn-runner.ts adds the turn's checkpoint before it goes out:
+ *                {turnRef, beforeSha, afterSha, files, fileCount, additions,
+ *                 deletions} (see checkpoints.ts); broadcasts also carry chatId
  *   notice      {tone, text}                   informational line for the chat
  *                                             (rate limits, retries, compaction,
  *                                             refusals)
