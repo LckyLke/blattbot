@@ -231,7 +231,7 @@ describe("comment list", () => {
 describe("tracked-change pushes", () => {
   const LONG = Array.from({ length: 12 }, (_, i) => `Line ${i + 1} of the paper.`).join("\n") + "\n";
 
-  it("leaves the push unchanged when the setting is off: one splice, no meta", async () => {
+  it("sends a normal push without meta, one edit per changed region", async () => {
     seed("main.tex", LONG);
     const edited = LONG.replace("Line 2 of", "Line two of").replace("Line 11 of", "Line eleven of");
     const result = await pushEdit("main.tex", edited);
@@ -239,8 +239,21 @@ describe("tracked-change pushes", () => {
     expect(result.updatedInPlace).toEqual(["main.tex"]);
     expect(mock.otUpdates).toHaveLength(1);
     expect(mock.otUpdates[0].update).not.toHaveProperty("meta");
-    expect(mock.otUpdates[0].update.op).toEqual(computeTextOp(LONG, edited));
+    expect(mock.otUpdates[0].update.op).toEqual(computeTextOpHunks(LONG, edited));
+    expect(mock.otUpdates[0].update.op).not.toEqual(computeTextOp(LONG, edited));
     expect(mock.files.get("main.tex")!.toString()).toBe(edited);
+  });
+
+  it("keeps a comment between two edits of a normal push", async () => {
+    seed("main.tex", LONG);
+    mock.addComment("main.tex", "Line 6 of the paper.", [{ content: "Check this claim.", user: ALICE }]);
+    const edited = LONG.replace("Line 2 of", "Line two of").replace("Line 11 of", "Line eleven of");
+    await pushEdit("main.tex", edited);
+    const doc = await joinByPath("main.tex");
+    const comments = doc.ranges.comments;
+    expect(comments).toHaveLength(1);
+    expect(comments[0].quote).toBe("Line 6 of the paper.");
+    expect(edited.slice(comments[0].offset, comments[0].offset + comments[0].quote.length)).toBe("Line 6 of the paper.");
   });
 
   it("sends meta.tc with one change per edited region and confirms Overleaf recorded it", async () => {

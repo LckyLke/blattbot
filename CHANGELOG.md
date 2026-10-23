@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed: a push to Overleaf replaced everything from the first changed character to the last in one edit, so a co-author's comment on untouched text between two of your edits could lose its anchor. Pushes now send one edit per changed region, and comments outside the changed text keep their place.
 - New **History** tab: a timeline of every sync from Overleaf (or the git remote) and every approval, grouped by day, with author, changed files and each commit's diff. Filter by **From Overleaf** (what co-authors changed) or **Pushed by me**; a badge counts incoming changes since you last looked.
 - **Revert** a push from History: its reverse becomes new pending changes in Proof (later edits are kept; overlapping ones get conflict markers and are listed), and you approve it like any other change. Nothing is committed or pushed directly, merge commits are refused, and an approval that still contains the revert's conflict markers is refused.
 - The Overleaf versions backed up by **Overwrite Overleaf** are listed under History → Overleaf backups, where you can view or download them.

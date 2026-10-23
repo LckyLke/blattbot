@@ -12,7 +12,7 @@ import * as git from "../git.js";
 import { CONFLICT_LABELS, describeConflict, type RemoteConflict } from "../conflicts.js";
 import { mergeText } from "../merge.js";
 import { generateIdSeed, type OverleafClient, type OlDocSnapshot, type OlRealtimeSession, type ProjectTree } from "./olclient.js";
-import { computeTextOp, computeTextOpHunks, historyTextOperation } from "./ot.js";
+import { computeTextOpHunks, historyTextOperation } from "./ot.js";
 import { projectMetaFromTree, type OverleafProjectMeta } from "./metadata.js";
 
 export interface SyncInResult {
@@ -490,7 +490,10 @@ async function applyChanges(
         seeds.push(tc);
         await s.applyOtUpdate(docId, computeTextOpHunks(text, target), live.version, { tc });
       } else {
-        await s.applyOtUpdate(docId, computeTextOp(text, target), live.version);
+        // One edit per changed region (not one splice from the first change
+        // to the last), so comments anchored in untouched text between two
+        // edits keep their range.
+        await s.applyOtUpdate(docId, computeTextOpHunks(text, target), live.version);
       }
     };
     try {
