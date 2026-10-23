@@ -17,6 +17,8 @@ export interface Project {
   lastSyncAt?: string;
   /** Overleaf projects: Overleaf's lastUpdated as of the last sync or push. */
   remoteLastUpdated?: string;
+  /** The compiler set in the Overleaf project (read on sync and push). */
+  overleafCompiler?: "pdflatex" | "xelatex" | "lualatex" | "latex";
 }
 
 /** Cumulative agent usage of a project (cost known only on the Claude backend). */
@@ -374,6 +376,8 @@ export interface ProjectSettings {
   model?: string;
   /** Mode preselected for new chats in this project ("" = Edit). */
   defaultMode?: string;
+  /** Overleaf projects: push in-place edits as tracked changes (experimental). */
+  trackChanges?: boolean;
   /** The model a turn on THIS project runs: override → global, aliases resolved. */
   resolvedModel: string;
 }
@@ -519,7 +523,7 @@ export function ensureAuth(): Promise<void> {
   return authReady;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   await ensureAuth();
   const res = await fetch(appUrl(path), {
     ...init,
@@ -895,7 +899,7 @@ export const api = {
   projectSettings: (id: string) => request<ProjectSettings>(`/api/projects/${id}/settings`),
   saveProjectSettings: (
     id: string,
-    patch: { styleAppend?: string; model?: string; defaultMode?: string },
+    patch: { styleAppend?: string; model?: string; defaultMode?: string; trackChanges?: boolean },
   ) =>
     request<ProjectSettings>(`/api/projects/${id}/settings`, {
       method: "PUT",

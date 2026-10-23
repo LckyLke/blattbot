@@ -55,6 +55,7 @@ import {
 import { merge3 } from "../merge3";
 import { isFileSaving, notifyEditors, startFileSave, subscribeEditors } from "../editor-sync";
 import { useDialog } from "./Dialog";
+import OverleafComments from "./OverleafComments";
 
 interface Props {
   projectId: string;
@@ -76,6 +77,8 @@ interface Props {
   onQuoteToChat?: (text: string, source: string) => void;
   /** A focused editor inside Proof, without the file tree. */
   embedded?: { path: string; line: number };
+  /** An Overleaf project: the header offers the co-authors' review comments. */
+  overleaf?: boolean;
 }
 
 interface DirNode {
@@ -688,7 +691,7 @@ const CONFLICT_MARK = "<<<<<<< yours";
  */
 let handledRevealNonce = -1;
 
-export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded }: Props) {
+export default function SourcePanel({ projectId, files, mainTex, stamp, busy, onDiff, onSaved, reveal, chatVisible, onQuoteToChat, embedded, overleaf }: Props) {
   const dialog = useDialog();
   const tree = useMemo(() => buildTree(files), [files]);
   const [sel, setSel] = useState<string | null>(null);
@@ -1200,19 +1203,23 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
     });
   }, [wrap, comp]);
 
-  // Reveal requests: select the file (a draft in the current one stays
-  // stashed), then jump once loaded.
+  /** Select `file` (a draft in the current one stays stashed), then jump to `line` once loaded. */
+  const jumpTo = (file: string, line: number) => {
+    pendingReveal.current = { file, line };
+    if (file !== selRef.current) {
+      setSaveErr(null);
+      rememberOpenFile(projRef.current, file);
+      setSel(file);
+    } else if (viewRef.current && docPathRef.current === file) {
+      applyPendingReveal(viewRef.current);
+    }
+  };
+
+  // Reveal requests from elsewhere in the app.
   useEffect(() => {
     if (!reveal || reveal.nonce === handledRevealNonce) return;
     handledRevealNonce = reveal.nonce;
-    pendingReveal.current = { file: reveal.file, line: reveal.line };
-    if (reveal.file !== selRef.current) {
-      setSaveErr(null);
-      rememberOpenFile(projRef.current, reveal.file);
-      setSel(reveal.file);
-    } else if (viewRef.current && docPathRef.current === reveal.file) {
-      applyPendingReveal(viewRef.current);
-    }
+    jumpTo(reveal.file, reveal.line);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
 
@@ -1339,6 +1346,7 @@ export default function SourcePanel({ projectId, files, mainTex, stamp, busy, on
               {dirty && <span className="ml-1.5 align-middle text-gold">●</span>}
             </span>
             <span className="ml-auto flex flex-wrap items-center gap-1.5">
+              {overleaf && !embedded && <OverleafComments projectId={projectId} stamp={stamp} files={files} onJump={jumpTo} />}
               {saveErr && <span className="text-[11px] text-pencil">{saveErr}</span>}
               {dirty && diskChanged && (
                 <span

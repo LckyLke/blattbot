@@ -1,6 +1,9 @@
 import { useModelList } from "../models";
 import { useEffect, useState } from "react";
 import { api, type Project, type ProjectSettings as ProjectSettingsData } from "../api";
+import SharedInstructionsSettings from "./SharedInstructionsSettings";
+
+const COMPILER_LABELS: Record<string, string> = { pdflatex: "pdfLaTeX", xelatex: "XeLaTeX", lualatex: "LuaLaTeX", latex: "LaTeX" };
 
 interface Props {
   project: Project;
@@ -30,6 +33,9 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
   const [style, setStyle] = useState("");
   const [model, setModel] = useState("");
   const [defaultMode, setDefaultMode] = useState("");
+  const [trackChanges, setTrackChanges] = useState(false);
+  /** The instructions as last saved (blattbot.md is created from these). */
+  const [savedStyle, setSavedStyle] = useState("");
   const [saving, setSaving] = useState(false);
   const modelList = useModelList();
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
@@ -40,6 +46,8 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
       .projectSettings(project.id)
       .then((s) => {
         setStyle(s.styleAppend ?? "");
+        setSavedStyle(s.styleAppend ?? "");
+        setTrackChanges(s.trackChanges === true);
         setModel(s.model ?? "");
         setDefaultMode(s.defaultMode ?? "");
       })
@@ -64,7 +72,9 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
         styleAppend: style,
         model: model.trim(),
         defaultMode,
+        ...(project.kind === "overleaf" ? { trackChanges } : {}),
       });
+      setSavedStyle(next.styleAppend ?? "");
       onSaved(next);
       setSavedMsg("Saved.");
       setTimeout(() => setSavedMsg(null), 2000);
@@ -160,6 +170,34 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                 </select>
               </label>
 
+              {project.kind === "overleaf" && (
+                <div className="mt-3">
+                  <label className="flex items-start gap-2 text-[12px] text-paper-dim">
+                    <input
+                      type="checkbox"
+                      checked={trackChanges}
+                      onChange={(e) => setTrackChanges(e.target.checked)}
+                      className="mt-0.5 accent-[var(--color-leaf)]"
+                    />
+                    <span>
+                      Push changes to Overleaf as tracked changes{" "}
+                      <span className="rounded border border-gold/40 px-1 text-[10px] uppercase tracking-wide text-gold">experimental</span>
+                      <span className="mt-0.5 block text-[11px] leading-snug text-graphite">
+                        Co-authors can then accept or reject each approved edit in Overleaf's review panel. Needs review
+                        permission on the project; new files, uploads and deletions cannot be tracked. Not every Overleaf
+                        instance records them — BlattBot checks after each push and warns if it did not.
+                      </span>
+                    </span>
+                  </label>
+                  {project.overleafCompiler && (
+                    <p className="mt-2 text-[11px] text-graphite">
+                      Overleaf compiler: {COMPILER_LABELS[project.overleafCompiler] ?? project.overleafCompiler}
+                      {project.mainTex ? ` · main document: ${project.mainTex}` : ""}
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="mt-4 flex items-center gap-3">
                 {savedMsg && <span className="text-[12px] text-leaf">{savedMsg}</span>}
                 <button
@@ -171,6 +209,8 @@ export default function ProjectSettings({ project, onClose, onSaved }: Props) {
                   {saving ? "Saving…" : "Save"}
                 </button>
               </div>
+
+              <SharedInstructionsSettings projectId={project.id} savedStyle={savedStyle} styleDirty={style !== savedStyle} />
             </>
           )}
         </div>

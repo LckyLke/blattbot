@@ -21,6 +21,7 @@ const SCRIPTS = [
   "file-mentions-ui",
   "graph-explorer",
   "history-ui",
+  "overleaf-review-ui",
   "pdf-links-ui",
   "refs-cleanup-ui",
   "research-ui",

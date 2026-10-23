@@ -563,11 +563,15 @@ function AppShell() {
           dirtySinceCompile.current = true;
           setSourceStamp((s) => s + 1);
           break;
+        case "project_updated":
+          // Overleaf's compiler or main document changed the project record.
+          void refreshProjects();
+          break;
         default:
           break;
       }
     },
-    [flushDelta, refreshDetail, refreshChats, selectedId, acceptCompile],
+    [flushDelta, refreshDetail, refreshChats, selectedId, acceptCompile, refreshProjects],
   );
 
   const handleEventRef = useRef(handleEvent);
@@ -1567,6 +1571,7 @@ function AppShell() {
             onQuoteToChat={quoteToChat}
             onSaved={handleSourceSaved}
             reveal={sourceReveal}
+            overleaf={selected!.kind === "overleaf"}
           />
         );
       case "pdf":

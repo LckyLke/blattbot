@@ -294,6 +294,7 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__blattbot__inspect_repository: "Inspecting repository",
   mcp__blattbot__verify_code_claim: "Checking claim against code",
   mcp__blattbot__list_code_evidence: "Reading code assessments",
+  mcp__blattbot__list_overleaf_comments: "Reading Overleaf comments",
 };
 
 function toolLabel(name: string): string {

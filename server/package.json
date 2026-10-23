@@ -53,6 +53,7 @@
     "test:history-ui": "tsx scripts/history-ui-verify.ts",
     "test:refs-cleanup-ui": "tsx scripts/refs-cleanup-ui-verify.ts",
     "test:graph-explorer-ui": "tsx scripts/graph-explorer-verify.ts",
+    "test:overleaf-review-ui": "tsx scripts/overleaf-review-ui-verify.ts",
     "verify:ui": "tsx scripts/verify-ui.ts",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
