@@ -464,8 +464,8 @@ export class OverleafClient {
    * as Overleaf asks (Retry-After, capped) for up to ZIP_RATE_LIMIT_WAIT_MS
    * in total before giving up with a clear message.
    */
-  async downloadZip(projectId: string): Promise<Buffer> {
-    const deadline = Date.now() + ZIP_RATE_LIMIT_WAIT_MS;
+  async downloadZip(projectId: string, opts: { rateLimitWaitMs?: number } = {}): Promise<Buffer> {
+    const deadline = Date.now() + (opts.rateLimitWaitMs ?? ZIP_RATE_LIMIT_WAIT_MS);
     let res: Response;
     for (let attempt = 0; ; attempt++) {
       res = await this.fetchChecked(`/project/${projectId}/download/zip`, {

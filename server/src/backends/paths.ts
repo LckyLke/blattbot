@@ -98,7 +98,11 @@ export function scopeRefusal(dir: string, abs: string, scope?: string[]): string
 
 /** The path a tool result or chat summary shows: relative when inside the project. */
 export function displayPath(dir: string, abs: string): string {
-  return isInside(abs, dir) && abs !== dir ? abs.slice(dir.length + 1) : abs;
+  // Project-relative paths always use "/" (the agent and the chat see the
+  // same path on Windows), compared against the resolved root.
+  const root = resolve(dir);
+  const full = resolve(abs);
+  return isInside(full, root) && full !== root ? full.slice(root.length + 1).split(sep).join("/") : abs;
 }
 
 /** Refuse symlinks below an allowed root, including dangling links and

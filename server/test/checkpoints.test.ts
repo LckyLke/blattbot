@@ -21,6 +21,7 @@ beforeEach(() => {
   git("init", "-q", "-b", "main");
   git("config", "user.name", "Test");
   git("config", "user.email", "test@example.org");
+  git("config", "core.autocrlf", "false"); // like BlattBot's own repos (git.initRepo)
   write("main.tex", lines(10));
   write(".gitignore", "*.aux\n");
   git("add", "-A");

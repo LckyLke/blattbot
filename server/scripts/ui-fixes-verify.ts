@@ -244,6 +244,9 @@ try {
   await blur();
   await page.keyboard.press("c");
   await page.waitForFunction(() => document.activeElement?.classList.contains("chat-composer-input") ?? false);
+  // Nothing takes the focus back a moment later (a hidden pane must not).
+  await page.waitForTimeout(1500);
+  assert(await page.evaluate(() => document.activeElement?.classList.contains("chat-composer-input")), "the composer keeps focus");
   // Typing in the composer is never a shortcut.
   await page.keyboard.type("1j");
   assert.equal(await page.locator("textarea.chat-composer-input").inputValue(), "1j");

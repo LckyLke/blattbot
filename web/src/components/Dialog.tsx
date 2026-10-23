@@ -66,6 +66,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const bodyId = useId();
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const primaryRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const push = useCallback((p: Pending) => setQueue((q) => [...q, p]), []);
 
@@ -77,7 +78,17 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     if (head.kind === "confirm") head.resolve(ok);
     else head.resolve();
     const el = head.restoreTo;
-    if (el && el.isConnected) setTimeout(() => el.focus(), 0);
+    const closing = dialogRef.current;
+    // Put focus back where it was, unless something else took it meanwhile
+    // (a shortcut pressed right after closing, or the next dialog's button).
+    if (el && el.isConnected) {
+      setTimeout(() => {
+        if (queueRef.current.length > 0) return; // the next dialog has the focus
+        const active = document.activeElement;
+        const dropped = !active || active === document.body || !active.isConnected || Boolean(closing?.contains(active));
+        if (dropped) el.focus();
+      }, 0);
+    }
   }, []);
 
   const api = useMemo<DialogApi>(() => {
@@ -136,6 +147,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
           }}
         >
           <div
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}

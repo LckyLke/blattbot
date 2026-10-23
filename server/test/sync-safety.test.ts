@@ -768,26 +768,21 @@ describe("sync safety (remote drift, conflicts, selective merge)", () => {
     });
 
     it("gives up with a clear message when the limit lasts too long", async () => {
-      const { OverleafClient } = await import("../src/overleaf/olclient.js");
+      const { OverleafClient, ZIP_RATE_LIMIT_WAIT_MS } = await import("../src/overleaf/olclient.js");
+      expect(ZIP_RATE_LIMIT_WAIT_MS).toBeGreaterThan(60_000);
       const client = new OverleafClient(BASE, COOKIE);
-      // Overleaf keeps refusing and asks for 30 s each time. Waits run at once
-      // here, while the clock moves 30 s per wait: after about a minute of
-      // (simulated) waiting, downloadZip gives up.
+      // Overleaf keeps refusing and asks for 2 s; with a 1 s budget the first
+      // wait would already pass the deadline, so it gives up at once.
       mock.zipRateLimited = 1000;
-      mock.zipRetryAfter = "30";
-      let clock = Date.now();
-      const realTimeout = globalThis.setTimeout;
-      vi.spyOn(Date, "now").mockImplementation(() => clock);
-      vi.stubGlobal("setTimeout", ((fn: () => void, ms?: number) => {
-        clock += ms ?? 0;
-        return realTimeout(fn, 0);
-      }) as typeof setTimeout);
+      mock.zipRetryAfter = "2";
+      const started = Date.now();
       try {
-        await expect(client.downloadZip(REMOTE_ID)).rejects.toThrow(/limits project downloads to 10 per minute/);
-        expect(1000 - mock.zipRateLimited).toBeLessThanOrEqual(4);
+        await expect(client.downloadZip(REMOTE_ID, { rateLimitWaitMs: 1000 })).rejects.toThrow(
+          /limits project downloads to 10 per minute/,
+        );
+        expect(1000 - mock.zipRateLimited).toBe(1);
+        expect(Date.now() - started).toBeLessThan(1000);
       } finally {
-        vi.restoreAllMocks();
-        vi.unstubAllGlobals();
         mock.zipRateLimited = 0;
         mock.zipRetryAfter = "1";
       }

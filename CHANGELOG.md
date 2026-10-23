@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed: closing a dialog put the focus back where it was opened a moment later, even when you had already moved on (for example with a keyboard shortcut right after Cancel), so the next keys went to the wrong place.
+- Fixed (Windows): file paths in agent tool results and chat summaries used backslashes; they now always use "/", like on macOS and Linux.
 - Checked against a real Overleaf Community Edition (new `npm run test:overleaf-ce --workspace=server` and a weekly CI job that starts CE in Docker). It found and fixed:
   - Overleaf's project list "last modified" time does not move while a co-author types (not even minutes later), so the "Overleaf changed" notice and the pre-turn sync shortcut could miss live edits. Both now use Overleaf's project-history version, which moves with every edit.
   - Overleaf allows 10 project downloads per minute; a burst of syncs and approvals failed with "HTTP 429". BlattBot now waits as Overleaf asks (up to about a minute) and then explains the limit.
