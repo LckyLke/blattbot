@@ -124,7 +124,10 @@ export async function workingDiff(dir: string): Promise<string> {
 }
 
 export async function hasChanges(dir: string): Promise<boolean> {
-  const status = await git(dir, "status", "--porcelain");
+  // No optional locks: the project detail route calls this outside the
+  // project lock, and status would otherwise take .git/index.lock to refresh
+  // the index — failing a sync or approve running at the same moment.
+  const status = await gitWithEnv(dir, { GIT_OPTIONAL_LOCKS: "0" }, ["status", "--porcelain"]);
   return status.trim().length > 0;
 }
 
@@ -371,6 +374,97 @@ export async function archiveZip(dir: string, rev = "HEAD"): Promise<Buffer> {
       `git archive --format=zip ${rev}`,
     );
   }
+}
+
+/** `git <args>` with `input` on stdin; resolves stdout. */
+async function gitInput(dir: string, args: string[], input: Buffer, extraEnv: Record<string, string> = {}): Promise<string> {
+  return new Promise<string>((resolvePromise, rejectPromise) => {
+    const child = execFile(
+      "git",
+      args,
+      {
+        cwd: dir,
+        maxBuffer: 64 * 1024 * 1024,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "true", ...extraEnv },
+      },
+      (err: any, stdout, stderr) => {
+        if (err) {
+          rejectPromise(new GitError(`git ${args[0]} failed: ${String(stderr ?? err.message).trim()}`, String(stderr ?? ""), `git ${args.join(" ")}`));
+        } else {
+          resolvePromise(String(stdout));
+        }
+      },
+    );
+    child.stdin!.end(input);
+  });
+}
+
+/** Store `content` as a blob in the repository; returns its object id. */
+export async function hashObject(dir: string, content: Buffer): Promise<string> {
+  return (await gitInput(dir, ["hash-object", "-w", "--stdin"], content)).trim();
+}
+
+/**
+ * Point index entries at new contents (null = remove the entry). The
+ * worktree is not touched. `indexFile` selects another index than the
+ * repository's own (GIT_INDEX_FILE).
+ */
+export async function setIndexContents(
+  dir: string,
+  contents: Map<string, Buffer | null>,
+  indexFile?: string,
+): Promise<void> {
+  if (contents.size === 0) return;
+  const env: Record<string, string> = indexFile ? { GIT_INDEX_FILE: indexFile } : {};
+  const modes = new Map<string, string>();
+  const tree = await gitLiteral(dir, "ls-tree", "-z", "HEAD", "--", ...contents.keys()).catch(() => "");
+  for (const record of tree.split("\0")) {
+    const m = /^(\d+) blob [0-9a-f]+\t(.+)$/s.exec(record);
+    if (m) modes.set(m[2], m[1]);
+  }
+  const records: string[] = [];
+  let zero = "";
+  // Removals first: a file replaced by a directory of the same name must be
+  // gone before entries under it are added.
+  const ordered = [...contents].sort(([, a], [, b]) => Number(a !== null) - Number(b !== null));
+  for (const [path, content] of ordered) {
+    if (content === null) {
+      // Mode 0 removes the entry; the null id must have the repository's hash length.
+      zero ||= "0".repeat((await revParse(dir, "HEAD")).length);
+      records.push(`0 ${zero}\t${path}`);
+    } else {
+      records.push(`${modes.get(path) ?? "100644"} ${await hashObject(dir, content)}\t${path}`);
+    }
+  }
+  await gitInput(dir, ["update-index", "-z", "--index-info"], Buffer.from(records.join("\0") + "\0"), env);
+}
+
+/**
+ * Commit new contents for some paths on top of HEAD (null = delete) without
+ * touching the worktree or the index: a temporary index builds the tree.
+ * Returns false when the contents already match HEAD.
+ */
+export async function commitContents(dir: string, message: string, contents: Map<string, Buffer | null>): Promise<boolean> {
+  if (contents.size === 0) return false;
+  const gitDir = (await git(dir, "rev-parse", "--absolute-git-dir")).trim();
+  const indexFile = join(gitDir, `blattbot-index-${process.pid}-${Date.now()}`);
+  try {
+    await gitWithEnv(dir, { GIT_INDEX_FILE: indexFile }, ["read-tree", "HEAD"]);
+    await setIndexContents(dir, contents, indexFile);
+    const tree = (await gitWithEnv(dir, { GIT_INDEX_FILE: indexFile }, ["write-tree"])).trim();
+    const parent = await revParse(dir, "HEAD");
+    if (tree === (await revParse(dir, "HEAD^{tree}"))) return false;
+    const commit = (await git(dir, "commit-tree", tree, "-p", parent, "-m", message)).trim();
+    await git(dir, "update-ref", "HEAD", commit, parent);
+    return true;
+  } finally {
+    rmSync(indexFile, { force: true });
+  }
+}
+
+/** Reset the index entries of these paths to HEAD; the worktree is untouched. */
+export async function resetIndexPaths(dir: string, paths: string[]): Promise<void> {
+  if (paths.length > 0) await gitLiteral(dir, "reset", "-q", "--", ...paths);
 }
 
 export async function diffNameStatus(dir: string, fromRef: string, toRef: string): Promise<string> {

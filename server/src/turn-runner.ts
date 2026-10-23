@@ -96,15 +96,47 @@ export function startTurn(project: Project, request: TurnRequest): void {
       // Pick up collaborator edits before the agent touches anything. Taking
       // the lock here also makes the agent wait for an approve or sync that
       // was already running when this message arrived.
+      // Quick: when Overleaf's project list shows no change since the last
+      // full sync, one list request replaces the project download.
       try {
-        const result = await withProjectLock(project.id, () => sync.syncIn(project));
+        const result = await withProjectLock(project.id, () => sync.syncIn(project, { quick: true }));
         if (result.detail) {
-          broadcast(project.id, { type: "sync_warning", message: result.detail, failed: false, drift: result.drift });
+          broadcast(project.id, {
+            type: "sync_warning",
+            message: result.detail,
+            failed: false,
+            drift: result.drift,
+            conflicts: result.conflicts,
+          });
           persist({ type: "notice", tone: "warn", text: `Sync: ${result.detail}` });
+        }
+        // The open views learn which Overleaf state the mirror now holds, so
+        // their "Overleaf changed" check does not fire for it.
+        if (!result.skipped && result.remoteLastUpdated) {
+          broadcast(project.id, { type: "remote_seen", lastSyncAt: result.lastSyncAt, remoteLastUpdated: result.remoteLastUpdated });
         }
       } catch (err: any) {
         broadcast(project.id, { type: "sync_warning", message: err.message, failed: true });
         persist({ type: "notice", tone: "warn", text: `Sync: ${err.message}` });
+      }
+      // Git bridge: a sync that hit conflicts leaves <<<<<<< markers in the
+      // files. The agent must never edit on top of them.
+      const marked = await withProjectLock(project.id, () => sync.conflictMarkerPaths(project)).catch(() => [] as string[]);
+      if (marked.length > 0) {
+        const blocked = {
+          type: "notice",
+          tone: "error",
+          text:
+            `Not started: ${marked.join(", ")} still ${marked.length === 1 ? "contains" : "contain"} Git conflict markers (<<<<<<<) from a sync. ` +
+            "Resolve them in Source (or discard those files in Proof), then send your message again.",
+        };
+        broadcast(project.id, blocked);
+        persist(blocked);
+        const end = { type: "turn_end", isError: true };
+        broadcast(project.id, end);
+        persist(end);
+        turnEnded = true;
+        return;
       }
       // Wrap the sink so edits stream a live diff and per-edit file diffs mid-turn;
       // persistence taps the enriched events (tool_result carries its fileDiff).

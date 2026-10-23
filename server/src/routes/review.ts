@@ -30,14 +30,22 @@ export function registerReviewRoutes(app: FastifyInstance): void {
         type: "synced",
         detail: result.detail,
         merged: result.merged,
+        rebased: result.rebased,
         drift: result.drift,
+        conflicts: result.conflicts,
+        lastSyncAt: result.lastSyncAt,
+        remoteLastUpdated: result.remoteLastUpdated,
       });
       return {
         ok: true,
         output: result.detail ?? "",
         changed: result.changed ?? false,
         merged: result.merged ?? [],
+        rebased: result.rebased ?? [],
         drift: result.drift ?? [],
+        conflicts: result.conflicts ?? [],
+        ...(result.lastSyncAt ? { lastSyncAt: result.lastSyncAt } : {}),
+        ...(result.remoteLastUpdated ? { remoteLastUpdated: result.remoteLastUpdated } : {}),
       };
     } catch (err: any) {
       return reply.code(422).send({ error: err.message });
@@ -82,7 +90,7 @@ export function registerReviewRoutes(app: FastifyInstance): void {
 
   app.post<{
     Params: { id: string };
-    Body: { message?: string; force?: boolean; selection?: { files?: unknown; patches?: unknown } };
+    Body: { message?: string; force?: boolean; forcePaths?: unknown; selection?: { files?: unknown; patches?: unknown } };
   }>(
     "/api/projects/:id/approve",
     async (req, reply) => {
@@ -92,18 +100,27 @@ export function registerReviewRoutes(app: FastifyInstance): void {
       const message = req.body?.message?.trim() || "BlattBot edit";
       // Partial approval: whole files and/or single hunks of the working diff.
       let selection: sync.ApproveSelection | undefined;
+      const strings = (v: unknown) => Array.isArray(v) && v.length <= 500 && v.every((x) => typeof x === "string" && x.length > 0);
       if (req.body?.selection !== undefined) {
-        const strings = (v: unknown) => Array.isArray(v) && v.length <= 500 && v.every((x) => typeof x === "string" && x.length > 0);
         const { files = [], patches = [] } = req.body.selection ?? {};
         if (!strings(files) || !strings(patches)) {
           return reply.code(400).send({ error: "selection must list files and/or patches" });
         }
         selection = { files: files as string[], patches: patches as string[] };
       }
+      // Overwrite Overleaf for these conflicting files only.
+      const forcePaths = req.body?.forcePaths;
+      if (forcePaths !== undefined && !strings(forcePaths)) {
+        return reply.code(400).send({ error: "forcePaths must list files" });
+      }
       const dir = projectDir(project.id);
       try {
         const { result, remaining } = await withProjectLock(project.id, async () => {
-          const result = await sync.approve(project, message, { force: req.body?.force === true, selection });
+          const result = await sync.approve(project, message, {
+            force: req.body?.force === true,
+            forcePaths: forcePaths as string[] | undefined,
+            selection,
+          });
           // What is still pending: the unapproved rest, or files that failed to upload.
           const remaining = selection || result.pending ? await git.workingDiff(dir) : null;
           return { result, remaining };
@@ -115,6 +132,10 @@ export function registerReviewRoutes(app: FastifyInstance): void {
           deleted: result.deleted,
           warnings: result.warnings,
           absorbedRemote: result.absorbedRemote,
+          mergedRemote: result.mergedRemote,
+          drift: result.drift,
+          conflicts: result.conflicts,
+          remoteLastUpdated: result.remoteLastUpdated,
           ...(selection ? { partial: true } : {}),
         });
         // "approved" clears the review; whatever is left stays in it.
