@@ -301,9 +301,10 @@ export function validateProjectSettingsPatch(body: unknown): Partial<ProjectSett
     if (typeof v !== "string") throw new Error(`${key} must be a string`);
     patch[key] = v;
   }
-  if (raw.trackChanges !== undefined) {
-    if (typeof raw.trackChanges !== "boolean") throw new Error("trackChanges must be true or false");
-    patch.trackChanges = raw.trackChanges;
+  for (const key of ["trackChanges", "labelPushes"] as const) {
+    if (raw[key] === undefined) continue;
+    if (typeof raw[key] !== "boolean") throw new Error(`${key} must be true or false`);
+    patch[key] = raw[key] as boolean;
   }
   if (patch.styleAppend !== undefined && patch.styleAppend.length > MAX_STYLE_APPEND) {
     throw new Error(`styleAppend is too long — the limit is ${MAX_STYLE_APPEND} characters`);

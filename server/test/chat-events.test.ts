@@ -115,6 +115,12 @@ describe("applyChatEvent", () => {
     expect(live([{ type: "approved" }], "git")[0]).toMatchObject({ text: "Nothing to push." });
     // Several items from one event still get distinct identities.
     expect(new Set(live([ev], "overleaf").map((it) => it.uid)).size).toBe(3);
+    const labelled = { type: "approved", pushed: true, historyLabel: "Agent: edit (BlattBot)" };
+    expect(withoutUid(live([labelled], "overleaf"))).toContainEqual({
+      kind: "notice",
+      tone: "info",
+      text: `Labelled in Overleaf's history: "Agent: edit (BlattBot)"`,
+    });
   });
 
   it("restores a persisted approval with its files and backup, worded by the event's project kind", () => {

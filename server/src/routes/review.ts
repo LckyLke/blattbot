@@ -141,6 +141,7 @@ export function registerReviewRoutes(app: FastifyInstance): void {
           drift: result.drift,
           conflicts: result.conflicts,
           remoteLastUpdated: result.remoteLastUpdated,
+          ...(result.historyLabel ? { historyLabel: result.historyLabel } : {}),
           ...(selection ? { partial: true } : {}),
           projectKind: project.kind,
           ...notes,

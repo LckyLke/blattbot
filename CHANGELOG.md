@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Website: removed the walkthrough and sections for the retired Evidence, strict-mode, literature-matrix and evaluation workflows, added a section on working with co-authors who stay in Overleaf, and corrected the Node requirement to 22.13+. The demo recorder no longer records the retired Evidence clip.
+- New option in Project settings for Overleaf projects: **Label each push in Overleaf's history**. After an approval, BlattBot adds a label with the commit message ("… (BlattBot)") to the pushed version in Overleaf's History view, so co-authors see what was pushed and can restore the version before it. A failed label is a warning; the push still counts. The Proof message field says when it becomes a label.
 - Fixed: a push to Overleaf replaced everything from the first changed character to the last in one edit, so a co-author's comment on untouched text between two of your edits could lose its anchor. Pushes now send one edit per changed region, and comments outside the changed text keep their place.
 - New **History** tab: a timeline of every sync from Overleaf (or the git remote) and every approval, grouped by day, with author, changed files and each commit's diff. Filter by **From Overleaf** (what co-authors changed) or **Pushed by me**; a badge counts incoming changes since you last looked.
 - **Revert** a push from History: its reverse becomes new pending changes in Proof (later edits are kept; overlapping ones get conflict markers and are listed), and you approve it like any other change. Nothing is committed or pushed directly, merge commits are refused, and an approval that still contains the revert's conflict markers is refused.

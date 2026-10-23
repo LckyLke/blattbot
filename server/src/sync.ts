@@ -18,6 +18,7 @@ import * as git from "./git.js";
 import { CONFLICT_LABELS, describeConflict, hasConflictMarkers, type RemoteConflict } from "./conflicts.js";
 import { looksBinary, mergeText } from "./merge.js";
 import { OverleafAuthError, OverleafClient, type RemoteCompileResult } from "./overleaf/olclient.js";
+import { labelPush } from "./overleaf/labels.js";
 import {
   applyRemoteVersions,
   mergeRemoteChanges,
@@ -304,6 +305,8 @@ export interface ApproveResult {
   pending?: string[];
   /** Overleaf's lastUpdated re-read after the push. */
   remoteLastUpdated?: string;
+  /** The label added to Overleaf's history for this push (Project settings → label pushes). */
+  historyLabel?: string;
 }
 
 export interface ApproveOptions {
@@ -613,6 +616,15 @@ export async function approve(
       await git.commitStagedExcept(dir, message, failed, await git.approverIdentity());
     }
     const absorbWarn = await absorb();
+    // Opt-in: name the pushed version in Overleaf's history for co-authors.
+    let historyLabel: string | undefined;
+    if (project.settings?.labelPushes === true && (pushed.uploaded.length > 0 || pushed.deleted.length > 0)) {
+      try {
+        historyLabel = (await withSession(project, (client) => labelPush(client, project.overleafProjectId!, message))).comment;
+      } catch (err: any) {
+        warnings.push(`The push reached Overleaf, but labelling it in Overleaf's history failed (${err?.message ?? err})`);
+      }
+    }
     // Our own push must not read as a co-author's change: re-read Overleaf's
     // lastUpdated now. (The next quick sync still downloads in full: HEAD
     // moved, so the recorded tree no longer matches.)
@@ -630,6 +642,7 @@ export async function approve(
       ...remoteOutcome(),
       ...(failed.length > 0 ? { pending: failed } : {}),
       ...(remoteLastUpdated ? { remoteLastUpdated } : {}),
+      ...(historyLabel ? { historyLabel } : {}),
     };
   }
   await moveRemoteCredentials(project);

@@ -422,6 +422,8 @@ export interface ProjectSettings {
   defaultMode?: string;
   /** Overleaf projects: push in-place edits as tracked changes (experimental). */
   trackChanges?: boolean;
+  /** Overleaf projects: label each push in Overleaf's project history. */
+  labelPushes?: boolean;
   /** The model a turn on THIS project runs: override → global, aliases resolved. */
   resolvedModel: string;
 }
@@ -990,7 +992,7 @@ export const api = {
   projectSettings: (id: string) => request<ProjectSettings>(`/api/projects/${id}/settings`),
   saveProjectSettings: (
     id: string,
-    patch: { styleAppend?: string; model?: string; defaultMode?: string; trackChanges?: boolean },
+    patch: { styleAppend?: string; model?: string; defaultMode?: string; trackChanges?: boolean; labelPushes?: boolean },
   ) =>
     request<ProjectSettings>(`/api/projects/${id}/settings`, {
       method: "PUT",

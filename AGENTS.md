@@ -6,7 +6,7 @@ Instructions for coding agents working in this repository. Human contributors: s
 
 BlattBot is a local app for agentic LaTeX editing on Overleaf projects, run with `npx blattbot`. npm workspaces:
 
-- `server/`: the published `blattbot` package. Fastify + TypeScript, ESM, `NodeNext` imports (write `./foo.js` for `foo.ts`). HTTP routes live in `server/src/index.ts` and `server/src/routes/`; Research routes in `server/src/research/routes.ts`. Agent harnesses in `server/src/backends/`, Overleaf sync in `server/src/overleaf/`. The CLI is `server/bin/blattbot.js` (plain JS over the compiled `server/dist/`).
+- `server/`: the published `blattbot` package. Fastify + TypeScript, ESM, `NodeNext` imports (write `./foo.js` for `foo.ts`). `server/src/index.ts` only bootstraps the app; HTTP routes live in `server/src/routes/` (one module per area, each exporting `registerXRoutes(app)`) and `server/src/research/routes.ts`. The agent-turn pipeline is `server/src/turn-runner.ts`. Agent harnesses are in `server/src/backends/`; every model tool is defined once in `server/src/backends/tools.ts`. Overleaf sync and push are in `server/src/sync.ts` and `server/src/overleaf/`; server-side three-way merges go through `server/src/merge.ts`. The CLI is `server/bin/blattbot.js` (plain JS over the compiled `server/dist/`).
 - `web/`: React + Vite frontend, served by the server.
 - `server/test/`: all unit tests, including web tests (`server/test/*.tsx` import from `web/src`).
 - `server/scripts/`: browser verify scripts, `mock-overleaf.ts` (in-memory Overleaf CE), e2e scripts.
@@ -37,3 +37,4 @@ npm run build --workspace=web && npm run verify:ui   # browser checks, no model,
 - Every user-visible change gets a bullet under `## Unreleased` in `CHANGELOG.md`.
 - Keep the diff focused. Do not reformat files you are not changing (Biome's formatter is off on purpose).
 - Never commit `.claude/settings.local.json` or other personal settings.
+- Keep the Overleaf promises: nothing reaches Overleaf without the user's approval, a push never overwrites a co-author's edit silently (merge line by line or refuse), and existing documents are edited in place so comments and tracked changes survive. `server/test/sync-safety.test.ts` and the mock in `server/scripts/mock-overleaf.ts` cover these; extend them when you touch sync or push.

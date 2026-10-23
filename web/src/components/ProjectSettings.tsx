@@ -37,6 +37,7 @@ export default function ProjectSettings({ project, onClose, onSaved, onMainFileC
   const [model, setModel] = useState("");
   const [defaultMode, setDefaultMode] = useState("");
   const [trackChanges, setTrackChanges] = useState(false);
+  const [labelPushes, setLabelPushes] = useState(false);
   /** The instructions as last saved (blattbot.md is created from these). */
   const [savedStyle, setSavedStyle] = useState("");
   const [saving, setSaving] = useState(false);
@@ -55,6 +56,7 @@ export default function ProjectSettings({ project, onClose, onSaved, onMainFileC
         setStyle(s.styleAppend ?? "");
         setSavedStyle(s.styleAppend ?? "");
         setTrackChanges(s.trackChanges === true);
+        setLabelPushes(s.labelPushes === true);
         setModel(s.model ?? "");
         setDefaultMode(s.defaultMode ?? "");
       })
@@ -87,7 +89,7 @@ export default function ProjectSettings({ project, onClose, onSaved, onMainFileC
         styleAppend: style,
         model: model.trim(),
         defaultMode,
-        ...(project.kind === "overleaf" ? { trackChanges } : {}),
+        ...(project.kind === "overleaf" ? { trackChanges, labelPushes } : {}),
       });
       setSavedStyle(next.styleAppend ?? "");
       onSaved(next);
@@ -233,6 +235,23 @@ export default function ProjectSettings({ project, onClose, onSaved, onMainFileC
                         Co-authors can then accept or reject each approved edit in Overleaf's review panel. Needs review
                         permission on the project; new files, uploads and deletions cannot be tracked. Not every Overleaf
                         instance records them — BlattBot checks after each push and warns if it did not.
+                      </span>
+                    </span>
+                  </label>
+                  <label className="mt-2 flex items-start gap-2 text-[12px] text-paper-dim">
+                    <input
+                      type="checkbox"
+                      checked={labelPushes}
+                      onChange={(e) => setLabelPushes(e.target.checked)}
+                      className="mt-0.5 accent-[var(--color-leaf)]"
+                    />
+                    <span>
+                      Label each push in Overleaf's history
+                      <span className="mt-0.5 block text-[11px] leading-snug text-graphite">
+                        Adds a label with the commit message (for example "Agent: tighten the intro (BlattBot)") to
+                        Overleaf's History view after each approval, so co-authors see what BlattBot pushed and can
+                        restore the version before it. If the label cannot be added, the push still counts and you get a
+                        warning.
                       </span>
                     </span>
                   </label>

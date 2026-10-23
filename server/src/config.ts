@@ -34,6 +34,8 @@ export interface ProjectSettings {
   defaultMode?: string;
   /** Overleaf projects: push in-place doc edits as tracked changes (experimental, default off). */
   trackChanges?: boolean;
+  /** Overleaf projects: label each push in Overleaf's project history (default off). */
+  labelPushes?: boolean;
 }
 
 /** The blattbot.md version the user confirmed for the agent (see shared-instructions.ts). */

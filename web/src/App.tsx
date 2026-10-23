@@ -1796,6 +1796,7 @@ function AppShell() {
             conflicts={approveConflicts}
             drift={syncDrift}
             projectKind={selected!.kind}
+            labelsPushes={projSettings?.labelPushes === true}
             reveal={proofReveal}
             projectId={selectedId!}
             sourceStamp={sourceStamp}
