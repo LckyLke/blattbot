@@ -94,7 +94,11 @@ export function scanBrowsers(baseUrl: string): BrowserScan {
   // De-dupe identical cookies from multiple profiles.
   const seen = new Set<string>();
   const found = candidates
-    .filter((c) => (seen.has(c.found.cookie) ? false : (seen.add(c.found.cookie), true)))
+    .filter((c) => {
+      if (seen.has(c.found.cookie)) return false;
+      seen.add(c.found.cookie);
+      return true;
+    })
     .map((c) => c.found);
   return { found, unreadable: [...unreadable] };
 }

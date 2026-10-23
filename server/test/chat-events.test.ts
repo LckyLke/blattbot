@@ -67,7 +67,7 @@ describe("applyChatEvent", () => {
   });
 
   it("settles question cards: answers kept when the echo carries none, dismissal, no duplicate cards", () => {
-    let items = live([{ type: "question", questionId: "q1", questions: [{ question: "A or B?", header: "Pick", options: [], multiSelect: false }] }]);
+    const items = live([{ type: "question", questionId: "q1", questions: [{ question: "A or B?", header: "Pick", options: [], multiSelect: false }] }]);
     expect(items[0]).toMatchObject({ uid: "q:q1", status: "pending" });
     // A re-broadcast (e.g. after a reconnect backfill) must not add a second card.
     expect(applyChatEvent(items, { type: "question", questionId: "q1", questions: [] }, { uid: "y" })).toBe(items);

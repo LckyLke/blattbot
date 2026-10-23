@@ -13,9 +13,11 @@ beforeEach(async () => {
   dir = cfg.projectDir(id); mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "refs.bib"), "@article{alpha,title={Paper Alpha}}\n@article{beta,title={Paper Beta}}\n@article{gamma,title={Paper Gamma}}");
 });
-afterEach(async () => { await Promise.all(workers.map(w => w.stop())); vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { await Promise.all(workers.map(w => w.stop())); vi.doUnmock("../src/research/library.js"); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
 async function make(run: ConstructorParameters<typeof ResearchJobs>[0]) { const { ResearchJobs } = await import("../src/research/jobs.js"); const worker = new ResearchJobs(run); workers.push(worker); return worker; }
 const tick = async () => { await Promise.resolve(); await Promise.resolve(); };
+/** The stub runners index nothing, so the library would report every source as still pending. */
+const indexedLibrary = () => vi.doMock("../src/research/library.js", async (original) => ({ ...await original<object>(), libraryStatus: () => ({ pending: [] }) }));
 describe("durable Research tasks", () => {
   it("automatically indexes existing sources and new bibliography additions", async () => {
     writeFileSync(join(dir, "refs.bib"), "@article{alpha,title={Paper Alpha}}");
@@ -69,10 +71,11 @@ describe("durable Research tasks", () => {
     } finally { time.mockRestore(); }
   });
   it("deduplicates active requests, checkpoints each source and retries only failed items", async () => {
+    indexedLibrary();
     const run = vi.fn(async (_id, _dir, _kind, key) => { if (key === "beta") throw new Error("Missing PDF"); });
     const worker = await make(run); const { listResearchJobs } = await import("../src/research/jobs.js");
-    const job = worker.create(id, { kind: "matrix", keys: ["alpha", "beta", "gamma"] });
-    expect(worker.create(id, { kind: "matrix", keys: ["alpha", "beta", "gamma"] }).id).toBe(job.id);
+    const job = worker.create(id, { kind: "library-index", keys: ["alpha", "beta", "gamma"] });
+    expect(worker.create(id, { kind: "library-index", keys: ["alpha", "beta", "gamma"] }).id).toBe(job.id);
     await worker.idle();
     expect(listResearchJobs(id)[0]).toMatchObject({ state: "failed", items: [{ key: "alpha", state: "done" }, { key: "beta", state: "error", error: "Missing PDF" }, { key: "gamma", state: "done" }] });
     run.mockImplementation(async () => {});
@@ -84,7 +87,7 @@ describe("durable Research tasks", () => {
     const { researchSignal, saveStore, readStore } = await import("../src/research/store.js");
     let release!: () => void; let observed: AbortSignal | undefined;
     const run = vi.fn(async () => { observed = researchSignal(); await new Promise<void>(r => { release = r; }); saveStore(id, "test-result", { late: true }); });
-    const worker = await make(run); const job = worker.create(id, { kind: "matrix", keys: ["alpha", "beta"] });
+    const worker = await make(run); const job = worker.create(id, { kind: "library-index", keys: ["alpha", "beta"] });
     await tick(); worker.control(id, job.id, "cancel");
     expect(observed?.aborted).toBe(true);
     release(); await worker.idle();
@@ -92,8 +95,9 @@ describe("durable Research tasks", () => {
     const { listResearchJobs } = await import("../src/research/jobs.js"); expect(listResearchJobs(id)[0].state).toBe("cancelled");
   });
   it("retains progress over a server restart and resumes pending items on request", async () => {
+    indexedLibrary();
     const { saveStore } = await import("../src/research/store.js");
-    saveStore(id, "jobs", [{ id: "interrupted", kind: "matrix", state: "running", createdAt: "before", updatedAt: "before", context: [], currentKey: "beta", items: [{ key: "alpha", state: "done" }, { key: "beta", state: "pending" }] }]);
+    saveStore(id, "jobs", [{ id: "interrupted", kind: "library-index", state: "running", createdAt: "before", updatedAt: "before", context: [], currentKey: "beta", items: [{ key: "alpha", state: "done" }, { key: "beta", state: "pending" }] }]);
     const run = vi.fn(async (_id: string, _dir: string, _kind: string, _key: string) => {}); const worker = await make(run); worker.start(false);
     const { listResearchJobs } = await import("../src/research/jobs.js");
     expect(listResearchJobs(id)[0].state).toBe("paused"); expect(listResearchJobs(id)[0].currentKey).toBeUndefined(); expect(run).not.toHaveBeenCalled();
@@ -103,31 +107,53 @@ describe("durable Research tasks", () => {
   });
   it("isolates projects and rejects unknown source keys before enqueuing", async () => {
     const worker = await make(async () => {});
-    expect(() => worker.create(id, { kind: "matrix", keys: ["ghost"] })).toThrow("Unknown citation");
-    const job = worker.create(id, { kind: "matrix", keys: ["alpha"] });
+    expect(() => worker.create(id, { kind: "library-index", keys: ["ghost"] })).toThrow("Unknown citation");
+    const job = worker.create(id, { kind: "library-index", keys: ["alpha"] });
     expect(() => worker.control("another", job.id, "cancel")).toThrow("Unknown research job");
     await worker.idle();
   });
   it("pauses on shutdown and preserves completed results", async () => {
     const { researchSignal } = await import("../src/research/store.js");
     const worker = await make(async () => new Promise((_resolve, reject) => { researchSignal()!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); }));
-    worker.create(id, { kind: "matrix", keys: ["alpha", "beta"] }); await tick(); await worker.stop();
+    worker.create(id, { kind: "library-index", keys: ["alpha", "beta"] }); await tick(); await worker.stop();
     const { listResearchJobs } = await import("../src/research/jobs.js");
     expect(listResearchJobs(id)[0].state).toBe("paused");
-    expect(() => worker.create(id, { kind: "matrix", keys: ["gamma"] })).toThrow("shutting down");
+    expect(() => worker.create(id, { kind: "library-index", keys: ["gamma"] })).toThrow("shutting down");
   });
-  it("pauses on provider limits without failing or repeatedly calling remaining sources", async () => {
-    const run = vi.fn(async (): Promise<void> => { throw new Error("Provider HTTP 429 rate limited"); });
+  it("keeps saved tasks of retired kinds on disk and never runs them", async () => {
+    const { saveStore, readStore } = await import("../src/research/store.js");
+    const base = { createdAt: "before", updatedAt: "before", context: [] };
+    const evidence = { ...base, id: "old-evidence", kind: "evidence", state: "running", currentKey: "c1", items: [{ key: "c1", state: "pending" }] };
+    const matrix = { ...base, id: "old-matrix", kind: "matrix", state: "completed", items: [{ key: "alpha", state: "done" }] };
+    const review = { ...base, id: "old-review", kind: "review", state: "queued", items: [{ key: "manuscript", state: "pending" }] };
+    saveStore(id, "jobs", [evidence, matrix, review]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const run = vi.fn(async () => {});
     const worker = await make(run);
-    const job = worker.create(id, { kind: "matrix", keys: ["alpha", "beta"] });
+    worker.start(false);
     await worker.idle();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/skipping 3 saved task\(s\) of retired kinds \(evidence, matrix, review\)/));
+    expect(run).not.toHaveBeenCalled();
     const { listResearchJobs } = await import("../src/research/jobs.js");
-    expect(listResearchJobs(id)[0]).toMatchObject({ state: "paused", items: [{ key: "alpha", state: "pending" }, { key: "beta", state: "pending" }] });
+    const saved = () => readStore<any[]>(id, "jobs", []);
+    // Interrupted ones are paused (so they cannot block idle checks or removal); nothing is dropped.
+    expect(saved().find(j => j.id === "old-matrix")).toEqual(matrix);
+    for (const old of [evidence, review]) {
+      expect(saved().find(j => j.id === old.id)).toMatchObject({ kind: old.kind, items: old.items, state: "paused", message: expect.stringContaining("retired workflow") });
+    }
+    expect(listResearchJobs(id).some(j => ["queued", "running"].includes(j.state))).toBe(false);
+    expect(() => worker.control(id, "old-evidence", "resume")).toThrow("retired workflow");
+    expect(() => worker.control(id, "old-review", "cancel")).toThrow("retired workflow");
+    // A retired task that reaches the queue anyway is skipped with a log line.
+    saveStore(id, "jobs", [...saved().filter(j => j.id !== "old-review"), { ...review, state: "queued" }]);
+    (worker as any).queue.push({ projectId: id, jobId: "old-review" });
+    (worker as any).kick(); await worker.idle();
+    expect(run).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("skipping saved review task old-review"));
+    // Library indexing keeps working next to the old records.
+    worker.create(id, { kind: "library-index", keys: ["alpha"] }); await worker.idle();
     expect(run).toHaveBeenCalledTimes(1);
-    run.mockResolvedValue(undefined);
-    worker.control(id, job.id, "resume"); await worker.idle();
-    expect(run).toHaveBeenCalledTimes(3);
-    expect(listResearchJobs(id)[0].state).toBe("completed");
+    expect(saved().map(j => j.id)).toEqual(expect.arrayContaining(["old-evidence", "old-matrix", "old-review"]));
   });
   it("defers remaining library items when one paper is rate limited", async () => {
     const run = vi.fn(async (_id, _dir, _kind, key) => { if (key === "alpha") throw new Error("Semantic Scholar HTTP 429 rate limited"); });

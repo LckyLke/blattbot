@@ -1,6 +1,17 @@
-import type { Page } from "playwright-core";
-import { join } from "node:path";
-import { readFileSync } from "node:fs";
+/**
+ * Citation graph explorer at the saved-graph limit (5,000 nodes), in a real
+ * browser. Graph data is stubbed in the page, so no provider or model calls.
+ * Run directly (`npm run test:graph-explorer-ui --workspace=server`) to boot
+ * an isolated server with a fixture project, or import verifyGraphExplorer
+ * into another verify script that already has a server and a project.
+ */
+import { chromium, type Page } from "playwright-core";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { freePort } from "./free-port.js";
 
 /** Exercise the real renderer at the saved-graph limit, without provider/model calls. */
 export async function verifyGraphExplorer(
@@ -120,6 +131,8 @@ export async function verifyGraphExplorer(
         throw new Error("Selecting a paper reset the graph filters");
     };
     await scope.selectOption("external");
+    // The year filter sits in the collapsed "View options" disclosure.
+    await explorer.locator(".cg-view-options > summary").click();
     await since.fill("1995");
     await page.keyboard.press("Control+f");
     if (!(await search.evaluate((el) => el === document.activeElement)))
@@ -338,4 +351,59 @@ export async function verifyGraphExplorer(
   } finally {
     await page.close();
   }
+}
+
+/** Standalone run: isolated data dir, fixture project, real server. */
+async function main() {
+  const root = mkdtempSync(join(tmpdir(), "blattbot-graph-ui-"));
+  const shots = process.env.UI_SHOTS_DIR ?? "/tmp/blattbot-graph-ui";
+  mkdirSync(shots, { recursive: true });
+  process.env.BLATTBOT_DATA_DIR = join(root, "data");
+  const cfg = await import("../src/config.js");
+  const project = cfg.addProject({ name: "Research Fixture", kind: "local", gitUrl: "", mainTex: "main.tex" });
+  const dir = cfg.projectDir(project.id);
+  mkdirSync(dir, { recursive: true });
+  // The stubbed details cite main.tex line 2; the explorer jumps there.
+  writeFileSync(join(dir, "main.tex"), "\\documentclass{article}\n\\begin{document}\nGraph fixture~\\cite{source1}.\n\\end{document}\n");
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
+    cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
+    env: { ...process.env, BLATTBOT_PORT: String(port) },
+    stdio: "pipe",
+  });
+  let logs = "";
+  server.stdout.on("data", (c) => { logs += c; });
+  server.stderr.on("data", (c) => { logs += c; });
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  try {
+    let ready = false;
+    for (let i = 0; i < 100 && !ready; i++) {
+      try { ready = (await fetch(`${base}/api/bootstrap`)).ok; } catch { /* starting */ }
+      if (!ready) await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!ready) throw new Error(`Server did not start:\n${logs}`);
+    browser = await chromium.launch({
+      executablePath: process.env.BLATTBOT_BROWSER_EXECUTABLE || ["/usr/bin/chromium", "/usr/bin/google-chrome"].find(existsSync),
+      headless: true,
+    });
+    const context = await browser.newContext({ viewport: { width: 1500, height: 980 }, acceptDownloads: true });
+    await context.addInitScript(() => {
+      localStorage.setItem("blattbot.paneLeft.v2", "chat");
+      localStorage.setItem("blattbot.paneRight.v2", "research");
+    });
+    // No agent harness is needed here; keep the chat pane from probing one.
+    await context.route("**/api/models**", (route) => route.fulfill({ json: { backend: "codex", models: [] } }));
+    await context.route("**/api/agent/codex/limits", (route) => route.fulfill({ json: { windows: [], checkedAt: Date.now() } }));
+    await verifyGraphExplorer(await context.newPage(), base, project.id, shots);
+  } finally {
+    await browser?.close();
+    server.kill("SIGTERM");
+    await new Promise((resolve) => { if (server.exitCode !== null) resolve(undefined); else server.once("exit", resolve); });
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
 }

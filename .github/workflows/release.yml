@@ -1,11 +1,15 @@
 name: Release
 
-# Cut a release by tagging the release commit and pushing the tag:
-#   git tag v0.4.2 && git push origin v0.4.2
+# Cut a release with `npm run release -- <version>` (bumps the version, dates
+# the CHANGELOG section, commits and tags locally), then push the commit and
+# the tag:
+#   git push origin main v0.4.2
 # The tag must match server/package.json's version and CHANGELOG.md must have
 # a "## <version>" section (its body becomes the release notes). This runs the
-# tests, builds the npm tarball with release:pack, and publishes a GitHub
-# Release with the tarball attached. Publishing to npm stays a manual step:
+# full CI workflow (every OS, the minimum Node, the packaging smoke test and
+# the browser checks), builds the npm tarball with release:pack, and publishes
+# a GitHub Release with the tarball attached. Publishing to npm stays a manual
+# step:
 #   npm publish blattbot-<version>.tgz
 
 on:
@@ -13,17 +17,17 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  # Cheap checks first, so a mistyped tag fails before the full matrix runs.
+  preflight:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
-      - run: npm ci
+          node-version: "24"
 
       - name: Tag must match the package version
         run: |
@@ -34,10 +38,29 @@ jobs:
             exit 1
           fi
 
+      - name: CHANGELOG.md must have a section for this version
+        run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" > /dev/null
+
+  ci:
+    needs: preflight
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+
       - name: Release notes from CHANGELOG.md
         run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md
 
-      - run: npm test
       - run: npm run release:pack
 
       - name: Publish the GitHub Release

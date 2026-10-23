@@ -8,7 +8,8 @@
  * that never yields (so no API request is ever made), asked, and closed. The
  * answer is cached per credential configuration for CACHE_MS.
  */
-import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { loadClaudeSdk } from "./claude-sdk.js";
 import { DEFAULT_MODEL, MODEL_ALIASES } from "./backends/types.js";
 import { executableOptions } from "./sdkinfo.js";
 import { selectedBackend, type Settings, type BackendId } from "./settings.js";
@@ -91,6 +92,8 @@ async function* silence(): AsyncGenerator<SDKUserMessage> {
 }
 
 async function askCli(settings: Settings): Promise<ModelList> {
+  // Without the optional SDK this throws, and listModels falls back to the static list.
+  const { query } = await loadClaudeSdk();
   const q = query({
     prompt: silence(),
     options: {

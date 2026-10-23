@@ -98,9 +98,10 @@ describe("research HTTP workspace", () => {
     const writing = await call("/writing-prompt");
     expect(writing.status).toBe(404);
   });
-  it("never returns Zotero secrets and denies reading them as attached context", async () => {
-    const { configureZotero } = await import("../src/research/zotero.js");
-    configureZotero(id, { mode: "web", libraryType: "users", libraryId: "123", apiKey: "private-zotero-secret" });
+  it("never returns Zotero secrets saved by older versions and denies reading them as attached context", async () => {
+    // The retired Zotero import kept its key here; existing files stay on disk.
+    mkdirSync(join(root, "research-secrets"), { recursive: true });
+    writeFileSync(join(root, "research-secrets", `${id}.json`), JSON.stringify({ apiKey: "private-zotero-secret" }), { mode: 0o600 });
     const text = await (await call("")).text();
     expect(text).not.toContain("private-zotero-secret");
     const read = (await (

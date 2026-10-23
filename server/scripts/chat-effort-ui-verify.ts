@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { freePort } from "./free-port.js";
 
 const root = mkdtempSync(join(tmpdir(), "blattbot-chat-effort-"));
 process.env.BLATTBOT_DATA_DIR = join(root, "data");
@@ -22,7 +23,7 @@ const chats = await import("../src/chats.js");
 const chat = chats.ensureActiveChat(project.id);
 chats.appendEvent(project.id, chat.id, { type: "tool_use", id: "verify-fixture", name: "mcp__blattbot__verify_citation_support", detail: "smith2025", input: JSON.stringify({ key: "smith2025", claim: "The exact claim being verified." }) });
 chats.appendEvent(project.id, chat.id, { type: "tool_result", id: "verify-fixture", output: "SUPPORTED\nEvidence: page 4, the reported experiment.", isError: false });
-const port = 4595, base = `http://127.0.0.1:${port}`;
+const port = await freePort(), base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ["--import", "tsx", "src/index.ts"], {
   cwd: join(dirname(fileURLToPath(import.meta.url)), ".."),
   env: { ...process.env, BLATTBOT_PORT: String(port) }, stdio: "pipe",

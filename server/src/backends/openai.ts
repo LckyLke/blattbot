@@ -1,4 +1,3 @@
-import { toolDetail } from "./types.js";
 /**
  * OpenAI-compatible backend: a self-contained tool-calling loop over
  * POST {base}/chat/completions (stream: true, SSE) — llama.cpp, Ollama, vLLM,
@@ -6,8 +5,9 @@ import { toolDetail } from "./types.js";
  *
  * Differences from the Claude backend, by design:
  *  - No Agent SDK, no shell, no generic file tools: the model gets BlattBot's
- *    four project tools plus a minimal, path-validated file toolset
- *    (read_file / write_file / edit_file / list_files) implemented here.
+ *    own tools (backends/tools.ts) as function definitions, including the
+ *    path-validated file toolset (list_files / search_files / read_file /
+ *    write_file / edit_file).
  *  - No provider-side sessions: conversation memory is a local message log in
  *    DATA_DIR/oai-sessions/<id>.json, capped at MAX_HISTORY_MESSAGES; the id
  *    is stored as the chat's sessionId (opaque to the rest of the app).
@@ -16,58 +16,30 @@ import { toolDetail } from "./types.js";
  *
  * Event-name mapping: emitted tool events reuse the Claude-side names
  * (read_file→Read, write_file→Write, edit_file→Edit, and mcp__blattbot__* for
- * the four project tools) so livediff.ts keeps enriching edit results with
- * per-file diffs and the chat UI keeps its labels — the model-facing function
- * names are the plain ones listed in OPENAI_TOOL_INFO.
+ * the project tools; see eventToolName) so livediff.ts keeps enriching edit
+ * results with per-file diffs and the chat UI keeps its labels — the
+ * model-facing function names are the plain ones listed in OPENAI_TOOL_INFO.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { DATA_DIR, getProject } from "../config.js";
-import { assertNoSymlinkPath, resolveReadPath } from "./paths.js";
-import { readPaperTool, verifyPaperTool } from "./paper-tools.js";
-import { readPdfFile, readTextDocument, formatTextExcerpt } from "../pdftext.js";
-import { RESEARCH_TOOLS, executeResearchTool } from "../research/tools.js";
-import { searchLiterature } from "../research/discovery.js";
 import { z } from "zod";
+import { DATA_DIR } from "../config.js";
 import type { Settings } from "../settings.js";
-import { compileProject } from "../compile.js";
-import { addCitation, formatAddCitationResult, readAllBibEntries } from "../citations.js";
+import { attachmentBase64, type TurnAttachment } from "../chatimages.js";
+import { PROJECT_TOOLS, eventToolName, executeTool, summarizeToolInput } from "./tools.js";
 import {
-  auditEntries,
-  formatAuditReport,
-  verifyEntry,
-} from "../papers.js";
-import { listFiles } from "../latex.js";
-import {
-  askUserQuestions,
-  validateQuestions,
-  MAX_HEADER,
-  MAX_OPTIONS,
-  MAX_QUESTIONS,
-  MIN_OPTIONS,
-} from "../questions.js";
-import {
-  attachmentBase64,
-  chatUploadsDir,
-  imageSize,
-  sniffImageMime,
-  type TurnAttachment,
-} from "../chatimages.js";
-import {
-  AGENT_TOOL_INFO,
   SYSTEM_APPEND,
   PAPER_READING_RULES,
   attachmentNote,
   resultHead,
+  toolDetail,
   type AgentBackend,
   type BackendTurnContext,
 } from "./types.js";
 
 export const MAX_TOOL_ITERATIONS = 30;
 export const MAX_HISTORY_MESSAGES = 40;
-/** read_file refuses files larger than this (keeps prompts sane). */
-export const MAX_READ_BYTES = 512 * 1024;
 /** Tool results larger than this are truncated with a marker. */
 export const MAX_TOOL_RESULT_CHARS = 100_000;
 
@@ -182,109 +154,12 @@ export function saveHistory(sessionId: string, messages: OaiMessage[]): void {
   writeFileSync(historyPath(sessionId), JSON.stringify(messages, null, 2), { mode: 0o600 });
 }
 
-// ---- Path validation --------------------------------------------------------
-
-function insideOf(abs: string, root: string): boolean {
-  if (process.platform === "win32") { abs = abs.toLowerCase(); root = root.toLowerCase(); }
-  return abs === root || abs.startsWith(root + sep);
-}
-
-/**
- * Resolve a read path: relative paths stay inside the project; absolute paths
- * are allowed only into the project itself, an attached read-only context
- * directory, or one of `extraRoots` — the project's own chat-image uploads,
- * whose paths the prompt names so the agent can re-open an attachment. Twin of
- * the Claude backend's fence in backends/paths.ts; both must grant the same
- * roots or the same feature works on one backend only.
- */
-export { resolveReadPath } from "./paths.js";
-
-/**
- * Resolve a write/edit path: must land strictly inside the project working
- * tree (never .git, never a context directory), rejecting traversal.
- */
-export function resolveWritePath(dir: string, contextDirs: string[], raw: unknown): string {
-  if (typeof raw !== "string" || !raw.trim()) throw new Error("path is required");
-  const p = raw.trim();
-  const abs = isAbsolute(p) ? resolve(p) : resolve(dir, p);
-  if (abs === dir || !abs.startsWith(dir + sep)) {
-    throw new Error(`writes must stay inside the project: ${p}`);
-  }
-  for (const c of contextDirs) {
-    if (insideOf(abs, c)) throw new Error("context directories are read-only");
-  }
-  if (insideOf(abs, join(dir, ".git"))) throw new Error("the .git directory is off-limits");
-  assertNoSymlinkPath(dir, abs);
-  return abs;
-}
-
-/** The path a tool event should show: relative when inside the project. */
-function displayPath(dir: string, abs: string): string {
-  return insideOf(abs, dir) && abs !== dir ? abs.slice(dir.length + 1) : abs;
-}
-
 // ---- Tool definitions -------------------------------------------------------
 
-export const OPENAI_FILE_TOOL_INFO = [
-  {
-    name: "read_file",
-    description:
-      "Read a text file or extract PDF text with page labels — a path relative to the project root, or an absolute attached-context path. Text files and PDFs support character offset/limit (default 0/20000, max 40000), with total length and next offset. Text-file offsets refer to the original file. query searches a case-insensitive, whitespace-normalized phrase. For a cited paper use read_paper with its key and optional path so source access is recorded.",
-  },
-  {
-    name: "write_file",
-    description: "Create or overwrite a file inside the project with the given content.",
-  },
-  {
-    name: "edit_file",
-    description:
-      "Replace one exact, unique text snippet in a project file (old_string must occur exactly once).",
-  },
-  {
-    name: "list_files",
-    description: "List every file in the project working tree (relative paths).",
-  },
-] as const;
-
-/** The openai twin of the SDK's AskUserQuestion (display name in chat labels). */
-export const ASK_USER_OPENAI_TOOL_INFO = {
-  name: "ask_user",
-  description:
-    "Ask the user 1-4 multiple-choice questions and wait for the answers. Use this to clarify ambiguous instructions or offer choices mid-task; the user sees clickable options and may also type a free-text answer or skip.",
-} as const;
-
 /** Everything the openai backend exposes — served by /api/agent/info. */
-export const OPENAI_TOOL_INFO = [
-  ...OPENAI_FILE_TOOL_INFO,
-  ASK_USER_OPENAI_TOOL_INFO,
-  ...AGENT_TOOL_INFO,
-  ...RESEARCH_TOOLS.map(({ name, description }) => ({ name, description })),
-];
+export const OPENAI_TOOL_INFO = PROJECT_TOOLS.map(({ name, description }) => ({ name, description }));
 
-/** Model-facing function name → emitted event name (livediff/UI contract). */
-const EVENT_TOOL_NAMES: Record<string, string> = {
-  read_file: "Read",
-  write_file: "Write",
-  edit_file: "Edit",
-  list_files: "list_files",
-  ask_user: "AskUserQuestion",
-  compile_latex: "mcp__blattbot__compile_latex",
-  search_papers: "mcp__blattbot__search_papers",
-  add_citation: "mcp__blattbot__add_citation",
-  list_citations: "mcp__blattbot__list_citations",
-  audit_citations: "mcp__blattbot__audit_citations",
-  verify_citation_support: "mcp__blattbot__verify_citation_support",
-  read_paper: "mcp__blattbot__read_paper",
-};
-
-export function eventToolName(name: string): string {
-  if (RESEARCH_TOOLS.some((tool) => tool.name === name)) return `mcp__blattbot__${name}`;
-  return EVENT_TOOL_NAMES[name] ?? name;
-}
-
-type JsonSchema = Record<string, unknown>;
-
-function fnDef(name: string, description: string, properties: Record<string, JsonSchema>, required: string[] = []) {
+function fnDef(name: string, description: string, properties: Record<string, unknown> = {}, required: string[] = []) {
   return {
     type: "function" as const,
     function: {
@@ -295,376 +170,16 @@ function fnDef(name: string, description: string, properties: Record<string, Jso
   };
 }
 
-const info = (name: string) => OPENAI_TOOL_INFO.find((t) => t.name === name)!.description;
-
 /** OpenAI function-calling tool definitions; read-only modes drop every editing tool. */
 export function toolDefinitions(readOnly: boolean) {
-  const path = { type: "string", description: "File path, relative to the project root" };
-  const reading = {
-    offset: { type: "integer", minimum: 0, description: "Character offset returned by a previous read/search; default 0" },
-    limit: { type: "integer", minimum: 100, maximum: 40000, description: "Maximum text characters, default 20000" },
-    query: { type: "string", description: "Optional literal phrase to search throughout the text file or PDF, ignoring case and whitespace differences" },
-  };
-  return [
-    ...RESEARCH_TOOLS.map((tool) => { const schema = z.toJSONSchema(tool.schema) as any; return fnDef(tool.name, tool.description, schema.properties, schema.required); }),
-    fnDef("list_files", info("list_files"), {}),
-    fnDef("read_file", info("read_file"), { path, ...reading }, ["path"]),
-    fnDef("read_paper", info("read_paper"), {
-      key: { type: "string", description: "Bibliography cite key of the paper to read" },
-      path: { type: "string", description: "Optional project-relative or absolute attached-context PDF path; remembered for this entry" },
-      url: { type: "string", maxLength: 8000, description: "Public PDF or repository/publisher page; downloads and remembers a title-matched PDF. Use either path or url." },
-      refresh: { type: "boolean", description: "Retry failed source discovery immediately, or refresh a supplied URL" },
-      ...reading,
-      ocr: { type: "boolean", description: "Run OCR on page 1 and the requested page; requires Poppler and Tesseract" },
-      page: { type: "integer", minimum: 1, maximum: 1000, description: "PDF page to OCR when ocr=true" },
-    }, ["key"]),
-    ...(readOnly
-      ? []
-      : [
-          fnDef("write_file", info("write_file"), { path, content: { type: "string", description: "Full new file content" } }, ["path", "content"]),
-          fnDef(
-            "edit_file",
-            info("edit_file"),
-            {
-              path,
-              old_string: { type: "string", description: "Exact text to replace — must occur exactly once in the file" },
-              new_string: { type: "string", description: "Replacement text" },
-            },
-            ["path", "old_string", "new_string"],
-          ),
-        ]),
-    // Read-only (it just talks to the user) — available in every mode.
-    fnDef(
-      "ask_user",
-      info("ask_user"),
-      {
-        questions: {
-          type: "array",
-          minItems: 1,
-          maxItems: MAX_QUESTIONS,
-          description: "The questions to ask the user (1-4).",
-          items: {
-            type: "object",
-            properties: {
-              question: {
-                type: "string",
-                description: "The complete question to ask, ending with a question mark.",
-              },
-              header: {
-                type: "string",
-                maxLength: MAX_HEADER,
-                description: `Very short chip label (max ${MAX_HEADER} chars), e.g. "Approach".`,
-              },
-              options: {
-                type: "array",
-                minItems: MIN_OPTIONS,
-                maxItems: MAX_OPTIONS,
-                description:
-                  "2-4 distinct choices. Do not add an 'Other' option — the UI provides free-text input automatically.",
-                items: {
-                  type: "object",
-                  properties: {
-                    label: { type: "string", description: "Concise display text (1-5 words)." },
-                    description: { type: "string", description: "What choosing this option means." },
-                  },
-                  required: ["label", "description"],
-                },
-              },
-              multiSelect: {
-                type: "boolean",
-                description: "Allow selecting multiple options (answers arrive comma-separated).",
-              },
-            },
-            required: ["question", "header", "options"],
-          },
-        },
-      },
-      ["questions"],
-    ),
-    fnDef("compile_latex", info("compile_latex"), {}),
-    fnDef(
-      "search_papers",
-      info("search_papers"),
-      {
-        query: { type: "string", description: "Free-text search, e.g. 'attention is all you need transformer'" },
-        limit: { type: "integer", minimum: 1, maximum: 15, description: "Max results, default 5" },
-      },
-      ["query"],
-    ),
-    ...(readOnly
-      ? []
-      : [
-          fnDef(
-            "add_citation",
-            info("add_citation"),
-            {
-              ref: { type: "string", description: "A DOI, or dblp:<key> / arxiv:<id> exactly as returned by search_papers" },
-              bibFile: { type: "string", description: "Relative path of the .bib file to append to; defaults to the project's existing .bib" },
-            },
-            ["ref"],
-          ),
-        ]),
-    fnDef("list_citations", info("list_citations"), {}),
-    // Read-only: available in every mode, including review and understand.
-    fnDef("audit_citations", info("audit_citations"), {
-      keys: {
-        type: "array",
-        items: { type: "string" },
-        description: "Cite keys to verify; omit to verify every entry in the bibliography",
-      },
-    }),
-    fnDef(
-      "verify_citation_support",
-      info("verify_citation_support"),
-      {
-        key: { type: "string", description: "The cite key (as used in \\cite{...}) of the reference to check" },
-        claim: { type: "string", description: "One exact claim; prefer claims for several statements from the same paper" },
-        claims: { type: "array", minItems: 1, maxItems: 12, items: { type: "string", minLength: 1, maxLength: 16000 }, description: "Exact claims about this paper, checked together" },
-      },
-      ["key"],
-    ),
-  ];
+  return PROJECT_TOOLS.filter((tool) => !(readOnly && tool.writes)).map((tool) => {
+    const schema = z.toJSONSchema(z.object(tool.shape)) as { properties?: Record<string, unknown>; required?: string[] };
+    return fnDef(tool.name, tool.description, schema.properties, schema.required);
+  });
 }
-
-/** Compact, UI-friendly summary of a tool call's main argument (mirrors summarizeInput). */
-export function summarizeArgs(name: string, args: any, dir: string): string {
-  if (args == null) return "";
-  try {
-    if (typeof args.path === "string" && args.path.trim()) {
-      const p = args.path.trim();
-      const abs = isAbsolute(p) ? resolve(p) : resolve(dir, p);
-      return displayPath(dir, abs);
-    }
-    if (typeof args.query === "string") return args.query;
-    if (typeof args.ref === "string") return args.ref;
-    if (Array.isArray(args.questions) && typeof args.questions[0]?.question === "string") {
-      const q = args.questions[0].question;
-      return q.length > 80 ? q.slice(0, 77) + "…" : q;
-    }
-    const keys = Object.keys(args);
-    if (keys.length === 0) return "";
-    const s = JSON.stringify(args);
-    return s.length > 80 ? s.slice(0, 77) + "…" : s;
-  } catch {
-    return "";
-  }
-}
-
-// ---- Tool execution ---------------------------------------------------------
-
-interface ToolOutcome {
-  content: string;
-  isError: boolean;
-}
-
-const ok = (content: string): ToolOutcome => ({ content, isError: false });
-const err = (content: string): ToolOutcome => ({ content, isError: true });
 
 function truncateResult(s: string): string {
   return s.length > MAX_TOOL_RESULT_CHARS ? s.slice(0, MAX_TOOL_RESULT_CHARS) + "\n… [truncated]" : s;
-}
-
-function requireString(args: any, key: string): string {
-  const v = args?.[key];
-  if (typeof v !== "string") throw new Error(`${key} must be a string`);
-  return v;
-}
-
-/**
- * What read_file answers for a chat attachment: what the file is, not what its
- * bytes say. Returns null when the file is not one of the accepted image
- * formats, so anything else in that directory falls through to the normal
- * text path. Exported for the test that pins the note/behaviour agreement.
- */
-export function describeChatImage(abs: string, bytes: number): string | null {
-  let buf: Buffer;
-  try {
-    // The header is all this needs — never load megabytes to describe them.
-    buf = readFileSync(abs).subarray(0, 64 * 1024);
-  } catch {
-    return null;
-  }
-  const mime = sniffImageMime(buf);
-  if (!mime) return null;
-  const size = imageSize(buf, mime);
-  return (
-    `${basename(abs)} is an image the user attached to this conversation: ` +
-    `${mime}, ${bytes} bytes${size ? `, ${size.width}×${size.height} px` : ""}. ` +
-    `It has no text content to read — the picture itself was sent with the ` +
-    `message it belongs to.`
-  );
-}
-
-export async function executeTool(ctx: BackendTurnContext, name: string, args: any): Promise<ToolOutcome> {
-  try {
-    ctx.signal.throwIfAborted();
-    if (RESEARCH_TOOLS.some((tool) => tool.name === name)) return ok(await executeResearchTool(ctx, name, args));
-    switch (name) {
-      case "list_files": {
-        const files = listFiles(ctx.dir);
-        return ok(files.length ? files.join("\n") : "(the project has no files yet)");
-      }
-      case "read_file": {
-        const uploads = chatUploadsDir(ctx.project.id);
-        const abs = resolveReadPath(ctx.dir, ctx.contextDirs, args?.path, [uploads]);
-        const st = statSync(abs);
-        if (!st.isFile()) throw new Error("not a file");
-        // The attachment note names these paths and says they are readable, so
-        // the model does open them. They are pictures: a byte read would only
-        // ever answer "binary file" (and most are over MAX_READ_BYTES anyway).
-        // Describe the image instead — the pixels themselves already rode
-        // along as image content in the user's message.
-        if (insideOf(abs, uploads)) {
-          const described = describeChatImage(abs, st.size);
-          if (described) return ok(described);
-        }
-        if (abs.toLowerCase().endsWith(".pdf")) {
-          const content = await readPdfFile(abs, args);
-          if (content.startsWith("NO READABLE TEXT") || content.includes(" No text on pages ")) {
-            ctx.emit({ type: "notice", tone: "warn", text: content.split("\n\n")[0] });
-          }
-          return ok(content);
-        }
-        if (st.size > MAX_READ_BYTES) throw new Error(`file too large to read (${st.size} bytes)`);
-        const buf = readFileSync(abs);
-        if (buf.includes(0)) throw new Error("binary file — cannot read as text");
-        return ok(formatTextExcerpt(readTextDocument(buf.toString("utf8"), args)).replace("entire paper", "entire file").replace("All extracted text", "All text"));
-      }
-      case "write_file": {
-        if (ctx.readOnly) throw new Error("file edits are disabled in this read-only mode");
-        const abs = resolveWritePath(ctx.dir, ctx.contextDirs, args?.path);
-        const content = requireString(args, "content");
-        mkdirSync(dirname(abs), { recursive: true });
-        writeFileSync(abs, content);
-        return ok(`Wrote ${displayPath(ctx.dir, abs)} (${Buffer.byteLength(content)} bytes).`);
-      }
-      case "edit_file": {
-        if (ctx.readOnly) throw new Error("file edits are disabled in this read-only mode");
-        const abs = resolveWritePath(ctx.dir, ctx.contextDirs, args?.path);
-        const oldString = requireString(args, "old_string");
-        const newString = requireString(args, "new_string");
-        if (!oldString) throw new Error("old_string must not be empty");
-        if (oldString === newString) throw new Error("old_string and new_string are identical");
-        let text: string;
-        try {
-          const buf = readFileSync(abs);
-          if (buf.includes(0)) throw new Error("binary file");
-          text = buf.toString("utf8");
-        } catch (e: any) {
-          throw new Error(e?.code === "ENOENT" ? "no such file — use write_file to create files" : e.message);
-        }
-        const first = text.indexOf(oldString);
-        if (first === -1) throw new Error("old_string not found in the file — read the file and match its exact text");
-        if (text.indexOf(oldString, first + 1) !== -1) {
-          throw new Error("old_string occurs more than once — include more surrounding context to make it unique");
-        }
-        writeFileSync(abs, text.slice(0, first) + newString + text.slice(first + oldString.length));
-        return ok(`Edited ${displayPath(ctx.dir, abs)}.`);
-      }
-      case "ask_user": {
-        // Same flow as the Claude backend's AskUserQuestion: block on the
-        // pending-question registry until the user answers/dismisses (the
-        // question events reach the UI through ctx.emit) or the turn aborts.
-        const questions = validateQuestions(args?.questions);
-        const resolution = await askUserQuestions(ctx.project.id, ctx.emit, questions, [ctx.signal]);
-        if (resolution.kind === "answered") {
-          return ok(JSON.stringify({ answers: resolution.answers }));
-        }
-        if (resolution.kind === "dismissed") {
-          return ok(
-            JSON.stringify({
-              declined: true,
-              note: "User declined to answer; proceed with your best judgment.",
-            }),
-          );
-        }
-        // Aborted — the loop's signal check right after this call throws.
-        return err("the turn was interrupted before the questions were answered");
-      }
-      case "compile_latex": {
-        const project = getProject(ctx.project.id);
-        const result = await compileProject(ctx.project.id, ctx.dir, project?.mainTex);
-        if (result.ok) {
-          return ok(`Compilation succeeded with ${result.engine} in ${result.durationMs}ms (main file: ${result.mainTex}).`);
-        }
-        return ok(
-          `Compilation FAILED (engine: ${result.engine}, main file: ${result.mainTex || "not found"}).\n` +
-            `Errors:\n${result.errors.join("\n---\n")}\n\nLog tail:\n${result.logTail.slice(-2000)}`,
-        );
-      }
-      case "search_papers": {
-        const q = requireString(args, "query");
-        const limit = typeof args?.limit === "number" ? Math.max(1, Math.min(15, Math.floor(args.limit))) : 5;
-        try {
-          const run = await searchLiterature(ctx.project.id, q, limit);
-          if (run.error) throw new Error(run.error);
-          const hits = run.results;
-          if (hits.length === 0) return ok("No results found — try different phrasing or author names.");
-          const lines = hits.map(
-            (h, i) =>
-              `${i + 1}. ${h.title} — ${h.authors}${h.year ? ` (${h.year})` : ""}${h.venue ? `, ${h.venue}` : ""}` +
-              `${h.citations != null ? ` [${h.citations} citations]` : ""}\n   cite-ref: ${h.ref}  (via ${h.source})`,
-          );
-          return ok(lines.join("\n"));
-        } catch (e: any) {
-          return ok(`Search failed: ${e?.message ?? e}`);
-        }
-      }
-      case "add_citation": {
-        if (ctx.readOnly) throw new Error("adding citations is disabled in this read-only mode");
-        const ref = requireString(args, "ref");
-        const bibFile = typeof args?.bibFile === "string" && args.bibFile.trim() ? args.bibFile.trim() : undefined;
-        if (bibFile) resolveWritePath(ctx.dir, ctx.contextDirs, bibFile);
-        try {
-          const result = await addCitation(ctx.dir, ref, bibFile);
-          // Verify immediately: a bad reference must surface while the agent is
-          // still in the turn that added it, not at review time.
-          const verification =
-            result.status === "added" ? await verifyEntry(ctx.project.id, ctx.dir, result.key) : undefined;
-          return ok(formatAddCitationResult(result, verification));
-        } catch (e: any) {
-          return ok(`add_citation failed: ${e?.message ?? e}`);
-        }
-      }
-      case "audit_citations": {
-        const keys = Array.isArray(args?.keys)
-          ? args.keys.filter((k: unknown): k is string => typeof k === "string" && k.trim() !== "")
-          : undefined;
-        try {
-          const { results, unknownKeys } = await auditEntries(ctx.project.id, ctx.dir, keys);
-          return ok(formatAuditReport(results, unknownKeys));
-        } catch (e: any) {
-          return ok(`audit_citations failed: ${e?.message ?? e}`);
-        }
-      }
-      case "list_citations": {
-        const all = readAllBibEntries(ctx.dir);
-        if (all.length === 0) return ok("The project has no .bib entries yet.");
-        const lines = all.map(
-          ({ file, entry }) =>
-            `\\cite{${entry.key}} — ${entry.fields.title ?? "(no title)"}${entry.fields.year ? ` (${entry.fields.year})` : ""} [${file}]`,
-        );
-        return ok(lines.join("\n"));
-      }
-      case "verify_citation_support": {
-        const key = requireString(args, "key");
-        try {
-          if ((args.claim === undefined) === (args.claims === undefined)) throw new Error("Pass either claim or claims, not both");
-          if (args.claims !== undefined && !Array.isArray(args.claims)) throw new Error("claims must be an array");
-          return ok(await verifyPaperTool(ctx, key, args.claims ?? requireString(args, "claim")));
-        } catch (e: any) {
-          return ok(`verify_citation_support failed: ${e?.message ?? e}`);
-        }
-      }
-      case "read_paper": {
-        return ok(await readPaperTool(ctx, requireString(args, "key"), args));
-      }
-      default:
-        return err(`unknown tool: ${name}`);
-    }
-  } catch (e: any) {
-    return err(`${name} failed: ${e?.message ?? e}`);
-  }
 }
 
 // ---- System prompt ----------------------------------------------------------
@@ -673,7 +188,7 @@ export const OPENAI_SYSTEM_PROMPT = `
 You are BlattBot, an expert LaTeX writing assistant operating on a snapshot of the user's LaTeX project.
 
 Rules:
-- Work directly on the project files with your tools (list_files, read_file, write_file, edit_file). Paths are relative to the project root.
+- Work directly on the project files with your tools (list_files, search_files, read_file, write_file, edit_file). Paths are relative to the project root.
 - Your edits are NOT pushed anywhere automatically. After your turn, the user reviews a diff of every change and approves or rejects it — so make focused edits and never attempt version-control operations.
 - After non-trivial edits to .tex or .bib files, verify the document still compiles with the compile_latex tool. If compilation fails, read the errors and fix them before finishing.
 - To find papers use search_papers; to add a reference use add_citation with a cite-ref from the results — it fetches BibTeX, dedupes against the bibliography, writes the entry, and returns the key for \\cite{...}. Use list_citations first; prefer citing existing entries over adding near-duplicates.
@@ -1097,10 +612,10 @@ export const openaiBackend: AgentBackend = {
           id: call.id,
           name: eventToolName(name),
           input: toolDetail(badArgs ? call.function.arguments : args),
-          detail: badArgs ? "" : summarizeArgs(name, args, ctx.dir),
+          detail: badArgs ? "" : summarizeToolInput(name, args, ctx.dir),
         });
         const outcome = badArgs
-          ? err(`${name} failed: the tool call arguments were not valid JSON`)
+          ? { content: `${name} failed: the tool call arguments were not valid JSON`, isError: true }
           : await executeTool(ctx, name, args);
         // Summaries key off the EVENT name (read_file → Read etc.) so both
         // backends share one read-only allowlist; edit tools stay opaque.
