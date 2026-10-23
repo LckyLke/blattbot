@@ -74,4 +74,6 @@ Cookie-session sync drives Overleaf's internal web API — the same endpoints yo
 
 ## Reporting
 
-Report vulnerabilities or security concerns at https://github.com/lckylke/blattbot/issues. If the issue is sensitive, say so in the issue without details and a private channel will be arranged.
+Report vulnerabilities privately through GitHub: open the repository's **Security** tab and choose **Report a vulnerability** (https://github.com/lckylke/blattbot/security/advisories/new). Only the maintainers see the report. Please do not put vulnerability details in public issues, pull requests or discussions.
+
+Include the BlattBot version (`npx blattbot --version`), your OS, and steps to reproduce. Non-sensitive hardening ideas are welcome as normal issues.

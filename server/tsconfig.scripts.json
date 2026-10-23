@@ -1,0 +1,6 @@
+{
+  // Typecheck-only config for the dev scripts (browser verify scripts, mock
+  // Overleaf, e2e, demo recording). Not part of the published build.
+  "extends": "./tsconfig.json",
+  "include": ["scripts/**/*.ts"]
+}

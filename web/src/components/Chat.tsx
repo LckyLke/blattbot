@@ -164,7 +164,7 @@ export function downscaleSize(
 ): { width: number; height: number } {
   if (width <= 0 || height <= 0) return { width: 0, height: 0 };
   const fit = Math.min(1, Math.sqrt(maxBytes / Math.max(bytes, 1)));
-  const ratio = fit * Math.pow(0.85, attempt);
+  const ratio = fit * 0.85 ** attempt;
   return {
     width: Math.max(1, Math.round(width * ratio)),
     height: Math.max(1, Math.round(height * ratio)),

@@ -4,27 +4,74 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml runs this whole workflow before it publishes anything.
+  workflow_call:
+
+# A newer push to the same branch or PR cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    name: test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ["24"]
+        include:
+          # The oldest supported Node (server/package.json engines): the
+          # first release line with node:sqlite unflagged.
+          - os: ubuntu-latest
+            node: "22.13.0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
+          cache: npm
       - run: npm ci
-      # Typecheck both workspaces.
-      - run: npx tsc -p server/tsconfig.json
-      - run: npx tsc -p web/tsconfig.json
-      # Unit tests run on every OS. The cookie-decryption suite builds real
-      # Chromium-encrypted fixtures (v10/v11 CBC + v10 GCM) so the macOS and
-      # Windows crypto paths are exercised on their native runners too.
-      - run: npm test
+      # Typecheck (server, web, test .tsx files, scripts), lint, and unit
+      # tests. The cookie-decryption suite builds real Chromium-encrypted
+      # fixtures (v10/v11 CBC + v10 GCM) so the macOS and Windows crypto
+      # paths are exercised on their native runners too.
+      - run: npm run check
       # Web build must succeed on every OS.
       - run: npm run build --workspace=web
+
+      # Build the npm tarball, install it like `npx blattbot` would, and run
+      # the installed CLI. doctor needs no network and no model.
+      - name: Packaging smoke test
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '24'
+        shell: bash
+        run: |
+          npm run release:pack
+          smoke="$RUNNER_TEMP/blattbot-smoke"
+          mkdir -p "$smoke"
+          npm install --prefix "$smoke" --no-audit --no-fund ./blattbot-*.tgz
+          cli="$smoke/node_modules/blattbot/bin/blattbot.js"
+          export BLATTBOT_DATA_DIR="$RUNNER_TEMP/blattbot-smoke-data"
+          node "$cli" --version
+          node "$cli" --help
+          node "$cli" doctor
+
+  browser:
+    name: browser verification (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace=web
+      # Real server + real browser against local mocks: no model, no TeX.
+      - run: npm run verify:ui
+        env:
+          BLATTBOT_BROWSER_EXECUTABLE: /usr/bin/google-chrome

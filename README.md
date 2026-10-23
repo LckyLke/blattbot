@@ -24,7 +24,7 @@ npx blattbot
 
 This starts the app on http://127.0.0.1:4560 and opens your browser. On first run BlattBot checks your environment and offers to download [tectonic](https://tectonic-typesetting.github.io) if no TeX engine is found. Run `npx blattbot --help` for flags and `npx blattbot doctor` to see what it detects.
 
-You need Node 20 or newer, git, and the current [Codex CLI](https://developers.openai.com/codex/cli) installed and signed in:
+You need Node 22.13 or newer (Node 24 LTS recommended), git, and the current [Codex CLI](https://developers.openai.com/codex/cli) installed and signed in:
 
 ```bash
 npm install -g @openai/codex
@@ -175,6 +175,28 @@ Sign in once per Overleaf instance. The easiest way is "Sign in from browser ses
 
 Instances with the git bridge (paid overleaf.com plans, Server Pro) can also be connected through a git URL.
 
+## Environment variables
+
+`npx blattbot --help` prints the same list.
+
+| Variable | Purpose |
+| --- | --- |
+| `BLATTBOT_PORT` | Port to listen on (default 4560; `--port` wins). |
+| `BLATTBOT_DATA_DIR` | Data directory (default `~/.local/share/blattbot`; `--data-dir` wins). |
+| `BLATTBOT_CODEX_EXECUTABLE` | Codex CLI to use instead of the one on PATH. |
+| `BLATTBOT_CLAUDE_EXECUTABLE` | `claude` binary for the Claude backend instead of the bundled one. |
+| `BLATTBOT_BROWSER_EXECUTABLE` | Chrome, Edge or Chromium for the university sign-in window. |
+| `BLATTBOT_PDFTOPPM` | Poppler's `pdftoppm`, for PDF page images. |
+| `BLATTBOT_TESSERACT` | `tesseract`, for OCR. |
+| `BLATTBOT_KWALLET` | KDE wallet holding the browser cookie key (default `kdewallet`). |
+| `BLATTBOT_REVISION` | Revision reported by `/api/deployment` (unattended deployments). |
+| `BLATTBOT_START_DRAINED` | `1` starts with new writes paused for up to two minutes (updates). |
+| `BLATTBOT_HOME` | Home directory searched for browser profiles (default: yours). |
+| `BLATTBOT_WSL` | `1` or `0` forces WSL detection on or off. |
+| `BLATTBOT_WSL_MNT` | Where WSL mounts Windows drives (default `/mnt`). |
+| `BLATTBOT_GIT_TOKEN` | Set by BlattBot for its own git processes; do not set it. |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | Proxy for the tectonic download. |
+
 ## Security
 
 The server binds to 127.0.0.1 only, checks the Host header on every request and requires a local auth token for the API, so other users and web pages cannot drive it. Secrets live in `~/.local/share/blattbot` with 0600 permissions. Treat that folder like `~/.ssh`. Overleaf cookies are only ever sent to your own Overleaf instance. The agent is blocked from running git commit or push. Details, including what data leaves your machine and how to revoke credentials, are in [SECURITY.md](SECURITY.md).
@@ -199,16 +221,17 @@ npm install
 npm run dev                            # rebuild frontend, then server on :4560
 npm run dev:web                        # Vite dev server on :4561
 npm test                               # unit tests
+npm run check                          # typecheck + lint + unit tests (what CI runs)
 npm run codex:check --workspace=server # installed Codex protocol check, no model turn
-npm run test:ui --workspace=server     # browser verification (local mocks)
-npx tsx server/scripts/ui-verify.ts    # browser UI verification without agent turns
+npm run verify:ui                      # browser checks against local mocks (no model, no TeX)
+npm run test:ui --workspace=server     # full UI walkthrough without agent turns (needs TeX)
 npx tsx server/scripts/e2e.ts          # full loop with a real agent turn
 npm run release:pack                   # build and pack the npm tarball
 ```
 
 `npm run dev` rebuilds the frontend once before starting the server. For live frontend updates while editing, also run `npm run dev:web` in a second terminal and open port 4561.
 
-CI runs the suite on Ubuntu, macOS and Windows. Release notes live in [CHANGELOG.md](CHANGELOG.md).
+CI runs the suite on Ubuntu, macOS and Windows, and on the oldest supported Node. Release notes live in [CHANGELOG.md](CHANGELOG.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for tests, checks and releases.
 
 ## License
 

@@ -20,11 +20,11 @@ import { getPaperContent } from "../papers.js";
 import { localSourcePath } from "./sources.js";
 
 const exec = promisify(execFile);
-const renderer = () => process.env.BLATTBOT_PDFTOPPM || "pdftoppm";
-const ocr = () => process.env.BLATTBOT_TESSERACT || "tesseract";
+export const renderer = () => process.env.BLATTBOT_PDFTOPPM || "pdftoppm";
+export const ocr = () => process.env.BLATTBOT_TESSERACT || "tesseract";
 /** Tesseract's default language; a binary without its data cannot OCR anything. */
 const OCR_LANGUAGE = "eng";
-async function ocrLanguageInstalled(): Promise<boolean> {
+export async function ocrLanguageInstalled(): Promise<boolean> {
   try {
     // Older releases print the list on stderr.
     const { stdout, stderr } = await exec(ocr(), ["--list-langs"], { timeout: 5000 });

@@ -77,6 +77,7 @@ export function validateLinkPath(project: Project, raw: string): string {
 
 /** Keep upload names flat and filesystem-safe. */
 export function sanitizeUploadName(raw: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: strips control characters on purpose
   const name = raw.trim().split("/").pop()!.split("\\").pop()!.replace(/[\0-\x1f]/g, "");
   if (!name || name === "." || name === "..") throw new Error("invalid file name");
   if (name.startsWith(".")) throw new Error("hidden file names are not allowed");
